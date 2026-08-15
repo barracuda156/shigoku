@@ -1,0 +1,221 @@
+{
+  "data": {
+    "Page": {
+      "pageInfo": {
+        "hasNextPage": true
+      },
+      "media": [
+        {
+          "id": 154587,
+          "idMal": 52991,
+          "title": {
+            "romaji": "Sousou no Frieren",
+            "english": "Frieren: Beyond Journey’s End",
+            "native": "葬送のフリーレン"
+          },
+          "episodes": 28,
+          "duration": 24,
+          "averageScore": 91,
+          "status": "FINISHED",
+          "season": "FALL",
+          "seasonYear": 2023,
+          "startDate": {
+            "year": 2023,
+            "month": 9,
+            "day": 29
+          },
+          "format": "TV",
+          "source": "MANGA",
+          "countryOfOrigin": "JP",
+          "genres": [
+            "Adventure",
+            "Drama",
+            "Fantasy"
+          ],
+          "studios": {
+            "nodes": [
+              {
+                "name": "MADHOUSE"
+              }
+            ]
+          },
+          "rankings": [
+            {
+              "rank": 1,
+              "type": "RATED",
+              "year": null,
+              "allTime": true
+            },
+            {
+              "rank": 54,
+              "type": "POPULAR",
+              "year": null,
+              "allTime": true
+            },
+            {
+              "rank": 1,
+              "type": "RATED",
+              "year": 2023,
+              "allTime": false
+            },
+            {
+              "rank": 2,
+              "type": "POPULAR",
+              "year": 2023,
+              "allTime": false
+            },
+            {
+              "rank": 1,
+              "type": "RATED",
+              "year": 2023,
+              "allTime": false
+            },
+            {
+              "rank": 1,
+              "type": "POPULAR",
+              "year": 2023,
+              "allTime": false
+            }
+          ],
+          "nextAiringEpisode": null,
+          "description": "The adventure is over but life goes on for an elf mage just beginning to learn what living is all about. Elf mage Frieren and her courageous fellow adventurers have defeated the Demon King and brought peace to the land. But Frieren will long outlive the rest of her former party. How will she come to understand what life means to the people around her? Decades after their victory, the funeral of one her friends confronts Frieren with her own near immortality. Frieren sets out to fulfill the last wishes of her comrades and finds herself beginning a new adventure…\n<br><br>\n(Source: Crunchyroll)",
+          "coverImage": {
+            "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx154587-qQTzQnEJJ3oB.jpg"
+          }
+        },
+        {
+          "id": 209939,
+          "idMal": 63816,
+          "title": {
+            "romaji": "Sousou no Frieren 3rd Season",
+            "english": null,
+            "native": "葬送のフリーレン 第3期"
+          },
+          "episodes": null,
+          "duration": null,
+          "averageScore": null,
+          "status": "NOT_YET_RELEASED",
+          "season": "FALL",
+          "seasonYear": 2027,
+          "startDate": {
+            "year": 2027,
+            "month": 10,
+            "day": null
+          },
+          "format": "TV",
+          "source": "MANGA",
+          "countryOfOrigin": "JP",
+          "genres": [
+            "Adventure",
+            "Drama",
+            "Fantasy"
+          ],
+          "studios": {
+            "nodes": [
+              {
+                "name": "MADHOUSE"
+              }
+            ]
+          },
+          "rankings": [
+            {
+              "rank": 3,
+              "type": "POPULAR",
+              "year": 2027,
+              "allTime": false
+            },
+            {
+              "rank": 1,
+              "type": "POPULAR",
+              "year": 2027,
+              "allTime": false
+            }
+          ],
+          "nextAiringEpisode": null,
+          "description": "The third season of <i>Sousou no Frieren</i>.",
+          "coverImage": {
+            "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx209939-g2Njkml1rheG.jpg"
+          }
+        },
+        {
+          "id": 182255,
+          "idMal": 59978,
+          "title": {
+            "romaji": "Sousou no Frieren 2nd Season",
+            "english": "Frieren: Beyond Journey’s End Season 2",
+            "native": "葬送のフリーレン 第2期"
+          },
+          "episodes": 10,
+          "duration": 24,
+          "averageScore": 88,
+          "status": "FINISHED",
+          "season": "WINTER",
+          "seasonYear": 2026,
+          "startDate": {
+            "year": 2026,
+            "month": 1,
+            "day": 16
+          },
+          "format": "TV",
+          "source": "MANGA",
+          "countryOfOrigin": "JP",
+          "genres": [
+            "Adventure",
+            "Drama",
+            "Fantasy"
+          ],
+          "studios": {
+            "nodes": [
+              {
+                "name": "MADHOUSE"
+              }
+            ]
+          },
+          "rankings": [
+            {
+              "rank": 22,
+              "type": "RATED",
+              "year": null,
+              "allTime": true
+            },
+            {
+              "rank": 235,
+              "type": "POPULAR",
+              "year": null,
+              "allTime": true
+            },
+            {
+              "rank": 2,
+              "type": "RATED",
+              "year": 2026,
+              "allTime": false
+            },
+            {
+              "rank": 2,
+              "type": "POPULAR",
+              "year": 2026,
+              "allTime": false
+            },
+            {
+              "rank": 1,
+              "type": "RATED",
+              "year": 2026,
+              "allTime": false
+            },
+            {
+              "rank": 2,
+              "type": "POPULAR",
+              "year": 2026,
+              "allTime": false
+            }
+          ],
+          "nextAiringEpisode": null,
+          "description": "Following the First-Class Mage Exam, the trio—elven mage Frieren, warrior Stark, and first-class mage Fern—gains access to the dangerous Northern Plateau. As the party presses onward toward Aureole, formidable adversaries force Stark to confront his insecurities, solidifying his resolve and his role as the party's frontliner. Meanwhile, Fern continues to cherish the gifts she has been blessed with throughout her life, each a reminder of those she holds dear.<br><br>\n\nFrieren—still honoring her vow to understand humanity—revisits memories of her journey with the Hero's party and her fleeting encounter with a legendary figure. As she reflects on the passage of time, the elven mage quietly questions whether she has truly changed, yet in the small, almost subtle choices that she makes, there are signs that she might have become more human than she realizes.<br><br>\n\n(Source: MAL Rewrite)",
+          "coverImage": {
+            "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx182255-butzrqd4I0aC.jpg"
+          }
+        }
+      ]
+    }
+  }
+}

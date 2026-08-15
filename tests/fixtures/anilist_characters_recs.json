@@ -1,0 +1,112 @@
+{
+  "data": {
+    "Media": {
+      "characters": {
+        "edges": [
+          {
+            "role": "MAIN",
+            "node": { "name": { "full": "Frieren" } },
+            "voiceActors": [{ "name": { "full": "Atsumi Tanezaki" } }]
+          },
+          {
+            "role": "MAIN",
+            "node": { "name": { "full": "Fern" } },
+            "voiceActors": [{ "name": { "full": "Kana Ichinose" } }]
+          },
+          {
+            "role": "SUPPORTING",
+            "node": { "name": { "full": "Sein" } },
+            "voiceActors": []
+          },
+          {
+            "role": "SUPPORTING",
+            "node": { "name": { "full": null } },
+            "voiceActors": [{ "name": { "full": "Nobody" } }]
+          }
+        ]
+      },
+      "recommendations": {
+        "nodes": [
+          {
+            "mediaRecommendation": {
+              "type": "ANIME",
+              "id": 101922,
+              "idMal": 39535,
+              "title": {
+                "romaji": "Kimetsu no Yaiba",
+                "english": "Demon Slayer: Kimetsu no Yaiba",
+                "native": "鬼滅の刃"
+              },
+              "episodes": 26,
+              "duration": 23,
+              "averageScore": 84,
+              "status": "FINISHED",
+              "season": "SPRING",
+              "seasonYear": 2019,
+              "startDate": { "year": 2019, "month": 4, "day": 6 },
+              "format": "TV",
+              "source": "MANGA",
+              "countryOfOrigin": "JP",
+              "genres": ["Action", "Adventure", "Fantasy"],
+              "studios": { "nodes": [{ "name": "ufotable" }] },
+              "rankings": [],
+              "nextAiringEpisode": null,
+              "description": "A boy fights demons.",
+              "coverImage": { "large": "https://example.com/covers/101922.jpg" }
+            }
+          },
+          {
+            "mediaRecommendation": null
+          },
+          {
+            "mediaRecommendation": {
+              "type": "MANGA",
+              "id": 30002,
+              "idMal": 21,
+              "title": { "romaji": "Berserk", "english": "Berserk", "native": "ベルセルク" },
+              "episodes": null,
+              "duration": null,
+              "averageScore": 93,
+              "status": "RELEASING",
+              "season": null,
+              "seasonYear": null,
+              "startDate": { "year": 1989, "month": 8, "day": 25 },
+              "format": "MANGA",
+              "source": "ORIGINAL",
+              "countryOfOrigin": "JP",
+              "genres": ["Action", "Adventure"],
+              "studios": { "nodes": [] },
+              "rankings": [],
+              "nextAiringEpisode": null,
+              "description": "A cross-type rec: must be dropped, never promotable.",
+              "coverImage": { "large": "https://example.com/covers/30002.jpg" }
+            }
+          },
+          {
+            "mediaRecommendation": {
+              "id": 21,
+              "idMal": null,
+              "title": { "romaji": "One Piece", "english": null, "native": "ワンピース" },
+              "episodes": null,
+              "duration": 24,
+              "averageScore": 88,
+              "status": "RELEASING",
+              "season": null,
+              "seasonYear": null,
+              "startDate": { "year": 1999, "month": 10, "day": 20 },
+              "format": "TV",
+              "source": "MANGA",
+              "countryOfOrigin": "JP",
+              "genres": ["Action", "Adventure", "Comedy"],
+              "studios": { "nodes": [{ "name": "Toei Animation" }] },
+              "rankings": [],
+              "nextAiringEpisode": { "episode": 1123, "airingAt": 1731000000 },
+              "description": null,
+              "coverImage": { "large": "https://example.com/covers/21.jpg" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

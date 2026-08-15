@@ -1,0 +1,114 @@
+{
+  "data": [
+    {
+      "id": 59978,
+      "public_id": "pzn6u",
+      "created_at": "2025-11-01T17:55:37.137Z",
+      "anime_picture": "/posters/59978.webp",
+      "trailer": "https://www.youtube-nocookie.com/embed/RH-FcW94z00?enablejsapi=1&wmode=opaque&autoplay=1",
+      "title": "Sousou no Frieren 2nd Season",
+      "title_english": "Frieren: Beyond Journey's End Season 2",
+      "synonyms": "Frieren at the Funeral Season 2",
+      "type": "TV",
+      "ani_source": "Manga",
+      "ani_episodes": "10",
+      "ani_status": "Finished Airing",
+      "airing_date": "Jan 16, 2026 to Mar 27, 2026",
+      "duration": "24 min per ep",
+      "rating": "PG-13 - Teens 13 or older",
+      "score": 8.86,
+      "scored_by": 261820,
+      "ani_description": "Following the First-Class Mage Exam, the trio—elven mage Frieren, warrior Stark, and first-class mage Fern—gains access to the dangerous Northern Plateau. As the party presses onward toward Aureole, formidable adversaries force Stark to confront his insecurities, solidifying his resolve and his role as the party's frontliner. Meanwhile, Fern continues to cherish the gifts she has been blessed with throughout her life, each a reminder of those she holds dear.\n\nFrieren—still honoring her vow to understand humanity—revisits memories of her journey with the Hero's party and her fleeting encounter with a legendary figure. As she reflects on the passage of time, the elven mage quietly questions whether she has truly changed, yet in the small, almost subtle choices that she makes, there are signs that she might have become more human than she realizes.\n\n[Written by MAL Rewrite]",
+      "ani_season": "winter",
+      "ani_year": 2026,
+      "genres": "Adventure, Drama, Fantasy",
+      "relations": {
+        "Sequel": [
+          63816
+        ],
+        "Prequel": [
+          52991
+        ]
+      },
+      "producers": "Aniplex, Dentsu, Shogakukan-Shueisha Productions, Nippon Television Network, TOHO animation, Sound Team Don Juan, Miracle Bus, Shogakukan, Toho Music",
+      "studios": "Madhouse",
+      "tvdb_id": null,
+      "views_day": 73,
+      "views_week": 621,
+      "views_month": 1550,
+      "last_viewed_at": "2026-07-18T13:14:58.019Z",
+      "version": 65531
+    },
+    {
+      "id": 56885,
+      "public_id": "ucjo0",
+      "created_at": "2026-01-27T12:07:00.673Z",
+      "anime_picture": "/posters/56885.webp",
+      "trailer": null,
+      "title": "Sousou no Frieren: ●● no Mahou",
+      "title_english": "Frieren: Beyond Journey's End Mini Anime",
+      "synonyms": "Sousou no Frieren: Marumaru no Mahou",
+      "type": "ONA",
+      "ani_source": "Manga",
+      "ani_episodes": "?",
+      "ani_status": "Currently Airing",
+      "airing_date": "Oct 11, 2023 to ?",
+      "duration": "1 min",
+      "rating": "PG-13 - Teens 13 or older",
+      "score": 7.39,
+      "scored_by": 9447,
+      "ani_description": "Frieren loves collecting peculiar spells, and her ever-growing arsenal of magic contains the perfect spells for many occasions. Whether it be by stealthily removing alcohol from Heiter's drinks or by remedying her own sleep issues, Frieren is sure to brighten her companions' days with her magic.\n\n[Written by MAL Rewrite]",
+      "ani_season": null,
+      "ani_year": null,
+      "genres": "Comedy, Fantasy",
+      "relations": {},
+      "producers": "Sound Team Don Juan",
+      "studios": "TOHO animation STUDIO",
+      "tvdb_id": null,
+      "views_day": 2,
+      "views_week": 9,
+      "views_month": 24,
+      "last_viewed_at": "2026-07-18T00:54:25.329Z",
+      "version": 901
+    },
+    {
+      "id": 52991,
+      "public_id": "4medy",
+      "created_at": "2025-08-14T18:25:37.753Z",
+      "anime_picture": "/posters/52991.webp",
+      "trailer": "https://www.youtube.com/watch?v=ZEkwCGJ3o7M",
+      "title": "Sousou no Frieren",
+      "title_english": "Frieren: Beyond Journey's End",
+      "synonyms": "Frieren at the Funeral, Frieren The Slayer",
+      "type": "TV",
+      "ani_source": "Manga",
+      "ani_episodes": "28",
+      "ani_status": "Finished Airing",
+      "airing_date": "Sep 29, 2023 to Mar 22, 2024",
+      "duration": "24 min per ep",
+      "rating": "PG-13 - Teens 13 or older",
+      "score": 5,
+      "scored_by": 1,
+      "ani_description": "During their decade-long quest to defeat the Demon King, the members of the hero's party—Himmel himself, the priest Heiter, the dwarf warrior Eisen, and the elven mage Frieren—forge bonds through adventures and battles, creating unforgettable precious memories for most of them.\n\nHowever, the time that Frieren spends with her comrades is equivalent to merely a fraction of her life, which has lasted over a thousand years. When the party disbands after their victory, Frieren casually returns to her \"usual\" routine of collecting spells across the continent. Due to her different sense of time, she seemingly holds no strong feelings toward the experiences she went through.\n\nAs the years pass, Frieren gradually realizes how her days in the hero's party truly impacted her. Witnessing the deaths of two of her former companions, Frieren begins to regret having taken their presence for granted; she vows to better understand humans and create real personal connections. Although the story of that once memorable journey has long ended, a new tale is about to begin.",
+      "ani_season": "fall",
+      "ani_year": 2023,
+      "genres": "Adventure, Drama, Fantasy",
+      "relations": {
+        "Sequel": [
+          59978
+        ],
+        "Side Story": [
+          56885
+        ]
+      },
+      "producers": "Aniplex, Dentsu, Shogakukan-Shueisha Productions, Nippon Television Network, TOHO animation, Shogakukan",
+      "studios": "Madhouse",
+      "tvdb_id": null,
+      "views_day": 23,
+      "views_week": 172,
+      "views_month": 437,
+      "last_viewed_at": "2026-07-18T13:25:29.811Z",
+      "version": 14356
+    }
+  ]
+}

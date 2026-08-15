@@ -1,0 +1,716 @@
+<section
+	id="chapter-images"
+	class="w-full flex-1 flex flex-col pb-4 cursor-pointer"
+	style="gap: var(--strip-gap, 0px)"
+	x-data="{
+		scrollDown() { window.scrollBy({ top: window.innerHeight * 0.75, behavior: 'smooth' }); },
+		scrollUp() { window.scrollBy({ top: -window.innerHeight * 0.75, behavior: 'smooth' }); },
+		handleClick(e) {
+			const clickX = e.clientX;
+			const sectionWidth = e.currentTarget.getBoundingClientRect().width;
+			const isLeftHalf = clickX < sectionWidth / 2;
+
+			if (isLeftHalf) {
+				this.scrollUp();
+			} else {
+				this.scrollDown();
+			}
+		},
+	}"
+	hx-get="https://weebcentral.com/chapters/01J76XYY670GZSEJQG395N25HM/images"
+	hx-trigger="change from:[name='reading_style']"
+	hx-include="[name='reading_style'],[name='current_page']"
+	hx-swap="outerHTML"
+	@click="handleClick">
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-001.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 1"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-002.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 2"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-003.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 3"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-004.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 4"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-005.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 5"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-006.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 6"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-007.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 7"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-008.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 8"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-009.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 9"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-010.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 10"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-011.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 11"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-012.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 12"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-013.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 13"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-014.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 14"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-015.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 15"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-016.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 16"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-017.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 17"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-018.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 18"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-019.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 19"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-020.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 20"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-021.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 21"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-022.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 22"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-023.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 23"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-024.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 24"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-025.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 25"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-026.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 26"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-027.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 27"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-028.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 28"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-029.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 29"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-030.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 30"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-031.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 31"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-032.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 32"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-033.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 33"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-034.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 34"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-035.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 35"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-036.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 36"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-037.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 37"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-038.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 38"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-039.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 39"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-040.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 40"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-041.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 41"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-042.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 42"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-043.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 43"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-044.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 44"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-045.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 45"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-046.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 46"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-047.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 47"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-048.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 48"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-049.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 49"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-050.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 50"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-051.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 51"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-052.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 52"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-053.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 53"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-054.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 54"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-055.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 55"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-056.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 56"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-057.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 57"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-058.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 58"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-059.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 59"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-060.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 60"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-061.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 61"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-062.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 62"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-063.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 63"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-064.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 64"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-065.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 65"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-066.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 66"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-067.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 67"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-068.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 68"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+	<img
+		src="https://official.lowee.us/manga/All-You-Need-Is-Kill/0001-069.png"
+		class="max-w-full h-auto mx-auto"
+		style="min-height: 50vh"
+		alt="Page 69"
+		decoding="async"
+		loading="lazy"
+		onload="this.style.minHeight=''"
+		onerror="this.onerror=null; this.style.minHeight=''; this.src='/static/images/broken_image.jpg'" />
+	
+</section>
