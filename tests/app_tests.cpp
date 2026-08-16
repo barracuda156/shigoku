@@ -426,6 +426,68 @@ TEST_CASE("compose_cover_apc: iterm backend — OSC 1337 out, no delete bytes") 
   CHECK(placed.id == 0);
 }
 
+TEST_CASE("compose_cover_apc: sixel backend — DCS out, no delete bytes") {
+  App app;
+  app.view = View::Browse;
+  app.pane = Pane::Detail;
+  app.win = WinSize{100, 24, 0, 0};
+  app.cover_caps.backend = CoverBackend::Sixel;
+  // SIXEL is sized in pixels, so this backend — alone — needs the geometry.
+  app.cover_caps.cell = CellPx{8, 16};
+  CatalogRow row;
+  row.meta.anilist_id = 42;
+  row.meta.title_romaji = "Show";
+  row.meta.cover_url = "https://example.com/c.jpg";
+  app.catalog.push_back(row);
+  app.list_cursor = 0;
+  app.cover_render.have_pixels = true;
+  app.cover_render.for_id = 42;
+  app.cover_render.pixels.w = 2;
+  app.cover_render.pixels.h = 2;
+  app.cover_render.pixels.rgba.assign(16, 0xFF);
+
+  detail::PlacedCover placed;
+  std::string pre, post;
+
+  // First frame: a CUP then one DCS, nothing before the diff — like OSC 1337,
+  // this wire has no delete command.
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.empty());
+  CHECK(post.find("\x1bP7;0;q") != std::string::npos);
+  CHECK(post.ends_with("\x1b\\"));                      // ST closes the DCS.
+  CHECK(post.find("\x1b_G") == std::string::npos);      // no kitty APC leaks.
+  CHECK(post.find("\x1b]1337") == std::string::npos);   // no OSC 1337 either.
+  CHECK(post.starts_with("\x1b["));                     // CUP to the origin.
+  CHECK(placed.id != 0);
+
+  // Steady state: the flood rule holds for the third backend too.
+  CHECK_FALSE(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.empty());
+  CHECK(post.empty());
+
+  // Pixels withdrawn: no bytes either way — the forced repaint is the erase.
+  app.cover_render.have_pixels = false;
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.empty());
+  CHECK(post.empty());
+  CHECK(placed.id == 0);
+}
+
+TEST_CASE("purge_placements: sixel clears placements without wire bytes") {
+  // The cell-inline backends store no image to free; a delete APC written to
+  // a terminal that never spoke kitty would be a stray command.
+  detail::PlacedCover cover;
+  cover.id = 7;
+  cover.for_id = 42;
+  std::map<std::string, detail::Placed> grid;
+  grid["https://c/a.png"] = detail::Placed{11, Rect{}};
+  std::string purge;
+  CHECK(detail::purge_placements(CoverBackend::Sixel, cover, grid, purge));
+  CHECK(purge.empty());  // held placements cleared, but nothing on the wire.
+  CHECK(cover.id == 0);
+  CHECK(grid.empty());
+}
+
 // --- App + Store: status/undo/recompute/delete (P16, 05 §3-§4) -------------
 
 namespace {

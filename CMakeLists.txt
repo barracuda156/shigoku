@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.1.0 LANGUAGES CXX)
+project(shigoku VERSION 0.1.0 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)
@@ -105,6 +105,32 @@ endif()
 target_include_directories(shigoku_thirdparty SYSTEM INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
+
+# --- Vendored COMPILED unit: the sayaka SIXEL encoder ----------------------
+# Unlike everything above this is C, not a header — two TUs (a colour reductor
+# and the SIXEL writer) lifted from sayaka, detangled from that project's
+# common.h by third_party/sixel_sayaka/sixel_shim.h. src/tui/sixel.cpp is the
+# only thing that links it. Deliberately its own target so its C dialect and
+# relaxed warnings stay contained:
+#   - gnu11, because upstream's MIN/MAX are statement expressions;
+#   - -Wno-sign-compare/-Wno-unused-parameter, upstream's own house style
+#     against our -Wall -Wextra -Werror. It does NOT link shigoku_flags, so
+#     nothing here can weaken the warning contract our own code builds under.
+add_library(shigoku_sixel_sayaka STATIC
+  third_party/sixel_sayaka/image.c
+  third_party/sixel_sayaka/image_sixel.c
+)
+set_target_properties(shigoku_sixel_sayaka PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+  POSITION_INDEPENDENT_CODE ON)
+# No include directory of its own: the two TUs include their siblings by
+# quoted same-directory name, and sixel.cpp reaches them as
+# <sixel_sayaka/image.h> off the third_party root shigoku_thirdparty already
+# provides — the same shape as <stb/stb_image.h>.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(shigoku_sixel_sayaka PRIVATE
+    -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter)
+endif()
 
 # --- Dependency detection: prefer pkg-config, fall back to find_library. ---
 find_package(PkgConfig QUIET)
@@ -756,6 +782,10 @@ add_library(shigoku_tui_render STATIC
   # shigoku_tui).
   src/tui/kitty.cpp
   src/tui/iterm.cpp
+  # The third backend: the SIXEL emitter and the string-backed FILE* its
+  # vendored encoder writes through.
+  src/tui/sixel.cpp
+  src/tui/memstream_compat.cpp
   src/tui/cover_geom.cpp
   src/tui/cover_probe.cpp
   # P17: Discover card-grid pure state + geometry + glyphs (no store/curl — the
@@ -779,7 +809,7 @@ add_library(shigoku_tui_render STATIC
 target_include_directories(shigoku_tui_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_tui_render
   PUBLIC shigoku_domain shigoku_config shigoku_auth shigoku_flags shigoku_thirdparty
-  PRIVATE Threads::Threads shigoku_atomic)
+  PRIVATE Threads::Threads shigoku_atomic shigoku_sixel_sayaka)
 
 # ---------------------------------------------------------------------------
 # shigoku_tui (P6/P7, A1): app.cpp — tick()/on_key()/run(), the event loop and
@@ -1476,7 +1506,9 @@ endif()
 # render/decode/queue paths are offline and build even without curl
 # (shigoku_tui itself is curl-gated, P7). cover_pool_tests covers the P17b
 # CoverPool coordinator + render store — pure, no store/curl needed either.
-foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests)
+# sixel_tests rides the same group: the emitter, its DA1 classifier, the
+# backend ranking and the string-backed FILE* seam are all pure and offline.
+foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests sixel_tests)
   add_executable(${_p6test} tests/${_p6test}.cpp)
   target_link_libraries(${_p6test} PRIVATE
     shigoku_tui_render shigoku_domain shigoku_flags shigoku_thirdparty

@@ -11,8 +11,10 @@
 //      ReportCellSize answer (the OSC 1337 protocol's own query — only iTerm2
 //      implements it) or an XTVERSION reply naming an OSC 1337 adopter ⇒ the
 //      iterm backend; iTerm2 ITSELF outranks its own kitty ack (see
-//      backend_from); DA1 alone ⇒ placeholder mode (a dim box, layout slot
-//      preserved).
+//      backend_from); attribute 4 inside the DA1 answer itself ⇒ the sixel
+//      backend (no extra query — SIXEL advertises in the attributes we
+//      already ask for); a DA1 with none of those ⇒ placeholder mode (a dim
+//      box, layout slot preserved).
 //   2. What is the per-cell pixel geometry? — TIOCGWINSZ first (term.cpp), then
 //      a CSI 14t window-pixel reply as the fallback; neither ⇒ CellPx{0,0}
 //      (fixed floors/caps). This is A4's ioctl → CSI 14t → placeholder ladder.
@@ -34,14 +36,18 @@ struct CoverProbe {
   bool kitty = false;   // terminal acked the a=q graphics query.
   bool iterm = false;   // answered ReportCellSize / named an adopter (iterm.hpp).
   bool iterm2 = false;  // the terminal IS iTerm2 (ReportCellSize / XTVERSION name).
+  bool sixel = false;   // DA1 attributes list 4 (sixel.hpp).
   CellPx cell;          // per-cell pixels; {0,0} = unknown (floors/caps).
   friend bool operator==(const CoverProbe&, const CoverProbe&) = default;
 };
 
-// The graphics backend the probe verdicts select. Kitty wins when both answer
-// (ids + deletes + no re-encode make it the richer wire); the OSC 1337 path
-// is the fallback for terminals that only speak iTerm2's protocol. None ⇒
-// placeholder mode, nothing image-shaped ever emitted.
+// The graphics backend the probe verdicts select. Kitty wins when several
+// answer (ids + deletes + no re-encode make it the richest wire); OSC 1337 is
+// next (still lossless 24-bit); SIXEL is last, a lossy ≤256-colour fallback
+// worth taking only when neither richer protocol is there — which is exactly
+// the legacy target's case (mlterm speaks SIXEL and nothing else; xterm and
+// foot answer SIXEL but not kitty). None ⇒ placeholder mode, nothing
+// image-shaped ever emitted.
 //
 // EXCEPTION: on iTerm2 itself the OSC 1337 backend outranks the kitty ack.
 // iTerm2 3.5 answers a=q and even acks every kitty transmit with OK, but its
@@ -50,12 +56,20 @@ struct CoverProbe {
 // protocol draws them fine, and ReportCellSize (which only iTerm2 answers)
 // pins the identification, so WezTerm/Konsole — whose kitty support is real —
 // keep the kitty backend.
-enum class CoverBackend : std::uint8_t { None, Kitty, Iterm };
+//
+// SIXEL alone carries a PRECONDITION: it is sized in pixels, so it needs the
+// per-cell geometry the other two backends let the terminal work out. Without
+// it an image cannot be fitted to its cell box, and one drawn too tall scrolls
+// the screen out from under the TUI. A sixel terminal that reports no geometry
+// therefore falls through to placeholder mode — a defined, already-implemented
+// degradation — rather than to a guess.
+enum class CoverBackend : std::uint8_t { None, Kitty, Iterm, Sixel };
 
 [[nodiscard]] constexpr CoverBackend backend_from(const CoverProbe& p) {
   if (p.iterm2) return CoverBackend::Iterm;
   if (p.kitty) return CoverBackend::Kitty;
   if (p.iterm) return CoverBackend::Iterm;
+  if (p.sixel && p.cell.known()) return CoverBackend::Sixel;
   return CoverBackend::None;
 }
 

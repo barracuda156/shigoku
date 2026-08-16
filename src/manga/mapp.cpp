@@ -28,6 +28,7 @@
 #include "../tui/input.hpp"
 #include "../tui/iterm.hpp"
 #include "../tui/kitty.hpp"
+#include "../tui/sixel.hpp"
 #include "../tui/views.hpp"  // pane_split, kContentY0/content_height, wrap_text.
 #include "msync.hpp"
 #include "pages.hpp"
@@ -2236,7 +2237,8 @@ int run(const MgDeps& deps) {
   app.cell = probe.cell;
   debug_log("probe: kitty=" + std::to_string(probe.kitty) +
             " iterm=" + std::to_string(probe.iterm) +
-            " iterm2=" + std::to_string(probe.iterm2) + " cell=" +
+            " iterm2=" + std::to_string(probe.iterm2) +
+            " sixel=" + std::to_string(probe.sixel) + " cell=" +
             std::to_string(probe.cell.width) + "x" +
             std::to_string(probe.cell.height) + " win=" +
             std::to_string(app.win.cols) + "x" + std::to_string(app.win.rows) +
@@ -2306,19 +2308,35 @@ int run(const MgDeps& deps) {
       if (placed.id != 0 && is_kitty)
         pre_diff += tui::kitty::delete_image(placed.id);
       post_diff += cursor_to(app.cover_plan.rect.x, app.cover_plan.rect.y);
-      if (is_kitty) {
-        tui::kitty::Image img;
-        img.rgba = app.cover_pixels.rgba;
-        img.w = app.cover_pixels.w;
-        img.h = app.cover_pixels.h;
-        post_diff += tui::kitty::transmit(img, kCoverImageId,
-                                          app.cover_plan.rect.w,
-                                          app.cover_plan.rect.h);
-      } else {
-        post_diff += tui::iterm::transmit(app.cover_pixels.rgba,
-                                          app.cover_pixels.w, app.cover_pixels.h,
-                                          app.cover_plan.rect.w,
-                                          app.cover_plan.rect.h);
+      // Same three-way choice the anime app makes (its detail::cover_transmit);
+      // switched, not if/else, so a fourth backend cannot slip past this site.
+      switch (app.cover_backend) {
+        case tui::CoverBackend::Kitty: {
+          tui::kitty::Image img;
+          img.rgba = app.cover_pixels.rgba;
+          img.w = app.cover_pixels.w;
+          img.h = app.cover_pixels.h;
+          post_diff += tui::kitty::transmit(img, kCoverImageId,
+                                            app.cover_plan.rect.w,
+                                            app.cover_plan.rect.h);
+          break;
+        }
+        case tui::CoverBackend::Iterm:
+          post_diff += tui::iterm::transmit(app.cover_pixels.rgba,
+                                            app.cover_pixels.w, app.cover_pixels.h,
+                                            app.cover_plan.rect.w,
+                                            app.cover_plan.rect.h);
+          break;
+        case tui::CoverBackend::Sixel:
+          // Pixel-sized, so it needs the per-cell geometry backend_from
+          // guarantees is known whenever it picked this backend.
+          post_diff += tui::sixel::transmit(
+              app.cover_pixels.rgba, app.cover_pixels.w, app.cover_pixels.h,
+              app.cover_plan.rect.w, app.cover_plan.rect.h, app.cell.width,
+              app.cell.height);
+          break;
+        case tui::CoverBackend::None:
+          break;  // placeholder mode; the cover plan never asks for pixels.
       }
       placed = Placed{kCoverImageId, app.cover_plan.rect, app.cover_plan.want_id};
       changed = true;

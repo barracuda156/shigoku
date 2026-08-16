@@ -12,6 +12,7 @@
 #include "../debug_log.hpp"
 #include "iterm.hpp"
 #include "kitty.hpp"
+#include "sixel.hpp"
 #include "term.hpp"  // wait_readable — the poll/select platform seam (§3).
 
 namespace shigoku::tui {
@@ -147,6 +148,9 @@ CoverProbe probe_cover_support(std::uint16_t cols, std::uint16_t rows,
   out.kitty = kitty::probe_reply_is_kitty(reply);
   out.iterm = iterm::probe_reply_is_iterm(reply);
   out.iterm2 = iterm::probe_reply_is_iterm2(reply);
+  // No query of its own: SIXEL support rides in the DA1 attribute list the
+  // sequence above already asked for.
+  out.sixel = sixel::probe_reply_is_sixel(reply);
 
   // If TIOCGWINSZ gave no pixel geometry, fall back to the CSI 14t reply,
   // then to the ReportCellSize answer (points × scale = per-cell pixels —

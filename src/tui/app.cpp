@@ -43,6 +43,7 @@
 #include "kitty.hpp"
 #include "prewarm.hpp"
 #include "resolve_transport.hpp"
+#include "sixel.hpp"
 #include "views.hpp"
 
 #include <ctime>
@@ -418,6 +419,35 @@ std::pair<ToastKind, std::string> play_error_toast(const PlayError& e,
 // stays here: it builds APC bytes via kitty:: (render target) and is only ever
 // called from run() (shigoku_tui).
 
+// One cover transmit, whichever protocol the probe selected — the single
+// place the three emitters are chosen between, so no call site can drift.
+// The switch is deliberate (A2): a fourth backend fails to compile here until
+// it is handled. Note what each protocol needs to size the image: kitty takes
+// a cell box plus the source pixel dims, OSC 1337 takes a cell box, and SIXEL
+// alone is drawn at literal pixel size — hence the per-cell geometry, which
+// backend_from guarantees is known whenever it picked Sixel.
+std::string cover_transmit(const App& app, const CoverPixels& px,
+                           std::uint32_t id, const Rect& r) {
+  switch (app.cover_caps.backend) {
+    case CoverBackend::Kitty: {
+      kitty::Image img;
+      img.rgba = px.rgba;
+      img.w = px.w;
+      img.h = px.h;
+      return kitty::transmit(img, id, r.w, r.h);
+    }
+    case CoverBackend::Iterm:
+      return iterm::transmit(px.rgba, px.w, px.h, r.w, r.h);
+    case CoverBackend::Sixel:
+      return sixel::transmit(px.rgba, px.w, px.h, r.w, r.h,
+                             app.cover_caps.cell.width,
+                             app.cover_caps.cell.height);
+    case CoverBackend::None:
+      break;  // placeholder mode; every caller gates on images() first.
+  }
+  return {};
+}
+
 bool purge_placements(CoverBackend backend, PlacedCover& placed_cover,
                       std::map<std::string, Placed>& placed_grid,
                       std::string& purge) {
@@ -503,17 +533,7 @@ bool compose_cover_apc(const App& app, PlacedCover& placed,
   post_diff += ';';
   post_diff += std::to_string(r.x + 1);
   post_diff += 'H';
-  if (backend == CoverBackend::Kitty) {
-    kitty::Image img;
-    img.rgba = app.cover_render.pixels.rgba;
-    img.w = app.cover_render.pixels.w;
-    img.h = app.cover_render.pixels.h;
-    post_diff += kitty::transmit(img, kDetailCoverImageId, r.w, r.h);
-  } else {
-    post_diff += iterm::transmit(app.cover_render.pixels.rgba,
-                                 app.cover_render.pixels.w,
-                                 app.cover_render.pixels.h, r.w, r.h);
-  }
+  post_diff += cover_transmit(app, app.cover_render.pixels, kDetailCoverImageId, r);
   debug_log("cover transmit: detail id=" + std::to_string(kDetailCoverImageId) +
             " px=" + std::to_string(app.cover_render.pixels.w) + "x" +
             std::to_string(app.cover_render.pixels.h) +
@@ -587,16 +607,7 @@ bool compose_grid_apc(const App& app, std::map<std::string, Placed>& placed,
     post_diff += ';';
     post_diff += std::to_string(rect.x + 1);
     post_diff += 'H';
-    if (backend == CoverBackend::Kitty) {
-      kitty::Image img;
-      img.rgba = entry->pixels.rgba;
-      img.w = entry->pixels.w;
-      img.h = entry->pixels.h;
-      post_diff += kitty::transmit(img, entry->id, rect.w, rect.h);
-    } else {
-      post_diff += iterm::transmit(entry->pixels.rgba, entry->pixels.w,
-                                   entry->pixels.h, rect.w, rect.h);
-    }
+    post_diff += cover_transmit(app, entry->pixels, entry->id, rect);
     debug_log("cover transmit: grid id=" + std::to_string(entry->id) + " px=" +
               std::to_string(entry->pixels.w) + "x" +
               std::to_string(entry->pixels.h) + " url=" + url);
@@ -4423,7 +4434,8 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
     app.cover_caps.cell = probe.cell;
     debug_log("probe: kitty=" + std::to_string(probe.kitty) +
               " iterm=" + std::to_string(probe.iterm) +
-              " iterm2=" + std::to_string(probe.iterm2) + " cell=" +
+              " iterm2=" + std::to_string(probe.iterm2) +
+              " sixel=" + std::to_string(probe.sixel) + " cell=" +
               std::to_string(probe.cell.width) + "x" +
               std::to_string(probe.cell.height) + " win=" +
               std::to_string(app.win.cols) + "x" + std::to_string(app.win.rows) +
@@ -4617,13 +4629,20 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // placement left behind would have the terminal ack deletes onto the shell
   // after exit, or paint a stray image over the restored screen. Delete every
   // held image (detail cover + every placed grid cover) BEFORE restoring.
-  if (placed_cover.id != 0) {
-    const std::string clear = kitty::delete_image(placed_cover.id);
-    term.write(clear);
-  }
-  for (const auto& [url, p] : placed_grid_covers) {
-    const std::string clear = kitty::delete_image(p.id);
-    term.write(clear);
+  //
+  // Kitty ONLY. The cell-inline backends (OSC 1337, SIXEL) store no image to
+  // free — their pixels live in the alternate screen's cells and die with
+  // term.restore() — so a delete APC here would be a stray kitty command
+  // written at a terminal that never spoke the protocol.
+  if (app.cover_caps.backend == CoverBackend::Kitty) {
+    if (placed_cover.id != 0) {
+      const std::string clear = kitty::delete_image(placed_cover.id);
+      term.write(clear);
+    }
+    for (const auto& [url, p] : placed_grid_covers) {
+      const std::string clear = kitty::delete_image(p.id);
+      term.write(clear);
+    }
   }
 
   term.restore();
