@@ -200,7 +200,11 @@ void DiscoverState::set_filters(DiscoverFilters filters) {
 std::optional<std::uint32_t> DiscoverState::wanted_fetch(const GridGeo& geo) const {
   const AxisSlot& s = slot();
   if (s.loading || s.failed.has_value() || s.exhausted) return std::nullopt;
-  if (s.entries.empty()) return std::uint32_t{1};
+  // Nothing filed yet wants the NEXT page, not page 1: an empty page with
+  // more behind it (a client-side-filtered feed) has already advanced
+  // s.page, and asking for page 1 again would be discarded as a duplicate
+  // forever.
+  if (s.entries.empty()) return s.page + 1;
   const std::size_t last_row = (s.entries.size() - 1) / geo.cols;
   const std::size_t cursor_row = s.cursor / geo.cols;
   const std::size_t gap = last_row > cursor_row ? last_row - cursor_row : 0;

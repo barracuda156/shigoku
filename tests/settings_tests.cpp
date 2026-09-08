@@ -36,7 +36,7 @@ TEST_CASE("navigation clamps over interactive rows only") {
   Config c;
   press(s, c, {ch(U'k')});
   CHECK(s.cursor() == 0);
-  for (int i = 0; i < 20; ++i) press(s, c, {ch(U'j')});
+  for (std::size_t i = 0; i + 1 < kSettingsRows.size(); ++i) press(s, c, {ch(U'j')});
   CHECK(s.cursor() == kSettingsRows.size() - 1);
 }
 
@@ -265,4 +265,23 @@ TEST_CASE("player path row edits and clears back to the default (P39)") {
   for (int i = 0; i < 8; ++i) press(s, c, {special(KeyEvent::Special::Backspace)});
   CHECK(press(s, c, {special(KeyEvent::Special::Enter)}) == SettingsOutcome::ConfigChanged);
   CHECK(c.player_path.empty());
+}
+
+TEST_CASE("catalog wheel cycles auto/anilist/mal and snaps unknown to auto") {
+  SettingsState s;
+  Config c;
+  s.select(21);  // catalog wheel (the [21, 22) Catalog source section).
+  CHECK(kSettingsRows[s.cursor()].id == SettingsRowId::Catalog);
+  CHECK(settings_value(c, SettingsRowId::Catalog, kProviders) == "auto");
+  CHECK(press(s, c, {ch(U'l')}) == SettingsOutcome::ConfigChanged);
+  CHECK(c.catalog == "anilist");
+  press(s, c, {ch(U'l')});
+  CHECK(c.catalog == "mal");
+  press(s, c, {ch(U'l')});
+  CHECK(c.catalog == "auto");  // full wheel.
+  press(s, c, {ch(U'h')});
+  CHECK(c.catalog == "mal");  // and backwards.
+  c.catalog = "jikan";
+  press(s, c, {ch(U'l')});
+  CHECK(c.catalog == "anilist");  // unknown re-enters at auto, then steps.
 }

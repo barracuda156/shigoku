@@ -85,6 +85,9 @@ void cycle(Config& config, SettingsRowId id, int dir, const std::vector<std::str
       // player::parse_backend is the play-side half).
       config.player = std::string(cycle_preset(kPlayerPresets, config.player, dir));
       return;
+    case SettingsRowId::Catalog:
+      config.catalog = std::string(cycle_preset(kCatalogPresets, config.catalog, dir));
+      return;
     case SettingsRowId::MpvPath:
     case SettingsRowId::CoverArt:
     case SettingsRowId::KanjiChips:
@@ -125,6 +128,7 @@ void toggle(Config& config, SettingsRowId id) {
     case SettingsRowId::DownloadDir:
     case SettingsRowId::FfmpegPath:
     case SettingsRowId::Player:
+    case SettingsRowId::Catalog:
     case SettingsRowId::PlayerPath:
       return;  // not a Toggle row.
   }
@@ -153,6 +157,7 @@ std::string_view current_text(const Config& config, SettingsRowId id) {
     case SettingsRowId::CheckUpdates:
     case SettingsRowId::MalConnect:
     case SettingsRowId::Player:
+    case SettingsRowId::Catalog:
       return {};  // not a Text row.
   }
   return {};  // unreachable (closed enum).
@@ -346,6 +351,7 @@ std::string settings_value(const Config& config, SettingsRowId id,
       return "(default)";
     case SettingsRowId::FfmpegPath: return config.ffmpeg_path;
     case SettingsRowId::Player: return config.player;
+    case SettingsRowId::Catalog: return config.catalog;
     case SettingsRowId::PlayerPath:
       // Blank = the selected kind's default binary name (the DownloadDir
       // convention; mpv ignores this row entirely — it keeps mpv_path).

@@ -52,6 +52,7 @@ TEST_CASE("round trip preserves everything") {
   cfg.preferred_provider = "allanime";
   cfg.player = "mplayer";           // P39 slice 2.
   cfg.player_path = "/opt/mplayer";
+  cfg.catalog = "mal";
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());

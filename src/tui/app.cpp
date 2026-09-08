@@ -665,6 +665,14 @@ void recompute_loading(App& app) {
 // test can inject canned rows (app.hpp's SearchFn doc comment). Staleness is
 // by query-string compare (04 §6 table), so SearchDone carries the query and
 // no generation.
+// The copy for a catalog failure: the dispatcher's composed detail when it
+// set one ("AniList blocked us (403); MAL: no client id"), else the bare
+// kind copy.
+std::string catalog_cause(const ProviderError& e) {
+  if (!e.detail.empty()) return e.detail;
+  return std::string(provider_error_copy(e.kind));
+}
+
 void spawn_search(EventQueue& queue, const SearchFn& search, std::string query,
                   std::uint32_t page) {
   spawn_detached([&queue, &search, query = std::move(query), page]() mutable {
@@ -1085,8 +1093,7 @@ void spawn_discover_feed(EventQueue& queue, const DiscoverFn& discover, Discover
   spawn_detached([&queue, &discover, axis, page, filters, gen]() {
     auto res = discover(axis, page, filters);
     if (!res.has_value()) {
-      queue.try_post(Event{DiscoverFeedError{
-          axis, std::string(provider_error_copy(res.error().kind)), gen}});
+      queue.try_post(Event{DiscoverFeedError{axis, catalog_cause(res.error()), gen}});
       return;
     }
     auto& [rows, has_next] = *res;
@@ -1382,9 +1389,10 @@ void spawn_grid_cover(EventQueue& queue, Covers& covers, std::string url,
 // EnrichmentFailed. Staleness is the `for_id` guard on the UI thread (a
 // selection that moved on no longer matches the shown show) — no generation is
 // needed because the answer only ever mutates the row it names.
-void spawn_enrich(EventQueue& queue, EnrichFn enrich, std::int64_t for_id) {
-  spawn_detached([&queue, enrich = std::move(enrich), for_id]() {
-    auto ans = enrich(for_id);
+void spawn_enrich(EventQueue& queue, EnrichFn enrich, std::int64_t for_id,
+                  std::optional<std::int64_t> mal_id) {
+  spawn_detached([&queue, enrich = std::move(enrich), for_id, mal_id]() {
+    auto ans = enrich(for_id, mal_id);
     Event ev = [&]() -> Event {
       if (!ans.has_value()) return EnrichmentFailed{for_id};
       if (!ans->has_value()) return EnrichmentNull{for_id};
@@ -1403,9 +1411,10 @@ void spawn_enrich(EventQueue& queue, EnrichFn enrich, std::int64_t for_id) {
 // spawn_enrich, its own event trio so the two fetches never contend for the
 // same in-flight flag. The `c` toggle is the only spawn site — no
 // refresh-on-view analogue (05 §8 is enrichment-specific).
-void spawn_char_recs(EventQueue& queue, CharRecsFn fetch, std::int64_t for_id) {
-  spawn_detached([&queue, fetch = std::move(fetch), for_id]() {
-    auto ans = fetch(for_id);
+void spawn_char_recs(EventQueue& queue, CharRecsFn fetch, std::int64_t for_id,
+                     std::optional<std::int64_t> mal_id) {
+  spawn_detached([&queue, fetch = std::move(fetch), for_id, mal_id]() {
+    auto ans = fetch(for_id, mal_id);
     Event ev = [&]() -> Event {
       if (!ans.has_value()) return CharactersRecsFailed{for_id};
       if (!ans->has_value()) return CharactersRecsNull{for_id};
@@ -1524,7 +1533,7 @@ void reconcile_enrich(App& app) {
     app.enrich_checked = id;
     return;
   }
-  spawn_enrich(*app.queue, app.deps->enrich, id);
+  spawn_enrich(*app.queue, app.deps->enrich, id, shown->mal_id);
   app.enrich_checked = id;
   app.enrich_inflight = true;
 }
@@ -1561,7 +1570,7 @@ void reconcile_char_recs(App& app) {
   // every tick: a detached-thread + network busy-loop while offline.
   if (app.char_recs.fetched || app.char_recs.loading || app.char_recs.failed) return;
   app.char_recs.loading = true;
-  spawn_char_recs(*app.queue, app.deps->char_recs, id);
+  spawn_char_recs(*app.queue, app.deps->char_recs, id, shown->mal_id);
 }
 
 // Whether the `c` section actually RENDERS at the current geometry (P36
@@ -1655,7 +1664,7 @@ void on_enrichment_null(App& app, const EnrichmentNull& ev) {
 void on_enrichment_failed(App& app) {
   app.enrich_inflight = false;
   app.toasts.push_persistent(ToastKind::Error, std::string(kAnilistTopic),
-                             "can't reach AniList", app.tick_count);
+                             "can't reach the catalog", app.tick_count);
   app.dirty = true;
 }
 
@@ -1698,7 +1707,7 @@ void on_char_recs_failed(App& app, const CharactersRecsFailed& ev) {
   app.char_recs.loading = false;
   app.char_recs.failed = true;
   app.toasts.push_persistent(ToastKind::Error, std::string(kAnilistTopic),
-                             "can't reach AniList", app.tick_count);
+                             "can't reach the catalog", app.tick_count);
   app.dirty = true;
 }
 
@@ -3487,7 +3496,7 @@ void tick(App& app, const Event& ev) {
               // on_search_failed): the singleton survives whispers and only
               // an applied answer (search or enrich) clears it.
               app.toasts.push_persistent(ToastKind::Error, std::string(kAnilistTopic),
-                                         "can't reach AniList", app.tick_count);
+                                         catalog_cause(e.cause), app.tick_count);
             }
             recompute_loading(app);
             app.dirty = true;
@@ -4024,7 +4033,18 @@ void draw_top_bar(const App& app, CellBuffer& buf) {
       chip = cour_chip(app.discover_cour, kanji);
     }
     if (chip.has_value() && x + 2 + str_width(*chip) <= w - 2) {
-      buf.put_str(x + 2, 0, *chip, theme::fg2, theme::bg);
+      x = buf.put_str(x + 2, 0, *chip, theme::fg2, theme::bg);
+    }
+  }
+
+  // Catalog chip: "MAL" while the browse calls are served by MyAnimeList
+  // (mode mal, or auto with AniList latched off). Right-aligned before the
+  // focus dot; dropped when it would touch what is already drawn.
+  if (app.deps != nullptr && app.deps->catalog_badge) {
+    const std::string badge = app.deps->catalog_badge();
+    if (!badge.empty()) {
+      const int bx = w - 3 - str_width(badge);
+      if (bx > x + 1) buf.put_str(bx, 0, badge, theme::warn, theme::bg, Style::Bold);
     }
   }
 

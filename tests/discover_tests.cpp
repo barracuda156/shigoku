@@ -107,6 +107,34 @@ TEST_CASE("wanted_fetch wants page one for an empty slot") {
   CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>{1});
 }
 
+TEST_CASE("empty pages advance the page and exhaust after kMaxEmptyPages") {
+  DiscoverState d;
+  Store s = store();
+  // Page 1 empty with more behind it (a client-side-filtered feed): the next
+  // wanted fetch is page 2, never page 1 again (which on_feed would discard
+  // as a duplicate, forever).
+  d.on_feed(DiscoverAxis::Trending, 1, {}, true, &s, 1000, d.filter_gen());
+  CHECK(!d.slot().exhausted);
+  CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>{2});
+  d.on_feed(DiscoverAxis::Trending, 2, {}, true, &s, 1000, d.filter_gen());
+  CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>{3});
+  // A page that finally carries rows files normally.
+  d.on_feed(DiscoverAxis::Trending, 3, entries(1, 4), true, &s, 1000, d.filter_gen());
+  CHECK(d.slot().entries.size() == 4);
+  CHECK(!d.slot().exhausted);
+  CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>{4});  // within prefetch reach.
+
+  // Still empty after kMaxEmptyPages pages: exhausted, the walk stops.
+  DiscoverState e;
+  for (std::uint32_t p = 1; p <= kMaxEmptyPages; ++p) {
+    e.on_feed(DiscoverAxis::Popular, p, {}, true, &s, 1000, e.filter_gen());
+  }
+  e.select_axis(1);
+  CHECK(e.slot().entries.empty());
+  CHECK(e.slot().exhausted);
+  CHECK(!e.wanted_fetch(geo()).has_value());
+}
+
 TEST_CASE("wanted_fetch holds while loading, failed, or far") {
   DiscoverState d;
   Store s = store();

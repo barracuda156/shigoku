@@ -35,7 +35,8 @@ void DiscoverState::on_feed(DiscoverAxis axis, std::uint32_t page,
                    std::make_move_iterator(entries.end()));
   s.page = page;
   s.failed.reset();
-  s.exhausted = !has_next || s.entries.size() >= kMaxFeedRows;
+  s.exhausted = !has_next || s.entries.size() >= kMaxFeedRows ||
+                (s.entries.empty() && page >= kMaxEmptyPages);
 }
 
 }  // namespace shigoku::tui

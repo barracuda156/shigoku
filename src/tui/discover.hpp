@@ -45,6 +45,11 @@ inline constexpr std::size_t kMaxFeedRows = 300;
 // Prefetch when the cursor comes within this many card-rows of the last
 // loaded entry (discover.rs PREFETCH_ROWS, DESIGN §8.6).
 inline constexpr std::size_t kPrefetchRows = 2;
+// A slot still empty after this many filed pages is exhausted: a filtered
+// feed whose source narrows only client-side (the MAL catalog) can answer
+// page after page with nothing, and the fetch law must not walk the whole
+// ranking looking for a match.
+inline constexpr std::uint32_t kMaxEmptyPages = 5;
 // Peek band renders only when at least this tall (discover.rs MIN_PEEK_ROWS).
 inline constexpr int kMinPeekRows = 3;
 
@@ -161,7 +166,8 @@ class DiscoverState {
   // File a page into its axis slot (discover.rs on_feed, 04 §4.2/§6): an
   // out-of-order page is discarded, and every applied row upserts catalog_cache
   // best-effort (a cache write failure never drops a rendered feed);
-  // exhausted = !has_next || len >= kMaxFeedRows. `store` is nullable — no
+  // exhausted = !has_next || len >= kMaxFeedRows || (still empty after
+  // kMaxEmptyPages pages). `store` is nullable — no
   // store (demo / no-persist) simply skips the cache write and files the feed
   // unchanged (the same "never drop a rendered feed" contract, at its limit).
   //

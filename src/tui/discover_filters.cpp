@@ -80,7 +80,7 @@ void draw_discover_filters(const DiscoverFilterView& view, const Rect& area, Cel
         if (view.genres_loading) {
           value = "loading\xE2\x80\xA6";
         } else if (view.genres_failed) {
-          value = "can't reach AniList";
+          value = "can't reach the catalog";
         } else if (view.draft->genres.empty()) {
           value = "any";
         } else {

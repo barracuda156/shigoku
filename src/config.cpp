@@ -43,6 +43,7 @@ Config from_json(const json& j) {
   c.anilist_sync_enabled = j.value("anilist_sync_enabled", c.anilist_sync_enabled);
   c.check_for_updates = j.value("check_for_updates", c.check_for_updates);
   c.mal_client_id = j.value("mal_client_id", c.mal_client_id);
+  c.catalog = j.value("catalog", c.catalog);
   c.download_dir = j.value("download_dir", c.download_dir);
   c.ffmpeg_path = j.value("ffmpeg_path", c.ffmpeg_path);
   c.player = j.value("player", c.player);
@@ -69,6 +70,7 @@ json to_json(const Config& c) {
       {"anilist_sync_enabled", c.anilist_sync_enabled},
       {"check_for_updates", c.check_for_updates},
       {"mal_client_id", c.mal_client_id},
+      {"catalog", c.catalog},
       {"download_dir", c.download_dir},
       {"ffmpeg_path", c.ffmpeg_path},
       {"player", c.player},

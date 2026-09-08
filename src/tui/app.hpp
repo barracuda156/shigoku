@@ -398,13 +398,13 @@ using GenreCollectionFn =
 // no-match, Err = no answer — the refresh law branches on all three. Runs on
 // the enrich worker thread, so it must be safe off the UI thread.
 using EnrichFn = std::function<Result<std::optional<Enrichment>, ProviderError>(
-    std::int64_t anilist_id)>;
+    std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>;
 
 // Characters+recommendations callback (P36): anilist_id -> three-state
 // answer, same shape as EnrichFn. Runs on its own worker thread (the `c`
 // toggle spawns it), so it must be safe off the UI thread.
 using CharRecsFn = std::function<Result<std::optional<CharactersAndRecommendations>, ProviderError>(
-    std::int64_t anilist_id)>;
+    std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>;
 
 struct AppDeps {
   const ProviderRegistry* registry = nullptr;
@@ -414,6 +414,9 @@ struct AppDeps {
   EnrichFn enrich;  // must be set for refresh-on-view to fetch (else no-op).
   CharRecsFn char_recs;  // must be set for the `c` section to fetch (else no-op).
   GenreCollectionFn genre_collection;  // must be set for the filter overlay's genre picker to fetch (else no-op).
+  // The top-bar catalog chip: "MAL" while MyAnimeList serves the browse
+  // calls, "" otherwise. Unset = no chip (demo / tests).
+  std::function<std::string()> catalog_badge;
   std::string mpv_path = "mpv";
   std::string socket_dir;  // paths.runtime; play() derives the socket here.
   // AniSkip's skip.lua cache dir (P22, paths.cache + "/aniskip"). "" disables

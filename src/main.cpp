@@ -24,6 +24,8 @@
 #include "anidbapp.hpp"
 #include "anilibria.hpp"
 #include "anilist.hpp"
+#include "catalog.hpp"
+#include "mal_catalog.hpp"
 #include "auth.hpp"
 #include "cli.hpp"
 #include "config.hpp"
@@ -526,39 +528,48 @@ int run_tui() {
   tui::AppDeps deps;
   deps.registry = &*registry;
   deps.http = &*client;
-  // AniList is the only Browse catalog client. deps.search is an indirection
-  // app.cpp calls through so an offline test can inject canned rows;
-  // production always wraps the real anilist::search. has_next rides along
-  // for the Browse load-more.
-  deps.search = [&client](std::string_view query, std::uint32_t page)
+  // The catalog: AniList first, MyAnimeList when AniList cannot answer
+  // (catalog.hpp). Every browse closure below calls through the dispatcher
+  // so the app keeps seeing one catalog; the indirection also lets an offline
+  // test inject canned rows. Outlives deps (same stack frame).
+  const std::string mal_client_id = mal_catalog::effective_client_id(config.mal_client_id);
+  std::optional<catalog::Backend> mal_backend;
+  if (!mal_client_id.empty()) mal_backend = catalog::mal_backend(*client, mal_client_id);
+  catalog::Catalog cat(catalog::parse_mode(config.catalog), catalog::anilist_backend(*client),
+                       std::move(mal_backend));
+
+  deps.search = [&cat](std::string_view query, std::uint32_t page)
       -> Result<tui::SearchPage, ProviderError> {
-    auto p = anilist::search(*client, query, page);
+    auto p = cat.search(query, page);
     if (!p.has_value()) return err(p.error());
     std::vector<CatalogRow> rows;
     rows.reserve(p->entries.size());
     for (auto& e : p->entries) rows.push_back(CatalogRow{std::move(e)});
     return tui::SearchPage{std::move(rows), p->has_next};
   };
-  deps.discover = [&client](DiscoverAxis axis, std::uint32_t page,
-                            const DiscoverFilters& filters)
+  deps.discover = [&cat](DiscoverAxis axis, std::uint32_t page,
+                         const DiscoverFilters& filters)
       -> Result<tui::DiscoverPage, ProviderError> {
-    auto p = anilist::discover(*client, axis, page, filters);
+    auto p = cat.discover(axis, page, filters);
     if (!p.has_value()) return err(p.error());
     std::vector<CatalogRow> rows;
     rows.reserve(p->entries.size());
     for (auto& e : p->entries) rows.push_back(CatalogRow{std::move(e)});
     return tui::DiscoverPage{std::move(rows), p->has_next};
   };
-  deps.enrich = [&client](std::int64_t anilist_id)
+  deps.enrich = [&cat](std::int64_t anilist_id, std::optional<std::int64_t> mal_id)
       -> Result<std::optional<Enrichment>, ProviderError> {
-    return anilist::enrich(*client, anilist_id);
+    return cat.enrich(anilist_id, mal_id);
   };
-  deps.char_recs = [&client](std::int64_t anilist_id)
+  deps.char_recs = [&cat](std::int64_t anilist_id, std::optional<std::int64_t> mal_id)
       -> Result<std::optional<CharactersAndRecommendations>, ProviderError> {
-    return anilist::characters_and_recommendations(*client, anilist_id);
+    return cat.char_recs(anilist_id, mal_id);
   };
-  deps.genre_collection = [&client]() -> Result<std::vector<std::string>, ProviderError> {
-    return anilist::genre_collection(*client);
+  deps.genre_collection = [&cat]() -> Result<std::vector<std::string>, ProviderError> {
+    return cat.genres();
+  };
+  deps.catalog_badge = [&cat]() -> std::string {
+    return cat.status().serving_from_mal() ? "MAL" : "";
   };
   deps.mpv_path = config.mpv_path;
   deps.socket_dir = paths->runtime;

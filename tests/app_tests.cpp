@@ -1872,7 +1872,7 @@ TEST_CASE("reconcile_char_recs: zoom-only, failed is terminal, c re-open retries
   auto h = HistoryHarness::make();
   EventQueue queue;
   auto calls = std::make_shared<std::atomic<int>>(0);
-  h->deps.char_recs = [calls](std::int64_t)
+  h->deps.char_recs = [calls](std::int64_t, std::optional<std::int64_t>)
       -> Result<std::optional<CharactersAndRecommendations>, ProviderError> {
     calls->fetch_add(1);
     return err(ProviderError::network());

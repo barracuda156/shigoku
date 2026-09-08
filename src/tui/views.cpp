@@ -848,7 +848,7 @@ void draw_char_recs_section(const App& app, CellBuffer& buf, int x0, int w, int 
     return;
   }
   if (cr.failed) {
-    buf.put_str(x0, y0, "can't reach AniList", theme::warn, theme::bg, Style::Italic);
+    buf.put_str(x0, y0, "can't reach the catalog", theme::warn, theme::bg, Style::Italic);
     return;
   }
   if (!cr.fetched) return;  // reconcile_char_recs hasn't landed an answer yet.
@@ -1414,8 +1414,11 @@ void draw_empty_grid(const App& app, CellBuffer& buf, int x0, int w, int y0, int
         std::string(spin) + (is_slow ? " taking a moment\xE2\x80\xA6" : " loading feed\xE2\x80\xA6");
     draw_centered(buf, x0, w, mid, text, is_slow ? theme::hot : theme::focus);
   } else if (slot.failed.has_value()) {
+    // Second line = the real cause ("AniList blocked us (403); MAL: no
+    // client id"), not a guess about the connection.
     draw_centered(buf, x0, w, mid, "[!] can't reach the feed", theme::hot, Style::Bold);
-    draw_centered(buf, x0, w, mid + 1, "check your connection", theme::fg2, Style::Italic);
+    draw_centered(buf, x0, w, mid + 1, truncate_to_cols(*slot.failed, w > 4 ? w - 4 : w),
+                  theme::fg2, Style::Italic);
   } else if (slot.page > 0) {
     draw_centered(buf, x0, w, mid, "no entries", theme::fg2, Style::Italic);
   }

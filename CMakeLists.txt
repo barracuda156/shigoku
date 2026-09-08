@@ -584,6 +584,19 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_catalog: the catalog dispatcher — AniList first, MAL when AniList
+# cannot answer (FailoverState latch + two Backends). The five AppDeps browse
+# closures in main.cpp call through it.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_catalog STATIC src/catalog.cpp)
+  target_include_directories(shigoku_catalog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_catalog
+    PUBLIC shigoku_anilist shigoku_mal_catalog shigoku_idmap shigoku_http shigoku_domain
+           shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_mangadex (MANGA_PLAN MG-1): the manga app's MangaDex source — pure
 # parsers + URL builders in detail:: (offline golden tests over committed
 # fixtures) + a small blocking transport. Greenfield (no sabigoku
@@ -916,7 +929,8 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   target_link_libraries(shigoku PRIVATE
     shigoku_tui shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
     shigoku_anilibria
-    shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_login
+    shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
+    shigoku_mal_catalog shigoku_idmap shigoku_login
     shigoku_loopback shigoku_mal_login shigoku_mal_loopback
     shigoku_sync shigoku_mal_mirror shigoku_auth shigoku_player shigoku_aniskip
     shigoku_updatecheck shigoku_semver shigoku_download
@@ -1497,6 +1511,17 @@ if(SHIGOKU_HAVE_CURL)
   target_link_libraries(mal_catalog_live_smoke PRIVATE
     shigoku_mal_catalog shigoku_idmap shigoku_http shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# catalog_tests: the FailoverState latch table and the dispatcher over two
+# fake backends (call order, composed error copy, synthetic-id routing).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(catalog_tests tests/catalog_tests.cpp)
+  target_link_libraries(catalog_tests PRIVATE
+    shigoku_catalog shigoku_anilist shigoku_mal_catalog shigoku_idmap shigoku_store
+    shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
+    shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
+  add_test(NAME catalog_tests COMMAND catalog_tests)
 endif()
 
 # megaplay_live_smoke (P13 DoD): real network resolve against the live upstream,

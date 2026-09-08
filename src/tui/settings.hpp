@@ -46,6 +46,8 @@ enum class SettingsRowId {
   // --- Player backend (P39 slice 2) ---
   Player,
   PlayerPath,
+  // --- Catalog source ---
+  Catalog,
 };
 
 enum class SettingsRowKind { Text, Cycle, Toggle, Action };
@@ -62,7 +64,7 @@ struct SettingsRow {
 // The two MyAnimeList rows are appended at the tail (not interleaved into
 // the existing sections) specifically so every prior index/static_assert
 // stays byte-stable — P31 is a post-parity addition (§8), never a reshape.
-inline constexpr std::array<SettingsRow, 21> kSettingsRows = {{
+inline constexpr std::array<SettingsRow, 22> kSettingsRows = {{
     // --- Player [0, 5) ---
     {SettingsRowId::MpvPath, "mpv path", SettingsRowKind::Text, "enter to edit"},
     {SettingsRowId::Quality, "default quality", SettingsRowKind::Cycle, "h/l cycle"},
@@ -94,9 +96,11 @@ inline constexpr std::array<SettingsRow, 21> kSettingsRows = {{
     //     post-parity byte-stability rationale as the MAL rows above) ---
     {SettingsRowId::Player, "player", SettingsRowKind::Cycle, "h/l cycle"},
     {SettingsRowId::PlayerPath, "player path", SettingsRowKind::Text, "enter to edit"},
+    // --- Catalog source [21, 22) (appended at the tail, same rationale) ---
+    {SettingsRowId::Catalog, "catalog", SettingsRowKind::Cycle, "h/l cycle"},
 }};
 
-static_assert(kSettingsRows.size() == 21);
+static_assert(kSettingsRows.size() == 22);
 static_assert(kSettingsRows[0].id == SettingsRowId::MpvPath);      // Player starts at 0
 static_assert(kSettingsRows[5].id == SettingsRowId::Provider);     // Catalog starts at 5
 static_assert(kSettingsRows[6].id == SettingsRowId::CoverArt);     // Interface starts at 6
@@ -105,6 +109,7 @@ static_assert(kSettingsRows[14].id == SettingsRowId::CheckUpdates);// Updates st
 static_assert(kSettingsRows[15].id == SettingsRowId::MalClientId);// MyAnimeList starts at 15
 static_assert(kSettingsRows[17].id == SettingsRowId::DownloadDir);// Downloads starts at 17
 static_assert(kSettingsRows[19].id == SettingsRowId::Player);     // Player backend starts at 19
+static_assert(kSettingsRows[21].id == SettingsRowId::Catalog);    // Catalog source starts at 21
 
 // Preset cycle tables (05 §13: "out-of-preset snaps valid"; DESIGN §5.5).
 inline constexpr std::array<std::string_view, 5> kQualityPresets = {
@@ -127,6 +132,10 @@ inline constexpr std::array<std::string_view, 3> kTitleLanguagePresets = {
 // the default AND the snap target for an unknown stored value).
 inline constexpr std::array<std::string_view, 3> kPlayerPresets = {
     "mpv", "mplayer", "qmplay2"};
+// The catalog wheel: auto first (the default AND the snap target for an
+// unknown stored value), then the two fixed sources.
+inline constexpr std::array<std::string_view, 3> kCatalogPresets = {
+    "auto", "anilist", "mal"};
 
 inline constexpr std::size_t kSettingsEditMax = 256;
 

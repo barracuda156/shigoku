@@ -46,6 +46,10 @@ struct Config {
   // (mal_login::MalConnectResult::Kind::NoClientId) rather than sending a
   // request MAL would reject.
   std::string mal_client_id;
+  // Which catalog answers search / Discover / refresh-on-view: "auto"
+  // (AniList, MyAnimeList when AniList cannot answer), "anilist", "mal".
+  // Unknown spellings read as auto (catalog::parse_mode).
+  std::string catalog = "auto";
   // P35 slice 3: where episode downloads land. "" = the default,
   // <data>/downloads, resolved at boot (main.cpp) — the config value stays
   // empty so a moved data dir follows automatically.
