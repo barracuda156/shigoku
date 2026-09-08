@@ -52,7 +52,8 @@ placeholder box instead and works exactly the same otherwise.
 
 ## Browse (key `B`)
 
-Search AniList's whole catalogue.
+Search the whole catalogue — AniList's, or MyAnimeList's when AniList
+cannot answer (see [Catalog sources](#catalog-sources)).
 
 | Key | Action |
 |---|---|
@@ -95,7 +96,10 @@ think about the conversion yourself.
 
 ## Discover (key `D`)
 
-A cover-art grid across four ranking feeds.
+A cover-art grid across four ranking feeds. When the feed comes from
+MyAnimeList instead of AniList a `MAL` chip sits at the right of the top
+bar; if neither can answer, the grid says why ("AniList blocked us (403);
+MAL: no client id") rather than guessing at your connection.
 
 | Key | Action |
 |---|---|
@@ -112,7 +116,10 @@ A cover-art grid across four ranking feeds.
 
 ### Filter overlay (`f`)
 
-Narrows the active feed by genre, year, status, and minimum score.
+Narrows the active feed by genre, year, status, and minimum score. On a
+MyAnimeList-served feed the narrowing happens on this side of the wire, so
+a page can come back short; the grid keeps fetching until something
+matches or five pages have come back empty.
 
 | Key | Action |
 |---|---|
@@ -164,12 +171,13 @@ disk.
 | AniList Sync | connect | action | Opens your browser to sign in — see [Accounts and sync](#accounts-and-sync) |
 | | sync enabled | toggle | Turns the *automatic* background pull/push on or off |
 | Updates | check for updates | toggle | Checks GitHub for a newer release on launch (never self-updates) |
-| MyAnimeList | mal client id | text | Your own registered MAL app's client ID — required before connecting |
+| MyAnimeList | mal client id | text | Your own registered MAL app's client ID; blank shows `(built-in)` and uses shigoku's own registration |
 | | connect | action | Opens your browser to authorize the MAL mirror |
 | Downloads | download dir | text | Where downloaded episodes are stored; blank = the default, under the data directory |
 | | ffmpeg path | text | Binary used to save HLS streams to disk |
 | Player backend | player | cycle | `mpv` / `mplayer` / `qmplay2` — see [Playback](#playback) |
 | | player path | text | Binary for whichever *non-mpv* backend is selected; blank = that backend's default name. `mpv` always uses "mpv path" above instead |
+| Catalog source | catalog | cycle | `auto` / `anilist` / `mal` — which site answers search and Discover; see [Catalog sources](#catalog-sources) |
 
 ## The show page
 
@@ -266,11 +274,28 @@ background). Once connected:
 
 ### MyAnimeList (optional second tracker)
 
-Register your own app at `myanimelist.net/apiconfig` (redirect URL
-`http://127.0.0.1:8767/mal/callback`), enter its client ID under Settings →
-MyAnimeList → *mal client id*, then use *connect* below it the same way as
-AniList's. Once connected, MAL is a one-way mirror: status, progress, and
+Settings → MyAnimeList → *connect* works the same way as AniList's, using
+shigoku's built-in app registration. To use your own instead, register an
+app at `myanimelist.net/apiconfig` (redirect URL
+`http://127.0.0.1:8767/mal/callback`) and enter its client ID under *mal
+client id*. Once connected, MAL is a one-way mirror: status, progress, and
 score push to it alongside AniList — nothing is ever pulled back from MAL.
+
+### Catalog sources
+
+Search, the Discover feeds, the show page's refresh and the genre picker
+all read from a catalogue site. AniList is the primary one. When it cannot
+answer (it has, for days at a time, switched its public API off for
+third-party apps), shigoku switches to MyAnimeList for the next ten
+minutes, shows a `MAL` chip in the top bar, and tries AniList again after
+that. Settings → Catalog source → *catalog* pins one site instead of the
+automatic switch.
+
+A show found through MyAnimeList behaves like any other — it can be added
+to the watchlist, played, downloaded, and mirrored to MAL — with a few
+gaps MAL's API simply has no data for: no character list on the show
+page, no next-episode countdown in the Calendar, and it stays out of
+AniList sync until AniList is reachable again.
 
 ## Command line
 
