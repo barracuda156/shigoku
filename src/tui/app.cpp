@@ -4431,7 +4431,10 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // Config{} defaults.
   if (config != nullptr) app.config = *config;
   app.config_file = std::move(config_file);
-  app.settings_version = "v0.1.0";
+  // The Settings "version" row shows the build's own version (the same
+  // string the update check compares against); blank when none was given
+  // (demo mode / tests).
+  app.settings_version = current_version.empty() ? std::string{} : "v" + current_version;
 
   // P19: total load (auth.hpp) — missing/corrupt/no path all yield the
   // signed-out default, same "never wedges startup" contract as config.

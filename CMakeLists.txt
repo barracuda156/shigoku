@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.1.0 LANGUAGES CXX C)
+project(shigoku VERSION 0.2.0 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)

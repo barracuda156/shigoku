@@ -32,7 +32,7 @@ inline constexpr const char* kMangaSegment = "shigoku-manga";
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("shigoku-manga %s\n", SHIGOKU_VERSION);
+    std::printf("shigoku-manga v%s\n", SHIGOKU_VERSION);
     return 0;
   }
 
