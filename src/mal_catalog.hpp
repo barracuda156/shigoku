@@ -35,10 +35,10 @@ namespace shigoku::mal_catalog {
 inline constexpr const char* kApiBase = "https://api.myanimelist.net/v2";
 
 // shigoku's own MAL app registration (app type "other": a public client, no
-// secret). Empty until the maintainer's id is pasted in; with an empty id
-// every call refuses cleanly (Forbidden) rather than sending a request MAL
-// would reject.
-inline constexpr const char* kClientId = "";
+// secret; redirect http://127.0.0.1:8767/mal/callback for the mirror's
+// Connect). With an empty id every call refuses cleanly (Forbidden) rather
+// than sending a request MAL would reject.
+inline constexpr const char* kClientId = "f9b42c82ab17491f3abb3e16a9e9c230";
 
 // Page sizes match the AniList catalog so the grid/list paging is identical
 // whichever source answers.

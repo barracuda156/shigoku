@@ -1524,6 +1524,17 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME catalog_tests COMMAND catalog_tests)
 endif()
 
+# catalog_live_smoke: the dispatcher in auto mode over the production
+# backends against the live network — whichever source answers (the canary's
+# "is search alive at all" line). Gated on SHIGOKU_LIVE=1 (not a ctest).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(catalog_live_smoke tests/catalog_live_smoke.cpp)
+  target_link_libraries(catalog_live_smoke PRIVATE
+    shigoku_catalog shigoku_anilist shigoku_mal_catalog shigoku_idmap shigoku_store
+    shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
+    shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
+endif()
+
 # megaplay_live_smoke (P13 DoD): real network resolve against the live upstream,
 # gated on SHIGOKU_LIVE=1 at runtime (not a ctest — driven by hand).
 if(SHIGOKU_HAVE_CURL)
