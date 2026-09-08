@@ -2,6 +2,8 @@
 
 #include "settings.hpp"
 
+#include "../mal_catalog.hpp"
+
 #include <algorithm>
 
 namespace shigoku::tui {
@@ -342,7 +344,11 @@ std::string settings_value(const Config& config, SettingsRowId id,
     case SettingsRowId::Sync: return onoff(config.anilist_sync_enabled);
     case SettingsRowId::Connect: return {};
     case SettingsRowId::CheckUpdates: return onoff(config.check_for_updates);
-    case SettingsRowId::MalClientId: return config.mal_client_id;
+    case SettingsRowId::MalClientId:
+      // Blank shows that the app's own registration is in use (the
+      // DownloadDir "(default)" convention); an explicit id overrides it.
+      if (!config.mal_client_id.empty()) return config.mal_client_id;
+      return mal_catalog::kClientId[0] != '\0' ? "(built-in)" : "";
     case SettingsRowId::MalConnect: return {};
     case SettingsRowId::DownloadDir:
       // Blank shows the resolved default tagged, so "unset" is never confused

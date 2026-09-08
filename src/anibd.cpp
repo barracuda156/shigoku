@@ -325,6 +325,9 @@ Result<AniBd, ProviderError> AniBd::with_endpoint(std::string api) {
 }
 
 std::optional<std::string> AniBd::canonical_key(const Enrichment& show) const {
+  // A synthetic (negative) id names no AniList entry: nothing to key on, the
+  // walk moves on to the next provider.
+  if (show.anilist_id <= 0) return std::nullopt;
   return std::to_string(show.anilist_id);
 }
 

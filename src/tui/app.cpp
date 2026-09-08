@@ -30,6 +30,7 @@
 #include "../loopback.hpp"
 #include "../mal_loopback.hpp"
 #include "../mal_login.hpp"
+#include "../mal_catalog.hpp"
 #include "../mal_mirror.hpp"
 #include "../player.hpp"
 #include "../provider.hpp"
@@ -815,11 +816,15 @@ void open_mal_connect(App& app) {
     app.toasts.push(ToastKind::Error, "connect unavailable", app.tick_count);
     return;
   }
-  if (app.config.mal_client_id.empty()) {
+  // The user's own registration when set, else the app's baked one; only
+  // with neither is there nothing to authorize against.
+  const std::string client_id =
+      app.config.mal_client_id.empty() ? mal_catalog::kClientId : app.config.mal_client_id;
+  if (client_id.empty()) {
     app.toasts.push(ToastKind::Error, "set a mal client id first", app.tick_count);
     return;
   }
-  auto started = mal_loopback::Loopback::start(app.config.mal_client_id);
+  auto started = mal_loopback::Loopback::start(client_id);
   if (!started.has_value()) {
     app.toasts.push(ToastKind::Error, "could not start login server", app.tick_count);
     return;

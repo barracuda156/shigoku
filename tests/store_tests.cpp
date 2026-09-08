@@ -1274,6 +1274,29 @@ TEST_CASE("reconcile_first_contact_treats_base_as_planning") {
   CHECK(r.snapshot_score == 0);
 }
 
+TEST_CASE("synthetic_rows_never_enter_the_anilist_sync_worklist") {
+  Store store = open_mem();
+  // A MAL-only row: negative anilist_id, real mal_id. Dirty by every other
+  // measure (never synced), yet AniList has no entry to push to.
+  Enrichment e = sample(-52991);
+  e.mal_id = 52991;
+  REQUIRE(store.add_to_library(e, 10).has_value());
+  REQUIRE(store.restore_list_status(-52991, ListStatus::Watching, 3, 10).has_value());
+  CHECK(store.list_dirty_for_sync()->empty());
+  // The MAL mirror, keyed on mal_id, does see it.
+  auto mirror = store.list_dirty_for_mal_mirror();
+  REQUIRE(mirror.has_value());
+  REQUIRE(mirror->size() == 1);
+  CHECK((*mirror)[0].anilist_id == -52991);
+  CHECK((*mirror)[0].mal_id == 52991);
+  // A real row beside it is listed as before.
+  lib_row(store, 2, ListStatus::Watching, 3);
+  auto dirty = store.list_dirty_for_sync();
+  REQUIRE(dirty.has_value());
+  REQUIRE(dirty->size() == 1);
+  CHECK((*dirty)[0].anilist_id == 2);
+}
+
 TEST_CASE("sync_dirty_set_tracks_the_live_pair") {
   Store store = open_mem();
   // Identity-only row (no library_added_at): never dirty.

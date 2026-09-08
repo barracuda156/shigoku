@@ -2002,6 +2002,9 @@ Result<std::vector<SyncRow>, StoreError> Store::list_dirty_for_sync() const {
          "SELECT anilist_id, title_romaji, list_status, progress, user_score, "
          "       synced_status, synced_progress, synced_score FROM show "
          "WHERE library_added_at IS NOT NULL "
+         // A negative anilist_id is a synthetic MAL-only row (no AniList
+         // entry exists to push to); it stays the MAL mirror's business.
+         "  AND anilist_id > 0 "
          "  AND (synced_status IS NULL "
          "       OR synced_status <> list_status "
          "       OR synced_progress IS NULL "

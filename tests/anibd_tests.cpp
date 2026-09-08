@@ -243,6 +243,17 @@ TEST_CASE("canonical_key_works_without_mal") {
   CHECK(p->canonical_key(show) == std::optional<std::string>("100"));
 }
 
+TEST_CASE("canonical_key_refuses_synthetic_ids") {
+  auto p = AniBd::create();
+  REQUIRE(p.has_value());
+  Enrichment show;
+  show.anilist_id = -52991;  // a MAL-only row: no AniList entry to key on.
+  show.mal_id = 52991;
+  CHECK_FALSE(p->canonical_key(show).has_value());
+  show.anilist_id = 0;
+  CHECK_FALSE(p->canonical_key(show).has_value());
+}
+
 TEST_CASE("search_is_unsupported") {
   auto p = AniBd::create();
   REQUIRE(p.has_value());
