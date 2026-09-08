@@ -562,6 +562,28 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_idmap: the offline MyAnimeList <-> AniList anime id table (generated
+# from the manami anime-offline-database, third_party/manami) + binary-search
+# lookups. Pure data, no deps.
+# ---------------------------------------------------------------------------
+add_library(shigoku_idmap STATIC src/idmap.cpp third_party/manami/mal_anilist_map.cpp)
+target_include_directories(shigoku_idmap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_idmap PUBLIC shigoku_flags)
+
+# ---------------------------------------------------------------------------
+# shigoku_mal_catalog: MyAnimeList API v2 as the second catalog (search,
+# Discover feed, by-id + recommendations) — pure URL builders and JSON ->
+# Enrichment mappers in detail::, thin GET transport. Rows are bridged onto
+# AniList ids through shigoku_idmap (synthetic negative id on a miss).
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_mal_catalog STATIC src/mal_catalog.cpp)
+  target_include_directories(shigoku_mal_catalog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_mal_catalog
+    PUBLIC shigoku_http shigoku_domain shigoku_idmap shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_mangadex (MANGA_PLAN MG-1): the manga app's MangaDex source — pure
 # parsers + URL builders in detail:: (offline golden tests over committed
 # fixtures) + a small blocking transport. Greenfield (no sabigoku
@@ -1453,6 +1475,27 @@ if(SHIGOKU_HAVE_CURL)
   add_executable(anilibria_live_smoke tests/anilibria_live_smoke.cpp)
   target_link_libraries(anilibria_live_smoke PRIVATE
     shigoku_anilibria shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# mal_catalog_tests: URL builders, list/detail parsers, every field-mapper
+# branch, the client-side filter table and the offline id map. No fixture
+# files (JSON inline), no network.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(mal_catalog_tests tests/mal_catalog_tests.cpp)
+  target_link_libraries(mal_catalog_tests PRIVATE
+    shigoku_mal_catalog shigoku_idmap shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME mal_catalog_tests COMMAND mal_catalog_tests)
+endif()
+
+# mal_catalog_live_smoke: search -> four Discover axes -> by-id against the
+# live MAL API v2, gated on SHIGOKU_LIVE=1 (not a ctest). Needs a client id
+# (SHIGOKU_MAL_CLIENT_ID or the baked one) and fails loudly without one.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(mal_catalog_live_smoke tests/mal_catalog_live_smoke.cpp)
+  target_link_libraries(mal_catalog_live_smoke PRIVATE
+    shigoku_mal_catalog shigoku_idmap shigoku_http shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
