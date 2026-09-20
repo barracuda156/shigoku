@@ -173,6 +173,15 @@ struct PickResult {
     std::optional<std::pair<std::string_view, std::string_view>> asked,
     std::pair<std::string_view, std::string_view> chosen);
 
+// Search-walk note: `skipped` either failed its search (`failure` carries the
+// class) or answered with nothing (nullopt), and the run moves on to `next`.
+// One parenthesised line in the override note's register; the walk itself
+// lives in play_cli. Display names in, terminal-hostile bytes are not a
+// concern (provider display names are compile-time constants).
+[[nodiscard]] std::string search_walk_note(std::string_view skipped,
+                                           std::optional<ProviderError::Kind> failure,
+                                           std::string_view next);
+
 // Play-failure copy in the CLI's sentence register, keyed off PlayError::Kind.
 // A Resolve failure delegates to fetch_error_line at the resolve stage — but
 // shigoku's PlayError::Resolve carries only a detail string (the ProviderError

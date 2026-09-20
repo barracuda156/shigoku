@@ -212,6 +212,19 @@ class ProviderRegistry {
     return nullptr;
   }
 
+  // Every provider that can search, in ordered(pref) order: the preferred one
+  // first when it can, then the rest by registry position. The CLI search
+  // walk binds the first that answers; preferred_searchable is this list's
+  // head.
+  [[nodiscard]] std::vector<const StreamProvider*> searchable(
+      std::optional<std::string_view> pref) const {
+    std::vector<const StreamProvider*> out;
+    for (const StreamProvider* p : ordered(pref)) {
+      if (p->supports_search()) out.push_back(p);
+    }
+    return out;
+  }
+
  private:
   std::vector<std::unique_ptr<StreamProvider>> providers_;
 };

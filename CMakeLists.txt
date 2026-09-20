@@ -21,6 +21,15 @@ endif()
 # seen; -DSHIGOKU_WERROR=OFF lets that build finish instead of hard-failing,
 # without weakening the exhaustiveness guarantee.
 option(SHIGOKU_WERROR "Treat all warnings as errors (fence -Werror=switch* stay on regardless)" ON)
+# WITH_TUI=OFF is the command-line-only build: no terminal interface, no
+# shigoku-manga, no cover backends — `shigoku <query>` and the headless
+# subcommands are all there is. For dumb terminals and slow boxes (the TUI
+# tree is ~40% of the sources). The `shigoku` binary is built either way.
+option(WITH_TUI "Build the terminal interface (the TUI, shigoku-manga, drive_tui); OFF = command-line-only shigoku" ON)
+# SHIGOKU_BUILD_TESTS=OFF skips every test binary (doctest suites, live
+# smokes, compile-fail fences) and their ctest registration: a package build
+# on a slow box has no use for them.
+option(SHIGOKU_BUILD_TESTS "Build the test binaries and register them with ctest" ON)
 add_library(shigoku_flags INTERFACE)
 target_compile_options(shigoku_flags INTERFACE
   -Wall -Wextra
@@ -116,6 +125,7 @@ target_include_directories(shigoku_thirdparty SYSTEM INTERFACE
 #   - -Wno-sign-compare/-Wno-unused-parameter, upstream's own house style
 #     against our -Wall -Wextra -Werror. It does NOT link shigoku_flags, so
 #     nothing here can weaken the warning contract our own code builds under.
+if(WITH_TUI)  # only src/tui/sixel.cpp links it
 add_library(shigoku_sixel_sayaka STATIC
   third_party/sixel_sayaka/image.c
   third_party/sixel_sayaka/image_sixel.c
@@ -131,6 +141,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(shigoku_sixel_sayaka PRIVATE
     -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter)
 endif()
+endif()  # WITH_TUI
 
 # --- Dependency detection: prefer pkg-config, fall back to find_library. ---
 find_package(PkgConfig QUIET)
@@ -596,6 +607,9 @@ if(SHIGOKU_HAVE_CURL)
            shigoku_flags shigoku_thirdparty)
 endif()
 
+# The manga libraries below (sources, flow, store, sync) serve shigoku-manga
+# and its tests only; a command-line-only build without tests skips them.
+if(WITH_TUI OR SHIGOKU_BUILD_TESTS)
 # ---------------------------------------------------------------------------
 # shigoku_mangadex (MANGA_PLAN MG-1): the manga app's MangaDex source — pure
 # parsers + URL builders in detail:: (offline golden tests over committed
@@ -699,6 +713,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   target_link_libraries(shigoku_manga_sync
     PUBLIC shigoku_anilist shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty)
 endif()
+endif()  # WITH_TUI OR SHIGOKU_BUILD_TESTS
 
 # ---------------------------------------------------------------------------
 # shigoku_nonce (P12): 128-bit hex nonce from /dev/urandom (nonce.rs). A leaf
@@ -805,6 +820,7 @@ target_link_libraries(shigoku_resolve PUBLIC shigoku_domain shigoku_flags shigok
 # THIS target's link graph; app.cpp, which spawns real workers, is deliberately
 # a separate target below so that guarantee stays checkable).
 # ---------------------------------------------------------------------------
+if(WITH_TUI)
 add_library(shigoku_tui_render STATIC
   src/tui/cells.cpp
   src/tui/term.cpp
@@ -845,6 +861,7 @@ target_include_directories(shigoku_tui_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(shigoku_tui_render
   PUBLIC shigoku_domain shigoku_config shigoku_auth shigoku_flags shigoku_thirdparty
   PRIVATE Threads::Threads shigoku_atomic shigoku_sixel_sayaka)
+endif()  # WITH_TUI
 
 # ---------------------------------------------------------------------------
 # shigoku_tui (P6/P7, A1): app.cpp — tick()/on_key()/run(), the event loop and
@@ -853,6 +870,7 @@ target_link_libraries(shigoku_tui_render
 # is gated on SHIGOKU_HAVE_CURL like every other network-touching module.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+  if(WITH_TUI)
   # app.cpp (event loop + cover wiring) + covers.cpp (the fetch/decode/resize
   # pipeline — curl-dependent, so it lives here, not in the render core).
   # Also links the P9 store (checkpoint/resume/watched marks from the event
@@ -917,6 +935,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   target_link_libraries(drive_tui PRIVATE
     shigoku_tui shigoku_domain shigoku_flags shigoku_thirdparty
     Threads::Threads shigoku_atomic)
+  endif()  # WITH_TUI
 
   # shigoku (P7/P9): the real app — paths -> http client -> senshi -> registry
   # -> store -> tui::run. The §0 acceptance script binary. main.cpp uses the
@@ -926,8 +945,14 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   # sync/anilist/player/aniskip directly (the headless paths) in addition to
   # tui::run. SHIGOKU_VERSION feeds the `--version` line (project(VERSION …)).
   target_compile_definitions(shigoku PRIVATE SHIGOKU_VERSION="${PROJECT_VERSION}")
+  # WITH_TUI feeds main.cpp's #if: OFF drops the interface bootstrap (and the
+  # shigoku_tui link), so the bare invocation prints usage instead.
+  target_compile_definitions(shigoku PRIVATE SHIGOKU_WITH_TUI=$<BOOL:${WITH_TUI}>)
+  if(WITH_TUI)
+    target_link_libraries(shigoku PRIVATE shigoku_tui)
+  endif()
   target_link_libraries(shigoku PRIVATE
-    shigoku_tui shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
+    shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
     shigoku_anilibria
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
@@ -950,11 +975,13 @@ endif()
 #     -DVIEWER_SDL3=ON selects SDL3 (rev 2.3: SDL2=Cocoa on ppc darwin, SDL3
 #     X11-only there — hence opt-in). Rename knob: SHIGOKU_VIEW_BIN.
 # ---------------------------------------------------------------------------
+if(SHIGOKU_BUILD_TESTS)
 add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp)
 target_include_directories(viewer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(viewer_tests PRIVATE
   shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME viewer_tests COMMAND viewer_tests)
+endif()
 
 set(SHIGOKU_VIEW_BIN "shigoku-view" CACHE STRING "Output name of the manga viewer binary")
 option(WITH_VIEWER "Build the shigoku-view binary (needs SDL2/SDL3 via pkg-config)" ON)
@@ -1012,7 +1039,12 @@ target_link_libraries(smoke PRIVATE shigoku_flags shigoku_thirdparty Threads::Th
 # ---------------------------------------------------------------------------
 # Tests: doctest, wired into ctest. One binary at scaffold time; later phases
 # add module test binaries via the shigoku_add_test() helper below.
+#
+# Everything from here to the end of the file is under SHIGOKU_BUILD_TESTS
+# (the block is deliberately not re-indented). Test targets that link the
+# interface carry their own WITH_TUI gate on top.
 # ---------------------------------------------------------------------------
+if(SHIGOKU_BUILD_TESTS)
 enable_testing()
 
 # shigoku_add_test(<name> <src>...) : a doctest binary registered with ctest,
@@ -1048,6 +1080,7 @@ add_test(NAME auth_tests COMMAND auth_tests)
 # cycling (incl. out-of-preset snap-to-zero + provider wheel wrap), toggles,
 # edit mode (prefill/append/backspace/commit/cancel, control-char rejection).
 # Pure state, no curl/sqlite; links the render core + config.
+if(WITH_TUI)
 add_executable(settings_tests tests/settings_tests.cpp)
 target_link_libraries(settings_tests PRIVATE
   shigoku_tui_render shigoku_config shigoku_domain shigoku_flags shigoku_thirdparty
@@ -1063,6 +1096,7 @@ target_link_libraries(connect_tests PRIVATE
   shigoku_tui_render shigoku_domain shigoku_flags shigoku_thirdparty
   Threads::Threads shigoku_atomic)
 add_test(NAME connect_tests COMMAND connect_tests)
+endif()  # WITH_TUI
 
 # resolver_tests / resolve_tests (P15): the pure Tier-B/C scorer and the pure
 # resolve engine, ported 1:1 from resolver.rs / resolve.rs. No curl/sqlite/tui —
@@ -1300,7 +1334,7 @@ endif()
 # fixture server (.part/.complete atomicity, re-entry skip, node rotation),
 # the viewer argv table + report parse, config-lite, and the mapp read-flow
 # state machine driven through tick() with hand-made events.
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(manga_flow_tests tests/manga_flow_tests.cpp)
   target_link_libraries(manga_flow_tests PRIVATE
     shigoku_manga_app shigoku_manga_flow shigoku_mstore shigoku_tui shigoku_http
@@ -1587,6 +1621,7 @@ endif()
 # CoverPool coordinator + render store — pure, no store/curl needed either.
 # sixel_tests rides the same group: the emitter, its DA1 classifier, the
 # backend ranking and the string-backed FILE* seam are all pure and offline.
+if(WITH_TUI)
 foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests sixel_tests)
   add_executable(${_p6test} tests/${_p6test}.cpp)
   target_link_libraries(${_p6test} PRIVATE
@@ -1594,12 +1629,13 @@ foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests sixel_tests
     Threads::Threads shigoku_atomic)
   add_test(NAME ${_p6test} COMMAND ${_p6test})
 endforeach()
+endif()  # WITH_TUI
 
 # app_tests (P7): pure-helper unit layer — pane_split, classify_tier, the
 # ProviderError/PlayError -> toast mapping, idle_help's Detail arm. No worker/
 # network/pty involved (pty_walk_tests.cpp is the end-to-end layer). Links
 # shigoku_tui, so it needs sqlite too (the store rides that lib since P9).
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(app_tests tests/app_tests.cpp)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # This TU is the biggest in the tree (one Catch2 file over the whole app
@@ -1620,7 +1656,7 @@ endif()
 # write ownership (bind/absence/route/pin), tier-B/C scoring, pin-flip +
 # fallback, the staleness guard, and prewarm mint. Links shigoku_tui (transport)
 # + store + resolve; curl+sqlite-gated like app_tests.
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(resolve_transport_tests tests/resolve_transport_tests.cpp)
   target_link_libraries(resolve_transport_tests PRIVATE
     shigoku_tui shigoku_store shigoku_resolve shigoku_domain shigoku_flags
@@ -1634,7 +1670,7 @@ endif()
 # Links shigoku_tui (covers.cpp — decode/crop/LRU/CoverState) + the render core
 # (kitty/cover_geom/cover_probe). curl-gated because covers.cpp pulls http;
 # also sqlite-gated since P9 (shigoku_tui carries the store).
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(covers_tests tests/covers_tests.cpp)
   target_compile_definitions(covers_tests PRIVATE
     SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
@@ -1650,7 +1686,7 @@ endif()
 # wanted_fetch, sticky feed error, nav wrap/clamp, cursor/scroll survival, the
 # glyph table + format labels. Links shigoku_tui (DiscoverState::on_feed →
 # store) + the render core (the pure state/geometry/glyphs) + the store.
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(discover_tests tests/discover_tests.cpp)
   target_link_libraries(discover_tests PRIVATE
     shigoku_tui shigoku_tui_render shigoku_store shigoku_domain shigoku_flags
@@ -1663,7 +1699,7 @@ endif()
 # FixtureProvider + stub mpv script, offline. Needs shigoku_tui (curl+sqlite-
 # gated, links anilist/player/provider/store transitively) + -lutil for
 # forkpty/openpty.
-if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(pty_walk_tests tests/pty_walk_tests.cpp)
   target_compile_definitions(pty_walk_tests PRIVATE
     SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
@@ -1701,3 +1737,4 @@ add_test(NAME fence_missing_walk_origin_arm
   COMMAND ${CMAKE_CXX_COMPILER} ${_fence_flags}
           -DSHIGOKU_FENCE_CASE=3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fence_fail.cpp)
 set_tests_properties(fence_missing_walk_origin_arm PROPERTIES WILL_FAIL TRUE)
+endif()  # SHIGOKU_BUILD_TESTS

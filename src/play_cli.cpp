@@ -49,30 +49,84 @@ Result<std::vector<std::string>, ProviderError> load_episodes(
   return *episodes;
 }
 
-}  // namespace
+// The search stage over the ordered sources. Binds the first source whose
+// search answers with hits; a source that fails or finds nothing is noted
+// (cli::search_walk_note) and the next is tried. When none answers: exit 1
+// if every source FAILED (the exit law's search-stage failure, rendered for
+// the last one), else a clean no-results 0 — some source was healthy and
+// simply has no such title.
+struct SearchWalk {
+  const StreamProvider* provider = nullptr;  // null = nothing answered.
+  std::vector<SearchHit> hits;
+  int exit_code = 0;  // meaningful only when provider is null.
+};
 
-int play_flow(const StreamProvider& provider, const PickFn& pick, Translation translation,
-              const Config& config, const std::string& cache_dir, const std::string& runtime_dir,
-              const std::string& download_dir, Store* store, const cli::PlayArgs& args) {
-  const std::int64_t now = unix_now();
-
+SearchWalk search_walk(const Sources& sources, std::string_view query,
+                       Translation translation) {
   SearchOptions sopts;
   sopts.translation = translation;
   sopts.limit = 20;
   sopts.page = 1;
-  auto hits_r = provider.search(args.query, sopts);
-  if (!hits_r.has_value()) {
-    std::printf("%s", cli::fetch_error_line(cli::FetchStage::Search, hits_r.error().kind,
-                                            provider.display_name())
-                          .c_str());
-    return 1;
+  bool any_empty = false;
+  for (std::size_t i = 0; i < sources.size(); ++i) {
+    const StreamProvider& p = *sources[i];
+    const StreamProvider* next = i + 1 < sources.size() ? sources[i + 1] : nullptr;
+    auto hits_r = p.search(query, sopts);
+    if (!hits_r.has_value()) {
+      if (next != nullptr) {
+        std::printf("%s", cli::search_walk_note(p.display_name(), hits_r.error().kind,
+                                                next->display_name())
+                              .c_str());
+        flush_stdout();
+        continue;
+      }
+      std::printf("%s", cli::fetch_error_line(cli::FetchStage::Search, hits_r.error().kind,
+                                              p.display_name())
+                            .c_str());
+      break;
+    }
+    if (hits_r->empty()) {
+      any_empty = true;
+      if (next != nullptr) {
+        std::printf("%s", cli::search_walk_note(p.display_name(), std::nullopt,
+                                                next->display_name())
+                              .c_str());
+        flush_stdout();
+        continue;
+      }
+      break;
+    }
+    SearchWalk bound;
+    bound.provider = &p;
+    bound.hits = std::move(*hits_r);
+    return bound;
   }
-  const std::vector<SearchHit>& hits = *hits_r;
-  if (hits.empty()) {
-    std::printf("\n  no results for \"%s\". try a different spelling or romaji.\n",
-                strip_controls(args.query).c_str());
-    return 0;
+
+  SearchWalk none;
+  if (sources.empty()) {
+    std::printf("  ✗ no configured source can search.\n");
+    none.exit_code = 1;
+  } else if (!any_empty) {
+    none.exit_code = 1;  // every source failed; the last one's line is above.
+  } else {
+    std::printf("\n  no results for \"%s\"%s. try a different spelling or romaji.\n",
+                strip_controls(query).c_str(), sources.size() > 1 ? " on any source" : "");
+    none.exit_code = 0;
   }
+  return none;
+}
+
+}  // namespace
+
+int play_flow(const Sources& sources, const PickFn& pick, Translation translation,
+              const Config& config, const std::string& cache_dir, const std::string& runtime_dir,
+              const std::string& download_dir, Store* store, const cli::PlayArgs& args) {
+  const std::int64_t now = unix_now();
+
+  const SearchWalk walked = search_walk(sources, args.query, translation);
+  if (walked.provider == nullptr) return walked.exit_code;
+  const StreamProvider& provider = *walked.provider;
+  const std::vector<SearchHit>& hits = walked.hits;
 
   std::printf("%s", cli::render_search_hits(hits, translation).c_str());
   auto idx = pick("\n  pick a show # (q to quit): ", hits.size());
@@ -214,29 +268,16 @@ int play_flow(const StreamProvider& provider, const PickFn& pick, Translation tr
   return 0;
 }
 
-int download_flow(const StreamProvider& provider, const PickFn& pick,
+int download_flow(const Sources& sources, const PickFn& pick,
                   Translation translation, const Config& config,
                   const std::string& download_dir, Store* store,
                   const cli::DownloadArgs& args) {
   const std::int64_t now = unix_now();
 
-  SearchOptions sopts;
-  sopts.translation = translation;
-  sopts.limit = 20;
-  sopts.page = 1;
-  auto hits_r = provider.search(args.query, sopts);
-  if (!hits_r.has_value()) {
-    std::printf("%s", cli::fetch_error_line(cli::FetchStage::Search, hits_r.error().kind,
-                                            provider.display_name())
-                          .c_str());
-    return 1;
-  }
-  const std::vector<SearchHit>& hits = *hits_r;
-  if (hits.empty()) {
-    std::printf("\n  no results for \"%s\". try a different spelling or romaji.\n",
-                strip_controls(args.query).c_str());
-    return 0;
-  }
+  const SearchWalk walked = search_walk(sources, args.query, translation);
+  if (walked.provider == nullptr) return walked.exit_code;
+  const StreamProvider& provider = *walked.provider;
+  const std::vector<SearchHit>& hits = walked.hits;
 
   std::printf("%s", cli::render_search_hits(hits, translation).c_str());
   auto idx = pick("\n  pick a show # (q to quit): ", hits.size());

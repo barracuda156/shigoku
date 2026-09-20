@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "cli.hpp"
 #include "config.hpp"
@@ -23,14 +24,24 @@ namespace shigoku::cli_play {
 // (q/EOF/overlong). Production wires prompt_pick (stdin); tests script it.
 using PickFn = std::function<std::optional<std::size_t>(const char*, std::size_t)>;
 
+// The ordered search-capable sources (ProviderRegistry::searchable): the
+// preferred one first when it can search, then the rest by registry position.
+// Both flows walk it at the search stage — a source that fails or finds
+// nothing is noted and the next is tried — and bind the whole run (episodes,
+// resolve, store keys) to the first that answers. Non-owning; the registry
+// outlives the flow.
+using Sources = std::vector<const StreamProvider*>;
+
 // The search -> pick -> episodes -> pick -> play flow. Returns the raw exit
 // code (0/1); the caller wraps it. `cache_dir`/`runtime_dir` are the resolved
 // paths.cache / paths.runtime; `store` may be null (play-only). Exit law
 // (06 §7.4): the play path is the one nonzero exit (1); every early return
-// (no results, quit, no episodes) is a clean 0. `download_dir` is the
-// RESOLVED download root ("" = downloads disabled): a completed local file
-// for the picked (show, track, ep) plays WITHOUT resolving (P35 slice 4).
-[[nodiscard]] int play_flow(const StreamProvider& provider, const PickFn& pick,
+// (no results, quit, no episodes) is a clean 0. A search that fails on EVERY
+// source is the search-stage 1; a source that answered "nothing" makes the
+// whole walk a clean no-results 0 even if others failed. `download_dir` is
+// the RESOLVED download root ("" = downloads disabled): a completed local
+// file for the picked (show, track, ep) plays WITHOUT resolving (P35 slice 4).
+[[nodiscard]] int play_flow(const Sources& sources, const PickFn& pick,
                             Translation translation, const Config& config,
                             const std::string& cache_dir, const std::string& runtime_dir,
                             const std::string& download_dir, Store* store,
@@ -43,7 +54,7 @@ using PickFn = std::function<std::optional<std::size_t>(const char*, std::size_t
 // RESOLVED root (main.cpp turns a blank config value into <data>/downloads).
 // Same exit law: transfer failure is the nonzero exit (1); every early
 // return (no results, quit, no episodes, unknown <ep>) is a clean 0.
-[[nodiscard]] int download_flow(const StreamProvider& provider, const PickFn& pick,
+[[nodiscard]] int download_flow(const Sources& sources, const PickFn& pick,
                                 Translation translation, const Config& config,
                                 const std::string& download_dir, Store* store,
                                 const cli::DownloadArgs& args);

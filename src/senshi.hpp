@@ -25,6 +25,15 @@
 
 namespace shigoku::senshi {
 
+// PARKED: the API moved to https://senshi.to (this host now 404s every
+// route) and the stream recipe changed underneath — playlists come back
+// AES-256-GCM-encrypted (`EM3U8v1:` + base64, static key XORed from two
+// arrays in the site's watch-page bundle) and the embed row's url is a
+// front-end route; the real master lives behind a `remote_source_id` hop.
+// Search/episodes/embeds still answer on the new host with the shapes below,
+// so a host swap alone would make search work and playback fail after mpv's
+// retries. The provider therefore keeps the dead host and sits last in the
+// registry until the whole v2 recipe lands; the v2 recipe is known and pending.
 inline constexpr const char* kApi = "https://senshi.live";
 // Stream CDN (ninstream) 403s a refererless GET; gate on this origin.
 inline constexpr const char* kStreamReferer = "https://senshi.live/";

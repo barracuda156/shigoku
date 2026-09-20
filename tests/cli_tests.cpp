@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -496,9 +497,15 @@ class Fake final : public StreamProvider {
   SearchR (*search_)(std::string_view);
   EpR (*episodes_)();
   ResolveR (*resolve_)();
+  // Identity + search capability, settable so a registry / search-walk test
+  // can tell its fakes apart (string literals: the views outlive the fake).
+  std::string_view name_ = "fake";
+  std::string_view display_ = "Fake";
+  bool searchable_ = true;
 
-  [[nodiscard]] std::string_view name() const override { return "fake"; }
-  [[nodiscard]] std::string_view display_name() const override { return "Fake"; }
+  [[nodiscard]] std::string_view name() const override { return name_; }
+  [[nodiscard]] std::string_view display_name() const override { return display_; }
+  [[nodiscard]] bool supports_search() const override { return searchable_; }
   [[nodiscard]] std::optional<std::string> canonical_key(const Enrichment&) const override {
     return std::nullopt;
   }
@@ -533,13 +540,15 @@ SearchHit one_hit() {
 // empty download_dir (downloads disabled — the local-preference scan never
 // runs): one_hit()'s absent ids mean the store/paths are never read on the
 // way to the exit under test.
-int run(const Fake& p, shigoku::cli_play::PickFn pick) {
+int run_all(const shigoku::cli_play::Sources& sources, shigoku::cli_play::PickFn pick) {
   const Config config;
-  return shigoku::cli_play::play_flow(p, pick, Translation::Sub, config, /*cache_dir=*/"",
-                                      /*runtime_dir=*/"/tmp", /*download_dir=*/"",
-                                      /*store=*/nullptr,
+  return shigoku::cli_play::play_flow(sources, pick, Translation::Sub, config,
+                                      /*cache_dir=*/"", /*runtime_dir=*/"/tmp",
+                                      /*download_dir=*/"", /*store=*/nullptr,
                                       cli::PlayArgs{"frieren", false, std::nullopt});
 }
+
+int run(const Fake& p, shigoku::cli_play::PickFn pick) { return run_all({&p}, std::move(pick)); }
 
 Fake make(Fake::SearchR (*s)(std::string_view), Fake::EpR (*e)(), Fake::ResolveR (*r)()) {
   Fake f;
@@ -579,6 +588,154 @@ TEST_CASE("resolve_failure_exits_one") {
                 []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
   CHECK(run(p, [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 1);
+}
+
+// ── search walk: the CLI tries the next searchable source ───────────────────
+
+namespace {
+
+// Search outcomes for the walk fakes; episodes/resolve are never reached when
+// the pick quits, so they are scripted to fail loudly if they ever are.
+Fake::EpR no_episodes() { return err(ProviderError::network()); }
+Fake::ResolveR no_resolve() { return err(ProviderError::network()); }
+
+Fake source_down(std::string_view name) {
+  auto f = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::server(503)); },
+                no_episodes, no_resolve);
+  f.name_ = name;
+  f.display_ = name;
+  return f;
+}
+
+Fake source_empty(std::string_view name) {
+  auto f = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{}; },
+                no_episodes, no_resolve);
+  f.name_ = name;
+  f.display_ = name;
+  return f;
+}
+
+// Two hits, so a pick prompt sized 2 proves THIS source's list was offered.
+Fake source_up(std::string_view name) {
+  auto f = make(
+      [](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit(), one_hit()}; },
+      no_episodes, no_resolve);
+  f.name_ = name;
+  f.display_ = name;
+  return f;
+}
+
+// A pick that records the prompt size and quits: the exit is the clean 0 and
+// `seen` says whose hits reached the prompt.
+struct QuitPick {
+  std::size_t seen = 0;
+  shigoku::cli_play::PickFn fn() {
+    return [this](const char*, std::size_t max) {
+      seen = max;
+      return std::optional<std::size_t>{};
+    };
+  }
+};
+
+}  // namespace
+
+TEST_CASE("search_walks_past_a_failing_source_to_the_next") {
+  const Fake down = source_down("down");
+  const Fake up = source_up("up");
+  QuitPick pick;
+  CHECK(run_all({&down, &up}, pick.fn()) == 0);
+  CHECK(pick.seen == 2);
+}
+
+TEST_CASE("search_walks_past_an_empty_source_to_the_next") {
+  const Fake empty = source_empty("empty");
+  const Fake up = source_up("up");
+  QuitPick pick;
+  CHECK(run_all({&empty, &up}, pick.fn()) == 0);
+  CHECK(pick.seen == 2);
+}
+
+TEST_CASE("search_failing_on_every_source_exits_one") {
+  const Fake a = source_down("a");
+  const Fake b = source_down("b");
+  QuitPick pick;
+  CHECK(run_all({&a, &b}, pick.fn()) == 1);
+  CHECK(pick.seen == 0);
+}
+
+TEST_CASE("a_healthy_empty_source_makes_the_walk_a_clean_no_results") {
+  // Either order: a source that answered "nothing" outranks the failures for
+  // the exit — the title is more likely absent than the network broken.
+  const Fake down = source_down("down");
+  const Fake empty = source_empty("empty");
+  QuitPick pick;
+  CHECK(run_all({&down, &empty}, pick.fn()) == 0);
+  CHECK(run_all({&empty, &down}, pick.fn()) == 0);
+  CHECK(pick.seen == 0);
+}
+
+TEST_CASE("the_first_answering_source_binds_the_whole_run") {
+  // `first` answers the search but its episodes fail; `second` would answer
+  // everything. The run stays bound to `first` and exits 1 at the episodes
+  // stage — the walk is a search-stage mechanism only.
+  auto first = make(
+      [](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+      no_episodes, no_resolve);
+  first.name_ = "first";
+  first.display_ = "first";
+  auto second = make(
+      [](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+      []() -> Fake::EpR { return std::vector<std::string>{"1"}; }, no_resolve);
+  second.name_ = "second";
+  second.display_ = "second";
+  CHECK(run_all({&first, &second},
+                [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 1);
+}
+
+TEST_CASE("no_sources_at_all_exits_one") {
+  QuitPick pick;
+  CHECK(run_all({}, pick.fn()) == 1);
+}
+
+TEST_CASE("search_walk_note_reads_per_class_and_for_an_empty_answer") {
+  using K = ProviderError::Kind;
+  CHECK(cli::search_walk_note("Senshi", K::Server, "AniLibria") ==
+        "  (Senshi is down; trying AniLibria…)\n");
+  CHECK(cli::search_walk_note("Senshi", K::Http, "AniLibria") ==
+        "  (Senshi rejected the search; trying AniLibria…)\n");
+  CHECK(cli::search_walk_note("Senshi", std::nullopt, "AniLibria") ==
+        "  (no results on Senshi; trying AniLibria…)\n");
+  // Every class renders a name-led sentence; none falls through blank.
+  for (K k : {K::Network, K::Forbidden, K::Server, K::Http, K::Decode, K::Unsupported,
+              K::RateLimited}) {
+    const std::string line = cli::search_walk_note("X", k, "Y");
+    CHECK_MESSAGE(contains(line, "(X "), line);
+    CHECK_MESSAGE(contains(line, "; trying Y"), line);
+  }
+}
+
+TEST_CASE("registry_searchable_lists_search_capable_sources_preferred_first") {
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  ps.push_back(std::make_unique<Fake>(source_up("a")));
+  {
+    auto b = std::make_unique<Fake>(source_up("b"));
+    b->searchable_ = false;  // the megaplay/anibd shape: listed, cannot search.
+    ps.push_back(std::move(b));
+  }
+  ps.push_back(std::make_unique<Fake>(source_up("c")));
+  const ProviderRegistry reg(std::move(ps));
+  auto names = [](const std::vector<const StreamProvider*>& v) {
+    std::vector<std::string> out;
+    for (const StreamProvider* p : v) out.emplace_back(p->name());
+    return out;
+  };
+  CHECK(names(reg.searchable(std::nullopt)) == std::vector<std::string>{"a", "c"});
+  CHECK(names(reg.searchable("c")) == std::vector<std::string>{"c", "a"});
+  // A preference that cannot search is walked past, not promoted (ROD-491).
+  CHECK(names(reg.searchable("b")) == std::vector<std::string>{"a", "c"});
+  CHECK(names(reg.searchable("nope")) == std::vector<std::string>{"a", "c"});
+  REQUIRE(reg.preferred_searchable("b") != nullptr);
+  CHECK(reg.preferred_searchable("b")->name() == "a");
 }
 
 // ── play-prefers-local (P35 slice 4) ─────────────────────────────────────────
@@ -628,13 +785,13 @@ TEST_CASE("play_prefers_a_completed_local_download_over_resolving (P35 slice 4)"
   config.mpv_path = write_stub_mpv();
   const auto pick = [](const char*, std::size_t) { return std::optional<std::size_t>(0); };
   const cli::PlayArgs args{"frieren", false, std::nullopt};
-  CHECK(shigoku::cli_play::play_flow(p, pick, Translation::Sub, config, /*cache_dir=*/"",
+  CHECK(shigoku::cli_play::play_flow({&p}, pick, Translation::Sub, config, /*cache_dir=*/"",
                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,
                                      args) == 0);
   // Track mismatch never matches (the DoD case): the same show played as DUB
   // finds no /700/dub/ file, falls through to the scripted resolve failure,
   // and exits 1 — the sub download was never adopted.
-  CHECK(shigoku::cli_play::play_flow(p, pick, Translation::Dub, config, /*cache_dir=*/"",
+  CHECK(shigoku::cli_play::play_flow({&p}, pick, Translation::Dub, config, /*cache_dir=*/"",
                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,
                                      args) == 1);
 }

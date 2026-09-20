@@ -396,6 +396,27 @@ std::optional<std::string> provider_override_note(
          std::string(chosen.second) + ".)";
 }
 
+std::string search_walk_note(std::string_view skipped, std::optional<ProviderError::Kind> failure,
+                             std::string_view next) {
+  std::string why;
+  if (!failure.has_value()) {
+    why = "no results on " + std::string(skipped);
+  } else {
+    using K = ProviderError::Kind;
+    why = std::string(skipped);
+    switch (*failure) {
+      case K::Network:     why += " is unreachable"; break;
+      case K::Forbidden:   why += " is blocking us"; break;
+      case K::Server:      why += " is down"; break;
+      case K::Http:        why += " rejected the search"; break;
+      case K::Decode:      why += " sent a malformed answer"; break;
+      case K::Unsupported: why += " can't search"; break;
+      case K::RateLimited: why += " is rate-limiting us"; break;
+    }
+  }
+  return "  (" + why + "; trying " + std::string(next) + "…)\n";
+}
+
 std::string player_failure_line(PlayError::Kind kind, std::string_view provider,
                                 std::optional<ProviderError::Kind> resolve_class) {
   using K = PlayError::Kind;

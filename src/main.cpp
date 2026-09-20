@@ -43,8 +43,10 @@
 #include "store.hpp"
 #include "sync.hpp"
 #include "updatecheck.hpp"
+#if SHIGOKU_WITH_TUI
 #include "tui/app.hpp"
 #include "tui/covers.hpp"
+#endif
 
 namespace {
 
@@ -76,22 +78,29 @@ constexpr int kMaxPickAttempts = 1000;
 // Build the live provider registry (same lineup as run_tui below, N=5). The
 // CLI play path and the TUI boot build from the same list so the lineup never
 // forks. Returns nullopt if any provider client fails to init.
+//
+// Position is priority: the resolve walk's tiers and the CLI's search walk
+// both try sources in this order (after any configured preference). Senshi
+// sits last: its API host moved and its playlists are now encrypted, so
+// every call fails until the recipe is re-ported (senshi.hpp) — a dead
+// source at the head would otherwise be the first thing every fresh install
+// hits.
 std::optional<ProviderRegistry> build_registry() {
   auto megaplay_provider = megaplay::MegaPlay::create();
-  auto senshi = senshi::Senshi::create();
   auto anibd_provider = anibd::AniBd::create();
   auto anidbapp_provider = anidbapp::AniDbApp::create();
   auto anilibria_provider = anilibria::AniLibria::create();
-  if (!megaplay_provider || !senshi || !anibd_provider || !anidbapp_provider ||
-      !anilibria_provider) {
+  auto senshi = senshi::Senshi::create();
+  if (!megaplay_provider || !anibd_provider || !anidbapp_provider || !anilibria_provider ||
+      !senshi) {
     return std::nullopt;
   }
   std::vector<std::unique_ptr<StreamProvider>> providers;
   providers.push_back(std::make_unique<megaplay::MegaPlay>(std::move(*megaplay_provider)));
-  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
   providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
+  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   return ProviderRegistry(std::move(providers));
 }
 
@@ -410,9 +419,11 @@ int run_play_cli(const cli::PlayArgs& args) {
 
   // Search-capable, not merely preferred (ROD-491). Whichever answers owns the
   // whole run.
+  // Every source that can search, preferred first when it can (ROD-491);
+  // the flow walks past a failing or empty one to the next.
   const std::string_view pref = config.preferred_provider;
-  const StreamProvider* provider = registry->preferred_searchable(pref);
-  if (provider == nullptr) {
+  const cli_play::Sources sources = registry->searchable(pref);
+  if (sources.empty()) {
     std::printf("  ✗ no configured source can search.\n");
     return 1;
   }
@@ -422,13 +433,13 @@ int run_play_cli(const cli::PlayArgs& args) {
           ? std::optional<std::pair<std::string_view, std::string_view>>({asked->name(),
                                                                           asked->display_name()})
           : std::nullopt,
-      {provider->name(), provider->display_name()});
+      {sources.front()->name(), sources.front()->display_name()});
   if (note.has_value()) std::printf("%s\n", note->c_str());
 
   const cli_play::PickFn pick = [](const char* prompt, std::size_t max) {
     return prompt_pick(prompt, max);
   };
-  return cli_play::play_flow(*provider, pick, translation, config, paths->cache, paths->runtime,
+  return cli_play::play_flow(sources, pick, translation, config, paths->cache, paths->runtime,
                              resolve_download_dir(config, *paths), store, args);
 }
 
@@ -458,9 +469,11 @@ int run_download_cli(const cli::DownloadArgs& args) {
     std::printf("  ✗ couldn't set up a provider client.\n");
     return 1;
   }
+  // Every source that can search, preferred first when it can (ROD-491);
+  // the flow walks past a failing or empty one to the next.
   const std::string_view pref = config.preferred_provider;
-  const StreamProvider* provider = registry->preferred_searchable(pref);
-  if (provider == nullptr) {
+  const cli_play::Sources sources = registry->searchable(pref);
+  if (sources.empty()) {
     std::printf("  ✗ no configured source can search.\n");
     return 1;
   }
@@ -470,13 +483,13 @@ int run_download_cli(const cli::DownloadArgs& args) {
           ? std::optional<std::pair<std::string_view, std::string_view>>({asked->name(),
                                                                           asked->display_name()})
           : std::nullopt,
-      {provider->name(), provider->display_name()});
+      {sources.front()->name(), sources.front()->display_name()});
   if (note.has_value()) std::printf("%s\n", note->c_str());
 
   const cli_play::PickFn pick = [](const char* prompt, std::size_t max) {
     return prompt_pick(prompt, max);
   };
-  return cli_play::download_flow(*provider, pick, translation, config,
+  return cli_play::download_flow(sources, pick, translation, config,
                                  resolve_download_dir(config, *paths), store, args);
 }
 
@@ -502,6 +515,15 @@ int print_paths() {
 
 // The TUI bootstrap. Only the no-subcommand path reaches here.
 int run_tui() {
+#if !SHIGOKU_WITH_TUI
+  // A command-line-only build (SHIGOKU_WITH_TUI=OFF): the bare invocation
+  // has no interface to open, so it reads as a usage request (exit 0, like
+  // --help).
+  std::printf("shigoku was built without the terminal interface; the command line is all "
+              "there is.\n\n%s",
+              cli::kUsage);
+  return 0;
+#else
   auto paths = resolve_paths();
   if (!paths.has_value()) {
     std::fprintf(stderr, "shigoku: could not resolve HOME/XDG dirs\n");
@@ -596,6 +618,7 @@ int run_tui() {
 
   return tui::run(/*demo_mode=*/false, &deps, &config, config_path, auth_path, db_path,
                   SHIGOKU_VERSION);
+#endif
 }
 
 }  // namespace

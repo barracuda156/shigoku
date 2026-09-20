@@ -318,6 +318,17 @@ terminal:
 currently plays the best direct stream available regardless of what you ask
 for.
 
+A command-line search walks the streaming sources that can search, your
+preferred one first: a source that fails or finds nothing is noted on the
+spot and the next one is tried, and the first that answers serves the whole
+run (its episode list, its streams). Only when every source fails does the
+command exit with an error; a source that answered "nothing" makes it a plain
+"no results".
+
+A shigoku built with `-DWITH_TUI=OFF` has only this command line — no
+interface, no `shigoku-manga` — and running a bare `shigoku` there prints the
+usage.
+
 ## Files on disk
 
 Paths respect `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` /
