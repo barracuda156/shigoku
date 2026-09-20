@@ -451,7 +451,8 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_mal_mirror STATIC src/mal_mirror.cpp)
   target_include_directories(shigoku_mal_mirror PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_mal_mirror
-    PUBLIC shigoku_mal shigoku_auth shigoku_store shigoku_domain shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_mal shigoku_mal_catalog shigoku_auth shigoku_store shigoku_domain
+           shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -591,7 +592,8 @@ if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_mal_catalog STATIC src/mal_catalog.cpp)
   target_include_directories(shigoku_mal_catalog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_mal_catalog
-    PUBLIC shigoku_http shigoku_domain shigoku_idmap shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_http shigoku_domain shigoku_idmap shigoku_mal shigoku_flags
+           shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------

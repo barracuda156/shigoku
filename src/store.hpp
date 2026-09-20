@@ -269,6 +269,18 @@ struct SyncPlan {
   std::vector<SyncPlanRow> plan;
   std::vector<SyncImportRow> imports;
   std::vector<std::int64_t> unmatched;
+  // MAL pull only: library rows matched by mal_id whose mal_id column was
+  // NULL — (anilist_id, mal_id) pairs the apply fills in.
+  std::vector<std::pair<std::int64_t, std::int64_t>> mal_backfill;
+};
+
+// Which tracker a pull reconcile is for: it selects the snapshot column
+// triple the three-way merge reads and re-baselines (synced_* for AniList,
+// mal_synced_* for the MAL mirror) and the import policy (AniList imports
+// the WATCHING slice, MAL the whole list).
+enum class SyncTracker {
+  AniList,
+  Mal,
 };
 
 // --- MAL mirror (P31 §9.1 slice 4) -------------------------------------------
@@ -604,6 +616,25 @@ class Store {
   [[nodiscard]] Result<PullOutcome, StoreError> apply_reconcile(
       const std::vector<SyncPlanRow>& plan, const std::vector<SyncImportRow>& imports,
       std::vector<std::int64_t> unmatched, std::int64_t now);
+
+  // The MAL mirror's pull: the same merge law over the mirror's own snapshot
+  // columns (mal_synced_status/progress/score — never AniList's), every
+  // status imported. Remote scores arrive on the store's raw 0..=100 scale;
+  // the mal_synced_score snapshot is kept on MAL's 0..=10 (÷10, rounded) so
+  // the push's dirty predicate reads it unchanged. A remote row whose seed
+  // carries a mal_id the library already holds under a different anilist_id
+  // (a real id from AniList vs the bridge's synthetic one) reconciles into
+  // THAT row; a matched row with a NULL mal_id gets it filled in.
+  [[nodiscard]] Result<PullOutcome, StoreError> reconcile_mal_pull(
+      const std::vector<RemoteEntry>& remote, std::int64_t now);
+
+  // The tracker-parametrised halves both reconciles run on. reconcile_plan /
+  // apply_reconcile above are the AniList spellings, kept for their callers
+  // and the split-step tests.
+  [[nodiscard]] Result<SyncPlan, StoreError> reconcile_plan_for(
+      SyncTracker tracker, const std::vector<RemoteEntry>& remote) const;
+  [[nodiscard]] Result<PullOutcome, StoreError> apply_reconcile_for(
+      SyncTracker tracker, const SyncPlan& plan, std::int64_t now);
 
   // --- MAL mirror (P31 §9.1 slice 4) ----------------------------------------
 

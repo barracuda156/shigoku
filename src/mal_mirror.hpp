@@ -41,6 +41,7 @@
 #include "error.hpp"
 #include "http.hpp"
 #include "mal.hpp"
+#include "mal_catalog.hpp"
 #include "result.hpp"
 #include "store.hpp"
 
@@ -67,6 +68,9 @@ class MalMirrorClient {
   [[nodiscard]] virtual Result<Unit, ProviderError> save_entry(
       std::string_view token, std::int64_t mal_id, ListStatus status, std::uint32_t progress,
       std::optional<std::uint32_t> score) const = 0;
+  // The account's whole list, every status (the pull direction).
+  [[nodiscard]] virtual Result<std::vector<mal_catalog::UserListEntry>, ProviderError> fetch_list(
+      std::string_view token) const = 0;
 };
 
 // The real implementation, delegating to mal::get_list_entry/update_list_entry
@@ -86,6 +90,10 @@ class HttpMalMirrorClient final : public MalMirrorClient {
       std::string_view token, std::int64_t mal_id, ListStatus status, std::uint32_t progress,
       std::optional<std::uint32_t> score) const override {
     return mal::update_list_entry(client_, token, mal_id, status, progress, score);
+  }
+  [[nodiscard]] Result<std::vector<mal_catalog::UserListEntry>, ProviderError> fetch_list(
+      std::string_view token) const override {
+    return mal_catalog::user_list(client_, token);
   }
 
  private:
@@ -124,5 +132,29 @@ struct MirrorSummary {
 [[nodiscard]] Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client,
                                                              const MalAuth& auth, Store& store,
                                                              bool enabled);
+
+// The pull direction: the account's whole MAL list reconciled into the
+// library against the mirror's OWN snapshot columns (never AniList's), the
+// same three-way merge the AniList pull uses. Every status imports — the
+// list IS the user's library on MAL — with the AniList id bridged per row
+// (idmap hit, else the synthetic negative id); a row the library already
+// holds under a real id is matched by mal_id and keeps it. A transport or
+// decode miss is `pull_failed` (nothing adopted, the push still runs); 401
+// and 429 are the terminal outcomes the push knows.
+struct MirrorPullSummary {
+  MirrorOutcome outcome = MirrorOutcome::Completed;
+  bool pull_failed = false;
+  PullOutcome pulled;
+
+  static MirrorPullSummary terminal(MirrorOutcome outcome) {
+    MirrorPullSummary s;
+    s.outcome = outcome;
+    return s;
+  }
+};
+
+[[nodiscard]] Result<MirrorPullSummary, StoreError> pull_mirror(const MalMirrorClient& client,
+                                                                 const MalAuth& auth, Store& store,
+                                                                 bool enabled, std::int64_t now);
 
 }  // namespace shigoku::mal_mirror

@@ -189,6 +189,9 @@ struct HistoryLine {
 // stays in the pure render core alongside EpisodeState.
 struct HistoryState {
   std::string filter;
+  // Status narrowing (the tracker-client "Filter: Watching (41)" idiom):
+  // nullopt = every group, else the one group shown. ANDs with `filter`.
+  std::optional<ListStatus> status_filter;
   std::vector<Show> rows;               // store order, as loaded.
   std::vector<std::optional<std::uint32_t>> resume;  // parallel to rows; ◐ marker ep.
   std::vector<std::size_t> order;       // indices into rows: filtered, group-ordered.
@@ -217,6 +220,10 @@ struct HistoryState {
   bool select_aid(std::int64_t anilist_id, int visible);
   void on_filter_edited();
   void on_filter_cleared();
+  // Step the status filter through all -> Watching -> Planning -> Paused ->
+  // Completed -> Dropped -> all (dir < 0 walks it backwards); clear = all.
+  void cycle_status_filter(int dir);
+  void clear_status_filter();
   void nav(int dy, int visible);
   void jump(bool top, int visible);
   // The grouped line layout (05 §2 geometry). Exposed for tests.

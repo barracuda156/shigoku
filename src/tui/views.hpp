@@ -107,6 +107,11 @@ namespace detail {
 // tests.
 [[nodiscard]] std::string provider_caption(const EpisodeState& es);
 
+// The dead-end caption: "tried: {name}[-/?] · …" over the grid's availability
+// marks when the walk exhausted every source. Pure; "" when nothing was
+// tried. Exposed for tests.
+[[nodiscard]] std::string tried_caption(const EpisodeState& es);
+
 // Word-wrap a sanitized description (a flat single line — the enrichment
 // mapper collapses newline runs) into lines of at most `max_cols` display
 // columns, breaking on spaces; a word wider than the box hard-breaks on a

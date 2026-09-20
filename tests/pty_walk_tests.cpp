@@ -441,6 +441,48 @@ TEST_CASE("pty walk: P32 mouse — click selects, double-click opens, reporting 
 // terminal's own crop/reflow can leave residue the cell diff alone cannot
 // see) followed by a full re-render at the new geometry. TIOCSWINSZ on the
 // master delivers SIGWINCH to the child; the ≤100ms tick polls the flag.
+// A shrink restored within the settle window nets out to the original size:
+// the geometry diff sees nothing, but the terminal may have reflowed in
+// between. The stale-screen mark must still produce the ED + full repaint.
+TEST_CASE("pty walk: a shrink restored at once still ED-clears and repaints") {
+  const std::string self_path = self_exe_path();
+  REQUIRE(!self_path.empty());
+
+  const std::string fixtures_dir = SHIGOKU_TEST_FIXTURES_DIR;
+  const std::string stub_mpv = fixtures_dir + "/stub_mpv.py";
+  const std::string runtime_dir = "/tmp/shigoku-pty-test";
+  ::mkdir(runtime_dir.c_str(), 0700);
+
+  PtySession s = spawn_child_pty(self_path, stub_mpv, runtime_dir);
+
+  s.pump(500);
+  CHECK(s.visible_text().find("SHIGOKU") != std::string::npos);
+
+  const std::size_t mark = s.accumulated.size();
+  winsize small{};
+  small.ws_row = 18;
+  small.ws_col = 60;
+  REQUIRE(::ioctl(s.master, TIOCSWINSZ, &small) == 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  winsize back{};
+  back.ws_row = 24;
+  back.ws_col = 100;
+  REQUIRE(::ioctl(s.master, TIOCSWINSZ, &back) == 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));  // settle + paint.
+  s.pump(600);
+  const std::string post = s.accumulated.substr(mark);
+  CHECK(post.find("\x1b[2J") != std::string::npos);
+  CHECK(strip_ansi(post).find("SHIGOKU") != std::string::npos);
+
+  s.write_str("q");
+  int status = 0;
+  for (int i = 0; i < 100; ++i) {
+    if (::waitpid(s.child, &status, WNOHANG) == s.child) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  ::close(s.master);
+}
+
 TEST_CASE("pty walk: resize ED-clears and repaints the full frame") {
   const std::string self_path = self_exe_path();
   REQUIRE(!self_path.empty());

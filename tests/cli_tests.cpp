@@ -228,6 +228,38 @@ TEST_CASE("mal_pushed_is_silent_by_default_and_renders_only_when_nonzero") {
   CHECK_MESSAGE(contains(loud, "pushed 3 change(s) to MyAnimeList"), loud);
 }
 
+TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilist_account") {
+  cli::MalPullCounts m;
+  m.ran = true;
+  m.pulled = 2;
+  m.imported = 41;
+  const std::string both = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, m);
+  CHECK_MESSAGE(contains(both, "pulled 2 update(s) from MyAnimeList"), both);
+  CHECK_MESSAGE(contains(both, "imported 41 show(s) from MyAnimeList"), both);
+  // A MAL-only account: the AniList verdict becomes one line among two.
+  const std::string mal_only = cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), 0, m);
+  CHECK_MESSAGE(contains(mal_only, "AniList: not connected"), mal_only);
+  CHECK_MESSAGE(contains(mal_only, "imported 41"), mal_only);
+  cli::MalPullCounts quiet;
+  quiet.ran = true;
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, quiet),
+                 "MyAnimeList list already up to date"));
+  cli::MalPullCounts refused;
+  refused.ran = true;
+  refused.unauthorized = true;
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, refused),
+                 "MyAnimeList rejected the token"));
+  cli::MalPullCounts missed;
+  missed.ran = true;
+  missed.failed = true;
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, missed),
+                 "couldn't fetch your MyAnimeList list"));
+  // No MAL account: not a word about it, and the one-line verdict stays one line.
+  const std::string none = cli::render_sync_summary(summary(sync::SyncOutcome::NoToken));
+  CHECK(!contains(none, "MyAnimeList"));
+  CHECK(line_count(none) == 1);
+}
+
 TEST_CASE("counts_render_and_conflicts_suppress_up_to_date") {
   auto s = summary(sync::SyncOutcome::Completed);
   s.pulled.reconciled = 2;

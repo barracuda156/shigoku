@@ -61,15 +61,43 @@ class FakeMal final : public MalMirrorClient {
     return answer;
   }
 
+  FakeMal& with_list(Result<std::vector<mal_catalog::UserListEntry>, ProviderError> list) {
+    list_ = std::move(list);
+    return *this;
+  }
+
+  [[nodiscard]] Result<std::vector<mal_catalog::UserListEntry>, ProviderError> fetch_list(
+      std::string_view) const override {
+    ++list_calls;
+    return list_;
+  }
+
   mutable std::vector<std::int64_t> guard_calls;
   mutable std::vector<
       std::tuple<std::int64_t, ListStatus, std::uint32_t, std::optional<std::uint32_t>>>
       push_calls;
+  mutable int list_calls = 0;
 
  private:
   mutable std::deque<SaveAnswer> saves_;
   mutable std::deque<GuardAnswer> guards_;
+  Result<std::vector<mal_catalog::UserListEntry>, ProviderError> list_ =
+      std::vector<mal_catalog::UserListEntry>{};
 };
+
+mal_catalog::UserListEntry list_entry(std::int64_t mal_id, std::int64_t anilist_id,
+                                      std::string title, ListStatus status,
+                                      std::uint32_t progress, std::uint32_t score) {
+  mal_catalog::UserListEntry e;
+  e.seed.anilist_id = anilist_id;
+  e.seed.mal_id = mal_id;
+  e.seed.title_romaji = std::move(title);
+  e.seed.total_episodes = 12;
+  e.status = status;
+  e.progress = progress;
+  e.score = score;
+  return e;
+}
 
 MalAuth connected_mal() {
   MalAuth a;
@@ -136,6 +164,141 @@ TEST_CASE("null_mal_id_rows_never_enter_the_dirty_set") {
   CHECK(out->pushed == 1);
   REQUIRE(client.push_calls.size() == 1);
   CHECK(std::get<0>(client.push_calls[0]) == 503);
+}
+
+// ── pull_mirror ─────────────────────────────────────────────────────────────
+
+TEST_CASE("pull_disabled_or_signed_out_is_a_noop") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  FakeMal client({});
+  auto off = pull_mirror(client, connected_mal(), *store, false, 0);
+  REQUIRE(off.has_value());
+  CHECK(off->outcome == MirrorOutcome::Disabled);
+  auto out = pull_mirror(client, MalAuth{}, *store, true, 0);
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Disabled);
+  CHECK(client.list_calls == 0);
+}
+
+TEST_CASE("pull_imports_the_whole_list_every_status_with_the_mirror_snapshot_set") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  FakeMal client({});
+  client.with_list(std::vector<mal_catalog::UserListEntry>{
+      list_entry(610, 10, "A", ListStatus::Watching, 3, 8),
+      list_entry(611, -611, "B", ListStatus::Completed, 12, 0),  // synthetic (no AniList id).
+      list_entry(612, 12, "C", ListStatus::Planning, 0, 10),
+  });
+  auto out = pull_mirror(client, connected_mal(), *store, true, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(!out->pull_failed);
+  CHECK(out->pulled.imported == 3);
+  CHECK(client.list_calls == 1);
+
+  auto history = store->list_history();
+  REQUIRE(history.has_value());
+  CHECK(history->size() == 3);
+  auto a = store->get_show(10);
+  REQUIRE(a.has_value());
+  REQUIRE(a->has_value());
+  CHECK((*a)->list_status == ListStatus::Watching);
+  CHECK((*a)->progress == 3);
+  CHECK((*a)->user_score == 80);  // MAL's 8 on the store's raw scale.
+  auto b = store->get_show(-611);
+  REQUIRE(b.has_value());
+  REQUIRE(b->has_value());
+  CHECK((*b)->list_status == ListStatus::Completed);
+  CHECK((*b)->progress == 12);
+  auto c = store->get_show(12);
+  REQUIRE(c.has_value());
+  REQUIRE(c->has_value());
+  CHECK((*c)->user_score == 100);
+  // The mirror's own snapshot moved with the adopt: nothing to push back.
+  CHECK(store->list_dirty_for_mal_mirror()->empty());
+  // AniList never heard of these: the two real-id rows owe it a push, the
+  // synthetic one never will.
+  CHECK(store->list_dirty_for_sync()->size() == 2);
+}
+
+TEST_CASE("pull_401_is_unauthorized_429_rate_limited_and_a_transport_miss_is_pull_failed") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  {
+    FakeMal client({});
+    client.with_list(err(http_401()));
+    auto out = pull_mirror(client, connected_mal(), *store, true, 0);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+  }
+  {
+    FakeMal client({});
+    client.with_list(err(ProviderError::rate_limited()));
+    auto out = pull_mirror(client, connected_mal(), *store, true, 0);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::RateLimited);
+  }
+  {
+    FakeMal client({});
+    client.with_list(err(network_error()));
+    auto out = pull_mirror(client, connected_mal(), *store, true, 0);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Completed);
+    CHECK(out->pull_failed);
+    CHECK(out->pulled.imported == 0);
+  }
+}
+
+TEST_CASE("pull_keeps_a_local_edit_made_since_the_last_mirror_push") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  dirty_lib_mal(*store, 20, 620);
+  REQUIRE(store->mark_mal_synced(20, ListStatus::Planning, 0, std::nullopt).has_value());
+  REQUIRE(store->restore_list_status(20, ListStatus::Watching, 5, 30).has_value());
+  FakeMal client({});
+  client.with_list(std::vector<mal_catalog::UserListEntry>{
+      list_entry(620, 20, "Show 20", ListStatus::Completed, 12, 0)});
+  auto out = pull_mirror(client, connected_mal(), *store, true, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->pulled.reconciled == 1);
+  CHECK(out->pulled.conflicts == 1);
+  auto g = store->get_show(20);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Watching);  // local status kept...
+  CHECK((*g)->progress == 12);  // ...progress merges upward, the AniList law's cell.
+  CHECK(store->list_dirty_for_mal_mirror()->size() == 1);  // ...and pushes back up next.
+}
+
+TEST_CASE("pull_matches_a_library_row_by_mal_id_when_the_bridge_disagrees_and_backfills") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  dirty_lib_mal(*store, 30, 630);  // a real AniList id holding mal 630.
+  dirty_lib_no_mal(*store, 40);    // a row AniList never linked to MAL.
+  FakeMal client({});
+  client.with_list(std::vector<mal_catalog::UserListEntry>{
+      list_entry(630, -630, "Show 30", ListStatus::Watching, 4, 0),  // bridged synthetic.
+      list_entry(640, 40, "No MAL 40", ListStatus::Completed, 12, 7),
+  });
+  auto out = pull_mirror(client, connected_mal(), *store, true, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->pulled.imported == 0);
+  CHECK(out->pulled.reconciled == 2);
+  auto thirty = store->get_show(30);
+  REQUIRE(thirty.has_value());
+  REQUIRE(thirty->has_value());
+  CHECK((*thirty)->list_status == ListStatus::Watching);
+  CHECK((*thirty)->progress == 4);
+  auto dup = store->get_show(-630);
+  REQUIRE(dup.has_value());
+  CHECK(!dup->has_value());  // no duplicate row under the synthetic id.
+  auto forty = store->get_show(40);
+  REQUIRE(forty.has_value());
+  REQUIRE(forty->has_value());
+  CHECK((*forty)->enrichment.mal_id == 640);
+  CHECK((*forty)->user_score == 70);
+  CHECK(store->list_dirty_for_mal_mirror()->empty());
 }
 
 TEST_CASE("push_advances_the_mal_snapshot_and_retires_the_row") {

@@ -201,30 +201,74 @@ std::string render_connect_result(const login::ConnectResult& result, std::strin
 // Inline show/id lines before "… and N more".
 static constexpr std::size_t kShowListCap = 12;
 
-std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pushed) {
+namespace {
+
+// The MAL mirror's own lines, after the AniList ones. Silent unless a MAL
+// account was connected (`ran`).
+std::string render_mal_pull(const MalPullCounts& m) {
+  if (!m.ran) return {};
+  if (m.unauthorized) {
+    return "  MyAnimeList rejected the token; reconnect it under Settings.\n";
+  }
+  if (m.failed) {
+    return "  pull failed: couldn't fetch your MyAnimeList list; re-run with --debug for "
+           "details.\n";
+  }
+  std::string out;
+  if (m.pulled > 0) {
+    out += "  pulled " + std::to_string(m.pulled) + " update(s) from MyAnimeList.\n";
+  }
+  if (m.imported > 0) {
+    out += "  imported " + std::to_string(m.imported) +
+           " show(s) from MyAnimeList into your library.\n";
+  }
+  if (m.pulled == 0 && m.imported == 0) out += "  MyAnimeList list already up to date.\n";
+  return out;
+}
+
+}  // namespace
+
+std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pushed,
+                                MalPullCounts mal_pull) {
   using O = sync::SyncOutcome;
   std::string out;
+  std::string anilist_terminal;
   switch (s.outcome) {
     // Disabled is unreachable from the CLI (sync ignores the master switch, 06
     // §5.5); worded as not-connected to stay total.
     case O::NoToken:
     case O::Disabled:
-      return "  not connected: run `shigoku login` first.\n";
+      anilist_terminal = "not connected: run `shigoku login` first.\n";
+      break;
     case O::Expired:
-      return "  your AniList token has expired: run `shigoku login` to reconnect.\n";
+      anilist_terminal = "your AniList token has expired: run `shigoku login` to reconnect.\n";
+      break;
     case O::NoUserId:
-      return "  sync skipped: can't tell which AniList account this token is for; "
-             "run `shigoku login` to reconnect.\n";
+      anilist_terminal =
+          "sync skipped: can't tell which AniList account this token is for; "
+          "run `shigoku login` to reconnect.\n";
+      break;
     case O::PullUnauthorized:
-      return "  pull stopped: AniList rejected the token; run `shigoku login` to reconnect.\n";
+      anilist_terminal =
+          "pull stopped: AniList rejected the token; run `shigoku login` to reconnect.\n";
+      break;
     case O::PullRateLimited:
-      return "  pull stopped: hit AniList's rate limit; run `shigoku sync` again shortly.\n";
+      anilist_terminal =
+          "pull stopped: hit AniList's rate limit; run `shigoku sync` again shortly.\n";
+      break;
     case O::Failed:
-      return "  sync failed: couldn't reach the local library or AniList.\n";
+      anilist_terminal = "sync failed: couldn't reach the local library or AniList.\n";
+      break;
     case O::Completed:
     case O::Unauthorized:
     case O::RateLimited:
       break;
+  }
+  if (!anilist_terminal.empty()) {
+    // A MAL-only account still gets its own report; the AniList line is then
+    // one fact among two rather than the whole verdict.
+    if (!mal_pull.ran) return "  " + anilist_terminal;
+    return "  AniList: " + anilist_terminal + render_mal_pull(mal_pull);
   }
 
   if (s.pull_failed) {
@@ -285,6 +329,7 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
   if (mal_pushed > 0) {
     out += "  pushed " + std::to_string(mal_pushed) + " change(s) to MyAnimeList.\n";
   }
+  out += render_mal_pull(mal_pull);
   return out;
 }
 

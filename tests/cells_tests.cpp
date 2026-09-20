@@ -224,3 +224,28 @@ TEST_CASE("flush ED-clears on a geometry change, not on a forced full repaint") 
   buf.flush(prev, out3);
   CHECK(out3.find("\x1b[2J") != std::string::npos);
 }
+
+TEST_CASE("flush ED-clears when the screen is marked stale, geometry unchanged") {
+  // A resize that nets out to the same size (shrink and restore inside one
+  // paint interval) or a terminal that reflowed on its own: the geometry
+  // diff sees nothing, yet the screen holds residue. The stale mark forces
+  // the ED + full repaint once, then clears itself.
+  CellBuffer prev;
+  CellBuffer buf(20, 3);
+  buf.clear(theme::bg);
+  std::string out1;
+  buf.flush(prev, out1);  // first flush: geometry change, ED as before.
+  REQUIRE(out1.find("\x1b[2J") != std::string::npos);
+
+  buf.mark_screen_stale();
+  std::string out2;
+  buf.flush(prev, out2);
+  CHECK(out2.find("\x1b[2J") != std::string::npos);
+  // Every cell re-emitted, not just the diff: a blank buffer over a blank prev
+  // would otherwise emit nothing after the ED and leave the frame unpainted.
+  CHECK(out2.find("\x1b[1;1H") != std::string::npos);
+
+  std::string out3;
+  buf.flush(prev, out3);  // consumed: a plain same-size flush is quiet again.
+  CHECK(out3.find("\x1b[2J") == std::string::npos);
+}

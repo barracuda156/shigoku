@@ -103,6 +103,31 @@ using IdBridge = std::function<std::int64_t(std::int64_t mal_id)>;
     const http::Client& client, std::string_view client_id, std::int64_t mal_id,
     std::int64_t keep_anilist_id = 0, const IdBridge& bridge = default_bridge);
 
+// One row of the signed-in account's own anime list (GET /users/@me/animelist):
+// the show as this catalog maps it (anilist_id via the bridge, mal_id set)
+// plus the list_status triple. `score` is MAL's native 0..=10 — the caller
+// converts to the store's raw scale; `updated_at` is list_status.updated_at
+// as unix seconds (0 when absent or unparseable).
+struct UserListEntry {
+  Enrichment seed;
+  ListStatus status = ListStatus::Planning;
+  std::uint32_t progress = 0;
+  std::uint32_t score = 0;
+  std::int64_t updated_at = 0;
+  friend bool operator==(const UserListEntry&, const UserListEntry&) = default;
+};
+
+// The account's whole list, every status, following `paging.next` for up
+// to kUserListPages pages of kUserListPageSize (MAL's per-page maximum).
+// Bearer-authenticated with the account's token — this is the one catalog
+// call that is not keyed by the app's client id. A 401 surfaces as
+// Http/401, a 429 as RateLimited; a continuation link off MAL's own host
+// is refused (the walk stops there rather than fetch a foreign URL).
+inline constexpr std::uint32_t kUserListPageSize = 1000;
+inline constexpr std::uint32_t kUserListPages = 20;
+[[nodiscard]] Result<std::vector<UserListEntry>, ProviderError> user_list(
+    const http::Client& client, std::string_view token, const IdBridge& bridge = default_bridge);
+
 // The genre vocabulary for the Discover filter overlay: MAL v2 has no genre
 // endpoint, so this is the AniList vocabulary (what the overlay already
 // speaks) and passes_filters folds MAL's own spellings onto it.
@@ -125,6 +150,19 @@ namespace detail {
 [[nodiscard]] std::string discover_url(DiscoverAxis axis, std::uint32_t page, std::int64_t unix_secs,
                                        std::uint32_t limit);
 [[nodiscard]] std::string by_id_url(std::int64_t mal_id);
+[[nodiscard]] std::string user_list_url();  // page 1; later pages ride paging.next verbatim.
+
+// One page of the user list: the mapped rows plus the continuation link.
+struct UserListPage {
+  std::vector<UserListEntry> entries;
+  std::optional<std::string> next;
+  friend bool operator==(const UserListPage&, const UserListPage&) = default;
+};
+[[nodiscard]] Result<UserListPage, ProviderError> parse_user_list_page(std::string_view raw_json,
+                                                                       const IdBridge& bridge);
+// "YYYY-MM-DDTHH:MM:SS" + "Z" | "+HH:MM" | "-HH:MM" (MAL emits +00:00) -> unix
+// seconds; 0 on any shape or range failure.
+[[nodiscard]] std::int64_t parse_iso8601_utc(std::string_view s);
 
 // A list response ({"data":[{"node":{…}},…],"paging":{"next":…}}): search,
 // ranking (each item also carries "ranking") and season all share it.

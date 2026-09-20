@@ -276,17 +276,20 @@ void CellBuffer::flush(CellBuffer& prev, std::string& out,
                        std::string_view pre_diff, std::string_view post_diff,
                        std::optional<std::pair<int, int>> cursor) const {
   const bool resized = prev.w_ != w_ || prev.h_ != h_;
-  const bool full = force_full_ || resized;
+  const bool clear = resized || screen_stale_;
+  const bool full = force_full_ || clear;
   if (full) prev.resize(w_, h_);  // resize clears prev -> every cell differs.
 
   out += "\x1b[?2026h";  // begin synchronized output.
-  // Geometry changed: the terminal's own resize handling (crop / reflow /
-  // scroll) can leave residue anywhere — including cells a mid-drag winsize
-  // mismatch keeps outside the grid we are about to repaint. One ED clear so
-  // the full repaint below starts from blank; inside synchronized output it
-  // can never flash. mark_all_dirty-only full repaints skip it: there the
-  // screen is still cell-accurate and repainting every cell suffices.
-  if (resized) out += "\x1b[2J";
+  // Geometry changed, or the screen was marked stale (a resize landed even if
+  // it netted out to the same size): the terminal's own resize handling
+  // (crop / reflow / scroll) can leave residue anywhere — including cells a
+  // mid-drag winsize mismatch keeps outside the grid we are about to repaint.
+  // One ED clear so the full repaint below starts from blank; inside
+  // synchronized output it can never flash. mark_all_dirty-only full repaints
+  // skip it: there the screen is still cell-accurate and repainting every
+  // cell suffices.
+  if (clear) out += "\x1b[2J";
   out.append(pre_diff.data(), pre_diff.size());
 
   int cur_x = -1, cur_y = -1;  // -1 = cursor position unknown (force a CUP).
@@ -331,6 +334,7 @@ void CellBuffer::flush(CellBuffer& prev, std::string& out,
   prev.exclusions_ = exclusions_;
   prev.force_full_ = false;
   force_full_ = false;
+  screen_stale_ = false;
 }
 
 }  // namespace shigoku::tui

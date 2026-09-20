@@ -854,6 +854,9 @@ void on_mal_connect_result(App& app, const MalConnectDone& done) {
   switch (done.outcome) {
     case MalConnectOutcome::Ok:
       app.toasts.push(ToastKind::Success, "signed in to MyAnimeList", app.tick_count);
+      // The account's list is the first thing worth seeing: pull it now
+      // (the same post-connect bootstrap AniList's connect fires).
+      flush_sync(app, /*pull_only=*/true);
       return;
     case MalConnectOutcome::NoClientId:
       app.toasts.push(ToastKind::Error, "set a mal client id first", app.tick_count);
@@ -919,16 +922,25 @@ bool anilist_connected(const App& app) {
   return app.auth.anilist.bearer().has_value() && !app.auth.anilist.is_expired(now_epoch_secs());
 }
 
+bool mal_connected(const App& app) {
+  return app.auth.mal.bearer().has_value() && !app.auth.mal.is_expired(now_epoch_secs());
+}
+
 // The master switch ANDed with the connection (06 §5.5 sync_enabled): the
 // gate on whether to spawn any sync at all.
 bool sync_enabled(const App& app) {
   return app.config.anilist_sync_enabled && anilist_connected(app);
 }
 
+// Whether a sync run has any tracker to talk to: AniList under its master
+// switch, or the MAL mirror (which pulls the account's list and pushes edits
+// whenever it is connected — a MAL-only account syncs too).
+bool any_tracker(const App& app) { return sync_enabled(app) || mal_connected(app); }
+
 // Arm the action-flush debounce after a status/play edit (ROD-291). A no-op
-// when sync is off or disconnected.
+// when no tracker is connected.
 void arm_sync(App& app) {
-  if (sync_enabled(app)) app.sync_flush_deadline = app.tick_count + kSyncFlushTicks;
+  if (any_tracker(app)) app.sync_flush_deadline = app.tick_count + kSyncFlushTicks;
 }
 
 // sync::SyncSummary -> the event-safe SyncFlushed (event.hpp stays off
@@ -939,7 +951,8 @@ void arm_sync(App& app) {
 // here (A1: it gets no drain rights and no toast of its own; a push_failed/
 // push_skipped row simply stays dirty for next run, silently, same as the
 // AniList mirror's own quieter outcomes).
-SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed) {
+SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed,
+                            const mal_mirror::MirrorPullSummary& mal_pull) {
   using K = sync::SyncOutcome;
   SyncOutcome outcome;
   switch (s.outcome) {
@@ -955,7 +968,18 @@ SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed
     case K::Failed:            outcome = SyncOutcome::Failed; break;
     default:                   outcome = SyncOutcome::Failed;  // unreachable (closed enum).
   }
-  return SyncFlushed{outcome, s.pulled.imported, s.pulled.reconciled, s.pushed, mal_pushed};
+  SyncFlushed out{outcome, s.pulled.imported, s.pulled.reconciled, s.pushed, mal_pushed};
+  using M = mal_mirror::MirrorOutcome;
+  if (mal_pull.outcome == M::Completed) {
+    out.mal_pull_failed = mal_pull.pull_failed;
+    out.mal_pulled = mal_pull.pulled.reconciled;
+    out.mal_imported = mal_pull.pulled.imported;
+  } else {
+    // Disabled (no MAL account) is silence; a refused or rate-limited pull is
+    // a failed one for the toast's purposes.
+    out.mal_pull_failed = mal_pull.outcome != M::Disabled;
+  }
+  return out;
 }
 
 // Sync worker (P20, 04 §4.6): opens its OWN store connection (store.hpp's
@@ -971,27 +995,36 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
                   pull_only, now]() mutable {
     sync::SyncSummary summary = sync::SyncSummary::terminal(sync::SyncOutcome::Failed);
     std::uint32_t mal_pushed = 0;
+    mal_mirror::MirrorPullSummary mal_pull =
+        mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled);
     auto store = Store::open(db_path);
     if (store.has_value()) {
+      // The MAL mirror rides this same worker/store connection, no drain
+      // rights of its own (A1) — never a separate worker, never its own
+      // spawn. Order: the mirror PULLS first, so a change made on MAL's side
+      // is in the library before the AniList run pushes; then the AniList
+      // pull/push; then the mirror push carries anything AniList brought in
+      // back to MAL. Both mirror halves run regardless of pull_only: the
+      // pull is the launch refresh's whole point, and the push has always
+      // ridden every run.
+      const mal_mirror::HttpMalMirrorClient mal_client(http);
+      const bool mal_on = auth.mal.bearer().has_value();
+      auto p = mal_mirror::pull_mirror(mal_client, auth.mal, *store, mal_on, now);
+      if (p.has_value()) mal_pull = *p;
       const sync::HttpAniListSync ani(http);
       auto r = sync::run_sync(ani, auth, *store, now, enabled, pull_only, sync::thread_sleep);
       if (r.has_value()) summary = *r;
-      // P31 §9.1 slice 4: the MAL mirror push rides this same worker/store
-      // connection, no drain rights of its own (A1) — never a separate
-      // worker, never its own spawn. Runs regardless of pull_only (MAL is
-      // push-only to begin with, so there is no "pull" half to skip).
-      const mal_mirror::HttpMalMirrorClient mal_client(http);
-      auto m = mal_mirror::push_mirror(mal_client, auth.mal, *store, auth.mal.bearer().has_value());
+      auto m = mal_mirror::push_mirror(mal_client, auth.mal, *store, mal_on);
       if (m.has_value()) mal_pushed = m->pushed;
     }
-    queue.try_post(Event{to_sync_flushed(summary, mal_pushed)});
+    queue.try_post(Event{to_sync_flushed(summary, mal_pushed, mal_pull)});
   });
 }
 
 // Spawn a sync run, unless one is already inflight (re-arm to retry) or the
 // gate is closed. `pull_only` is the launch-refresh path (06 §5.2).
 void flush_sync(App& app, bool pull_only) {
-  if (!sync_enabled(app)) return;
+  if (!any_tracker(app)) return;
   if (app.syncing) {
     // A run is going; retry after another period rather than overlap.
     app.sync_flush_deadline = app.tick_count + kSyncFlushTicks;
@@ -1025,6 +1058,24 @@ void on_sync_flushed(App& app, const SyncFlushed& s) {
   if (s.mal_pushed > 0) {
     app.toasts.push(ToastKind::Info, "↑ " + std::to_string(s.mal_pushed) + " to MyAnimeList",
                      app.tick_count);
+  }
+  if (s.mal_imported > 0) {
+    app.toasts.push(ToastKind::Info,
+                    "+ " + std::to_string(s.mal_imported) + " added from MyAnimeList",
+                    app.tick_count);
+  }
+  if (s.mal_pulled > 0) {
+    app.toasts.push(ToastKind::Info, "\xE2\x86\x93 " + std::to_string(s.mal_pulled) + " from MyAnimeList",
+                    app.tick_count);
+  }
+  if (s.mal_pull_failed) {
+    app.toasts.push(ToastKind::Warning, "couldn't pull your MyAnimeList list", app.tick_count);
+  }
+  // A first import lands in an empty History that check_schedule_notices
+  // (below) would not reload; anything adopted is worth the two local reads.
+  if (s.imported + s.mal_imported + s.reconciled + s.mal_pulled > 0) {
+    load_history(app);
+    load_schedule(app);
   }
   // P37 slice 3: "after each sync pull" re-check. NOTE the honest premise
   // (P37 review): the pull reconciles status/progress/score only — the ONLY
@@ -2707,6 +2758,17 @@ void on_key(App& app, const KeyEvent& k) {
             app.discover_filters.genres_loading = true;
             spawn_genre_collection(*app.queue, app.deps->genre_collection);
           }
+        } else if (app.view == View::History && app.pane == Pane::List) {
+          // History: step the status filter (the list's one narrowing
+          // besides `/`); `F` below clears it.
+          app.history.cycle_status_filter(1);
+          app.dirty = true;
+        }
+        return;
+      case U'F':
+        if (app.view == View::History && app.pane == Pane::List) {
+          app.history.clear_status_filter();
+          app.dirty = true;
         }
         return;
       case U'j':
@@ -3050,6 +3112,9 @@ void on_key(App& app, const KeyEvent& k) {
         (app.view == View::History && app.pane == Pane::Detail) || app.view == View::Detail) {
       if (app.episode.fetched && !app.episode.episodes.empty()) {
         play_focused_episode();
+      } else if (app.episode.fetched && app.episode.no_source) {
+        app.toasts.push(ToastKind::Warning, "no source has this show \xC2\xB7 v tries one by hand",
+                        app.tick_count);
       }
       return;
     }
@@ -4134,9 +4199,18 @@ void draw_bottom_bar(const App& app, CellBuffer& buf) {
   // Settings edit mode (P18, DESIGN §7.5) swaps to its own two-state line —
   // idle_help(View, Pane) has no editing flag, so it's special-cased here
   // rather than growing that helper's signature for one view.
-  const std::string help = (app.view == View::Settings && app.settings.editing())
-                                ? "type to edit \xC2\xB7 enter confirm \xC2\xB7 esc cancel"
-                                : detail::idle_help(app.view, app.pane);
+  // A show page whose source walk dead-ended has nothing to play: the line
+  // must not advertise "enter play" over an empty grid (the one hardware
+  // report of "I don't see how to play this").
+  const bool detail_surface = app.view == View::Detail || app.pane == Pane::Detail;
+  const bool dead_end = detail_surface && app.episode.fetched && app.episode.no_source &&
+                        app.episode.episodes.empty();
+  const std::string help =
+      (app.view == View::Settings && app.settings.editing())
+          ? "type to edit \xC2\xB7 enter confirm \xC2\xB7 esc cancel"
+          : dead_end ? "no source has this show \xC2\xB7 v try a source by hand \xC2\xB7 "
+                       "P save for later \xC2\xB7 space/esc back"
+                     : detail::idle_help(app.view, app.pane);
   buf.put_str(x, y, help, theme::fg3, theme::bg);
 }
 
@@ -4220,7 +4294,7 @@ std::string idle_help(View v, Pane p) {
     case View::History:
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
-      return "jk move · / filter · l/enter detail · p/x/c/w/P status · s score · X delete · r/u reset/undo · q quit";
+      return "jk move · / filter · f status · l/enter detail · p/x/c/w/P status · s score · X delete · r/u reset/undo · q quit";
     case View::Discover:
       // "P save" (KEYS_AUDIT F8): add-to-watchlist worked here all along but
       // was advertised only on Browse's line.
@@ -4547,6 +4621,15 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // images), so that paint purges every held placement and re-transmits.
   bool placements_stale = false;
   std::string resize_purge;
+  // Resize settle: a window drag delivers one SIGWINCH per step, and a paint
+  // against a size the terminal has already moved past is what leaves two
+  // layouts on screen at once. The size is polled each loop turn while a
+  // resize is pending and applied only once it has held still across two
+  // polls (one turn, ≤100ms) — one repaint at the final geometry, applied
+  // straight to the app (no queue hop that a full queue could drop).
+  bool resize_pending = false;
+  WinSize resize_seen{};
+  int resize_settled = 0;
 
   // One frame: draw (pure) → compose the A4 cover APC deltas (single detail
   // cover + the P17 grid) → flush with the deletes spliced pre-diff and the
@@ -4587,9 +4670,26 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   while (!app.quit) {
     // Poll the SIGWINCH flag each loop turn (A1: handler only set a flag).
     if (take_resize_flag()) {
+      resize_pending = true;
+      resize_settled = 0;
+    }
+    if (resize_pending) {
       const WinSize ws = query_winsize();
-      placements_stale = true;  // the next paint purges + re-transmits.
-      queue.try_post(Event{Resize{ws.cols, ws.rows, ws.xpixel, ws.ypixel}});
+      if (ws == resize_seen) {
+        ++resize_settled;
+      } else {
+        resize_seen = ws;
+        resize_settled = 0;
+      }
+      if (resize_settled >= 1) {
+        resize_pending = false;
+        placements_stale = true;   // the next paint purges + re-transmits...
+        back.mark_screen_stale();  // ...and ED-clears, size delta or not.
+        debug_log("resize: cols=" + std::to_string(ws.cols) + " rows=" +
+                  std::to_string(ws.rows) + " xpx=" + std::to_string(ws.xpixel) +
+                  " ypx=" + std::to_string(ws.ypixel));
+        tick(app, Event{Resize{ws.cols, ws.rows, ws.xpixel, ws.ypixel}});
+      }
     }
 
     std::optional<Event> ev = queue.wait_next();

@@ -1427,6 +1427,54 @@ TEST_CASE("mal_mirror_snapshot_is_independent_of_the_anilist_sync_snapshot") {
   CHECK(store.list_dirty_for_sync()->size() == 1);        // 811 only.
 }
 
+TEST_CASE("reconcile_mal_pull_imports_every_status_and_keeps_its_own_snapshot") {
+  Store store = open_mem();
+  auto r1 = remote_seed(-901, ListStatus::Completed, 12, "MAL A", 0, 90);
+  r1.import_seed->mal_id = 901;
+  auto r2 = remote_seed(902, ListStatus::Planning, 0, "MAL B", 0, 0);
+  r2.import_seed->mal_id = 902;
+  auto out = store.reconcile_mal_pull({r1, r2}, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->imported == 2);  // every status, not just Watching.
+  CHECK(out->unmatched.empty());
+  CHECK(store.list_dirty_for_mal_mirror()->empty());  // the mirror snapshot moved with the adopt.
+  CHECK(store.list_dirty_for_sync()->size() == 1);     // 902 owes AniList; -901 never can.
+  CHECK(sync_state(store, -901).first == ListStatus::Completed);
+  auto g = store.get_show(-901);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->user_score == 90);
+}
+
+TEST_CASE("reconcile_mal_pull_matches_by_mal_id_and_backfills_a_null_one") {
+  Store store = open_mem();
+  lib_row(store, 5, ListStatus::Watching, 3);  // sample(5) carries mal_id 105.
+  auto r = remote_seed(-105, ListStatus::Watching, 7, "Show 5", 0, 0);
+  r.import_seed->mal_id = 105;
+  auto out = store.reconcile_mal_pull({r}, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->imported == 0);
+  CHECK(out->reconciled == 1);
+  CHECK(sync_state(store, 5) == std::make_pair(ListStatus::Watching, std::uint32_t{7}));
+  auto dup = store.get_show(-105);
+  REQUIRE(dup.has_value());
+  CHECK(!dup->has_value());
+
+  Enrichment six;
+  six.anilist_id = 6;
+  six.title_romaji = "Six";
+  REQUIRE(store.add_to_library(six, 10).has_value());  // NULL mal_id.
+  auto r6 = remote_seed(6, ListStatus::Planning, 0, "Six", 0, 0);
+  r6.import_seed->mal_id = 606;
+  auto out6 = store.reconcile_mal_pull({r6}, 60);
+  REQUIRE(out6.has_value());
+  CHECK(out6->reconciled == 1);  // first contact is never skipped.
+  auto g = store.get_show(6);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->enrichment.mal_id == 606);
+}
+
 TEST_CASE("pull_conflict_keeps_local_and_stays_dirty") {
   Store store = open_mem();
   lib_row(store, 5, ListStatus::Watching, 3);

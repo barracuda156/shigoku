@@ -78,6 +78,7 @@ Your watchlist, grouped by status.
 | `j`/`k`, arrows, wheel | Move through the list |
 | `g`/`G` | Jump to the first/last entry |
 | `/` | Filter the list in place by title — local and instant, no network |
+| `f` / `F` | Narrow the list to one status — Watching → Planning → Paused → Completed → Dropped → all — and back to all. The group header says when a filter is on |
 | `l`, `Enter`, double-click | Open the detail preview pane on a wide terminal, or the full page directly on a narrow one |
 | `Space` | Open the full page directly, from any width |
 | `w` / `p` / `c` / `x` / `P` | Set status: Watching / Paused / Completed / Dropped / Planning |
@@ -87,6 +88,7 @@ Your watchlist, grouped by status.
 | `X`, then `y` | Delete the show and its local episode history — a second key press confirms; anything else cancels |
 | `q` | Quit |
 
+Each row shows your own score at the right (`★ 8.5`) when you have one.
 A show that aired a new episode since you last checked carries a `NEW` tag
 in this list until you open it (see [Calendar](#calendar-key-c) for where
 that comes from). Your score is stored as a plain 0–10 number and converted
@@ -278,8 +280,20 @@ Settings → MyAnimeList → *connect* works the same way as AniList's, using
 shigoku's built-in app registration. To use your own instead, register an
 app at `myanimelist.net/apiconfig` (redirect URL
 `http://127.0.0.1:8767/mal/callback`) and enter its client ID under *mal
-client id*. Once connected, MAL is a one-way mirror: status, progress, and
-score push to it alongside AniList — nothing is ever pulled back from MAL.
+client id*. Once connected:
+
+- your MAL list pulls into History right away and again on every launch —
+  every status, with progress and score — so a MAL-only account gets a full
+  watchlist too;
+- status, progress, and score edits push back to MAL, alongside AniList when
+  that is connected as well;
+- a show only MAL knows about (no AniList counterpart yet) still plays,
+  downloads, and mirrors like any other; it joins AniList sync once AniList
+  can name it.
+
+An edit made on the MAL site after your last push wins over shigoku's
+older copy; an edit made here since then wins over MAL's (it pushes up on
+the next sync), the same rule AniList sync uses.
 
 ### Catalog sources
 
@@ -308,7 +322,7 @@ terminal:
 | `shigoku <title> [--dub\|--sub] [--quality <q>]` | Search, then pick a result and an episode from numbered lists, then play it |
 | `shigoku download <title> [<episode>] [--dub\|--sub]` | Same search-and-pick flow, but downloads instead of playing; giving `<episode>` skips that last prompt (it matches an exact episode label first, then falls back to a 1-based position) |
 | `shigoku login [--paste]` | Sign in to AniList from the terminal — a successful sign-in immediately runs a sync too. `--paste` swaps the automatic browser-and-listener flow for manually pasting the redirect URL |
-| `shigoku sync` | Pull and push your AniList list once, and push to MyAnimeList if connected, then exit — this always runs, even if Settings' *sync enabled* is switched off (that toggle only gates the interface's own automatic sync) |
+| `shigoku sync` | Pull your MyAnimeList list and push edits back if connected, then pull and push your AniList list once, then exit — this always runs, even if Settings' *sync enabled* is switched off (that toggle only gates the interface's own automatic sync) |
 | `shigoku update` | Check GitHub for a newer release — shigoku never updates itself; reinstall via your package manager |
 | `shigoku --paths` | Print where config, database, cache, and `mpv` currently resolve to |
 | `shigoku --version` / `-V` | Print the version and exit |
@@ -379,6 +393,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | Key | Action |
 |---|---|
 | `/` | Filter the list (local) |
+| `f` / `F` | Status filter: next / clear |
 | `j`/`k`, `g`/`G` | Move / jump the list |
 | `l`, `Enter`, double-click | Open detail preview (wide) or full page (narrow) |
 | `Space` | Open full page (any width) |

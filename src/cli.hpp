@@ -110,8 +110,20 @@ extern const char* const kUsage;
 // is a separate push with its own outcome (mal_mirror.hpp), silent on
 // anything but a completed push (same rationale as the TUI's on_sync_flushed
 // toast); only that one count rides into this render.
+// The MAL mirror's pull, flattened for the render (mal_mirror.hpp stays out
+// of this header's graph, like sync's own counts ride SyncSummary). `ran` =
+// a MAL account was connected so the pull was attempted at all.
+struct MalPullCounts {
+  bool ran = false;
+  bool failed = false;        // transport/decode miss: nothing adopted.
+  bool unauthorized = false;  // MAL refused the token.
+  std::uint32_t pulled = 0;
+  std::uint32_t imported = 0;
+};
+
 [[nodiscard]] std::string render_sync_summary(const sync::SyncSummary& s,
-                                               std::uint32_t mal_pushed = 0);
+                                               std::uint32_t mal_pushed = 0,
+                                               MalPullCounts mal_pull = {});
 
 // Which network call failed. Data and Unsupported read per stage: a search
 // miss is not a resolve miss, and search-stage Unsupported is the

@@ -138,11 +138,19 @@ class CellBuffer {
   // invalidate, where `prev` no longer matches the screen).
   void mark_all_dirty() { force_full_ = true; }
 
+  // The screen itself is suspect — a resize landed, whatever the geometry
+  // delta: the next flush ED-clears before its full repaint even when the
+  // buffer's size is unchanged. A shrink restored within one paint interval,
+  // or a terminal that reflows on its own, leaves residue a same-size diff
+  // can never see.
+  void mark_screen_stale() { screen_stale_ = true; }
+
  private:
   int w_ = 0, h_ = 0;
   std::vector<Cell> cells_;
   std::vector<Rect> exclusions_;
   mutable bool force_full_ = false;
+  mutable bool screen_stale_ = false;
 };
 
 }  // namespace shigoku::tui

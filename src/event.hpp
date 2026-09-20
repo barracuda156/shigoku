@@ -341,6 +341,12 @@ struct SyncFlushed {
   // same dependency-free rationale as the three AniList fields above
   // (mal_mirror.hpp stays out of event.hpp's link graph too).
   std::uint32_t mal_pushed = 0;
+  // The MAL mirror's pull, flattened the same way: what the account's own
+  // list brought into the library this run. `mal_pull_failed` = the fetch
+  // itself missed (or MAL refused the token); nothing was adopted.
+  std::uint32_t mal_pulled = 0;
+  std::uint32_t mal_imported = 0;
+  bool mal_pull_failed = false;
   friend bool operator==(const SyncFlushed&, const SyncFlushed&) = default;
 };
 

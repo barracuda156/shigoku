@@ -111,6 +111,76 @@ TEST_CASE("by_id_url") {
 // parse_detail + the field mapper
 // ===========================================================================
 
+namespace {
+const char* kListPage = R"({
+  "data": [
+    {"node": {"id": 52991, "title": "Sousou no Frieren",
+              "main_picture": {"medium": "https://cdn.myanimelist.net/images/anime/1015/138006.jpg"},
+              "num_episodes": 28, "status": "finished_airing"},
+     "list_status": {"status": "completed", "score": 9, "num_episodes_watched": 28,
+                     "is_rewatching": false, "updated_at": "2024-05-01T12:34:56+00:00"}},
+    {"node": {"id": 21, "title": "One Piece"},
+     "list_status": {"status": "watching", "score": 0, "num_episodes_watched": 1100}},
+    {"node": {"title": "no id here"}, "list_status": {"status": "dropped"}}
+  ],
+  "paging": {"next": "https://api.myanimelist.net/v2/users/@me/animelist?offset=1000&limit=1000"}
+})";
+}  // namespace
+
+TEST_CASE("parse_user_list_page maps rows, bridges ids, drops id-less nodes, keeps the link") {
+  auto p = parse_user_list_page(kListPage, doubling_bridge);
+  REQUIRE(p.has_value());
+  REQUIRE(p->entries.size() == 2);
+  const UserListEntry& a = p->entries[0];
+  CHECK(a.seed.mal_id == 52991);
+  CHECK(a.seed.anilist_id == 52991 * 2);
+  CHECK(a.seed.title_romaji == "Sousou no Frieren");
+  CHECK(a.seed.total_episodes == 28);
+  CHECK(a.status == ListStatus::Completed);
+  CHECK(a.progress == 28);
+  CHECK(a.score == 9);
+  CHECK(a.updated_at == 1714566896);
+  const UserListEntry& b = p->entries[1];
+  CHECK(b.status == ListStatus::Watching);
+  CHECK(b.progress == 1100);
+  CHECK(b.score == 0);
+  CHECK(b.updated_at == 0);
+  CHECK(p->next == "https://api.myanimelist.net/v2/users/@me/animelist?offset=1000&limit=1000");
+}
+
+TEST_CASE("parse_user_list_page: a last page carries no link; garbage is a decode error") {
+  auto last = parse_user_list_page(R"({"data": [], "paging": {}})", doubling_bridge);
+  REQUIRE(last.has_value());
+  CHECK(last->entries.empty());
+  CHECK(!last->next.has_value());
+  auto bad = parse_user_list_page("nope", doubling_bridge);
+  REQUIRE(!bad.has_value());
+  CHECK(bad.error().kind == ProviderError::Kind::Decode);
+  auto wrong_shape = parse_user_list_page("[]", doubling_bridge);
+  REQUIRE(!wrong_shape.has_value());
+  CHECK(wrong_shape.error().kind == ProviderError::Kind::Decode);
+}
+
+TEST_CASE("parse_iso8601_utc: Z and offset forms; anything else is 0") {
+  CHECK(parse_iso8601_utc("2024-05-01T12:34:56Z") == 1714566896);
+  CHECK(parse_iso8601_utc("2024-05-01T12:34:56+00:00") == 1714566896);
+  CHECK(parse_iso8601_utc("2024-05-01T12:34:56+09:00") == 1714566896 - 9 * 3600);
+  CHECK(parse_iso8601_utc("2024-05-01T12:34:56-02:30") == 1714566896 + 2 * 3600 + 30 * 60);
+  CHECK(parse_iso8601_utc("1970-01-01T00:00:00Z") == 0);
+  CHECK(parse_iso8601_utc("2024-05-01") == 0);
+  CHECK(parse_iso8601_utc("2024-13-01T00:00:00Z") == 0);
+  CHECK(parse_iso8601_utc("2024-05-01T12:34:56") == 0);
+  CHECK(parse_iso8601_utc("") == 0);
+}
+
+TEST_CASE("user_list_url asks for the list status and seed fields, a full page, nsfw included") {
+  const std::string url = user_list_url();
+  CHECK(url.rfind(std::string(kApiBase) + "/users/@me/animelist?", 0) == 0);
+  CHECK(url.find("fields=list_status") != std::string::npos);
+  CHECK(url.find("limit=1000") != std::string::npos);
+  CHECK(url.find("nsfw=true") != std::string::npos);
+}
+
 TEST_CASE("parse_detail maps every field of a full node") {
   auto d = parse_detail(kNode, 0, doubling_bridge);
   REQUIRE(d.has_value());

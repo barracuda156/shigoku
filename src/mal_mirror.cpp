@@ -1,5 +1,7 @@
 #include "mal_mirror.hpp"
 
+#include <algorithm>
+
 namespace shigoku::mal_mirror {
 
 Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, const MalAuth& auth,
@@ -78,6 +80,46 @@ Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, con
     }
     summary.push_failed += 1;
   }
+  return summary;
+}
+
+Result<MirrorPullSummary, StoreError> pull_mirror(const MalMirrorClient& client,
+                                                  const MalAuth& auth, Store& store, bool enabled,
+                                                  std::int64_t now) {
+  if (!enabled) return MirrorPullSummary::terminal(MirrorOutcome::Disabled);
+  const auto token = auth.bearer();
+  if (!token.has_value()) return MirrorPullSummary::terminal(MirrorOutcome::Disabled);
+
+  auto fetched = client.fetch_list(*token);
+  if (!fetched.has_value()) {
+    const ProviderError& e = fetched.error();
+    if (e.kind == ProviderError::Kind::Http && e.status == 401) {
+      return MirrorPullSummary::terminal(MirrorOutcome::Unauthorized);
+    }
+    if (e.kind == ProviderError::Kind::RateLimited) {
+      return MirrorPullSummary::terminal(MirrorOutcome::RateLimited);
+    }
+    MirrorPullSummary failed;
+    failed.pull_failed = true;
+    return failed;
+  }
+
+  std::vector<RemoteEntry> remote;
+  remote.reserve(fetched->size());
+  for (const mal_catalog::UserListEntry& e : *fetched) {
+    RemoteEntry r;
+    r.anilist_id = e.seed.anilist_id;
+    r.status = e.status;
+    r.progress = e.progress;
+    r.score = std::min<std::uint32_t>(e.score, 10) * 10;  // MAL 0..=10 -> raw 0..=100.
+    r.updated_at = e.updated_at;
+    r.import_seed = e.seed;
+    remote.push_back(std::move(r));
+  }
+  auto out = store.reconcile_mal_pull(remote, now);
+  if (!out.has_value()) return err(out.error());
+  MirrorPullSummary summary;
+  summary.pulled = *out;
   return summary;
 }
 

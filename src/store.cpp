@@ -1784,11 +1784,15 @@ bool seed_has_title(const Enrichment& e) {
 // ~14k entries under the 2MB response cap. Overflow is counted as unmatched,
 // not imported (ROD-467 chaos pass).
 constexpr std::size_t kImportCap = 500;
+// The MAL list is imported whole; a long-lived account runs to the low
+// thousands, and the fetch itself stops at kUserListPages pages anyway.
+constexpr std::size_t kMalImportCap = 5000;
 
 struct ReconcileCandidate {
   std::int64_t id = 0;
   ListEntry local;
   std::optional<ListEntry> base;
+  std::optional<std::int64_t> mal_id;
 };
 
 }  // namespace
@@ -1796,39 +1800,27 @@ struct ReconcileCandidate {
 // Read candidates + collapsed remote list into the rows needing a write. The
 // concurrent-edit window is between this read and apply_reconcile.
 Result<SyncPlan, StoreError> Store::reconcile_plan(const std::vector<RemoteEntry>& remote) const {
-  sqlite3* db = conn_;
-  // Collapse duplicate ids across groups (06 §5.4) by (updatedAt, progress):
-  // recency decides, magnitude only breaks a tie. Defensive; real copies are
-  // views of one record and agree. Collapsing by progress first would
-  // re-raise the correction the merge exists to land. An entirely unstamped
-  // group (AniList nulls updatedAt on rows untouched since the field landed,
-  // and null maps to 0) falls back to plain max, order-independent but
-  // carrying that same upward bias. Seeds are per-media; the first non-empty
-  // one per id wins (O3).
-  std::unordered_map<std::int64_t, std::tuple<ListStatus, std::uint32_t, std::uint32_t, std::int64_t>>
-      remote_map;
-  std::unordered_map<std::int64_t, Enrichment> seeds;
-  for (const RemoteEntry& e : remote) {
-    auto it = remote_map.find(e.anilist_id);
-    if (it == remote_map.end()) {
-      remote_map.emplace(e.anilist_id,
-                         std::make_tuple(e.status, e.progress, e.score, e.updated_at));
-    } else {
-      const auto cand = std::make_tuple(e.updated_at, e.progress);
-      const auto cur = std::make_tuple(std::get<3>(it->second), std::get<1>(it->second));
-      if (cand > cur) it->second = std::make_tuple(e.status, e.progress, e.score, e.updated_at);
-    }
-    if (e.import_seed.has_value() && !seeds.contains(e.anilist_id)) {
-      seeds.emplace(e.anilist_id, *e.import_seed);
-    }
-  }
+  return reconcile_plan_for(SyncTracker::AniList, remote);
+}
 
-  Stmt s(db,
-         "SELECT anilist_id, list_status, progress, user_score, "
-         "       synced_status, synced_progress, synced_score "
-         "FROM show WHERE library_added_at IS NOT NULL");
+Result<SyncPlan, StoreError> Store::reconcile_plan_for(SyncTracker tracker,
+                                                       const std::vector<RemoteEntry>& remote) const {
+  sqlite3* db = conn_;
+  const bool mal = tracker == SyncTracker::Mal;
+
+  // The candidates: every library row with its local triple and the
+  // tracker's own snapshot as the merge base. Read first so a MAL row can be
+  // matched by mal_id below (its bridged anilist_id may differ from the id
+  // the library holds the same show under).
+  Stmt s(db, mal ? "SELECT anilist_id, list_status, progress, user_score, "
+                   "       mal_synced_status, mal_synced_progress, mal_synced_score, mal_id "
+                   "FROM show WHERE library_added_at IS NOT NULL"
+                 : "SELECT anilist_id, list_status, progress, user_score, "
+                   "       synced_status, synced_progress, synced_score, mal_id "
+                   "FROM show WHERE library_added_at IS NOT NULL");
   if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
   std::vector<ReconcileCandidate> candidates;
+  std::unordered_map<std::int64_t, std::int64_t> by_mal;  // mal_id -> anilist_id (MAL only).
   for (;;) {
     const int rc = s.step();
     if (rc == SQLITE_DONE) break;
@@ -1840,9 +1832,49 @@ Result<SyncPlan, StoreError> Store::reconcile_plan(const std::vector<RemoteEntry
     const auto snap_status = s.col_opt_text(4);
     const auto snap_progress = s.col_opt_uint(5);
     if (snap_status.has_value() && snap_progress.has_value()) {
-      c.base = ListEntry{parse_list_status(*snap_status), *snap_progress, s.col_opt_uint(6).value_or(0)};
+      // The mirror's score snapshot lives on MAL's 0..=10; the merge runs on
+      // raw 0..=100 like everything else in the store.
+      const std::uint32_t snap_score = s.col_opt_uint(6).value_or(0);
+      c.base = ListEntry{parse_list_status(*snap_status), *snap_progress,
+                         mal ? snap_score * 10 : snap_score};
     }
+    c.mal_id = s.col_opt_int64(7);
+    if (mal && c.mal_id.has_value() && !by_mal.contains(*c.mal_id)) by_mal.emplace(*c.mal_id, c.id);
     candidates.push_back(std::move(c));
+  }
+
+  // Collapse duplicate ids across groups (06 §5.4) by (updatedAt, progress):
+  // recency decides, magnitude only breaks a tie. Defensive; real copies are
+  // views of one record and agree. Collapsing by progress first would
+  // re-raise the correction the merge exists to land. An entirely unstamped
+  // group (AniList nulls updatedAt on rows untouched since the field landed,
+  // and null maps to 0) falls back to plain max, order-independent but
+  // carrying that same upward bias. Seeds are per-media; the first non-empty
+  // one per id wins (O3). A MAL row is keyed to the library row that already
+  // carries its mal_id, when there is one.
+  std::unordered_map<std::int64_t, std::tuple<ListStatus, std::uint32_t, std::uint32_t, std::int64_t>>
+      remote_map;
+  std::unordered_map<std::int64_t, Enrichment> seeds;
+  for (const RemoteEntry& e : remote) {
+    std::int64_t key = e.anilist_id;
+    if (mal && e.import_seed.has_value() && e.import_seed->mal_id.has_value()) {
+      if (const auto held = by_mal.find(*e.import_seed->mal_id); held != by_mal.end()) {
+        key = held->second;
+      }
+    }
+    auto it = remote_map.find(key);
+    if (it == remote_map.end()) {
+      remote_map.emplace(key, std::make_tuple(e.status, e.progress, e.score, e.updated_at));
+    } else {
+      const auto cand = std::make_tuple(e.updated_at, e.progress);
+      const auto cur = std::make_tuple(std::get<3>(it->second), std::get<1>(it->second));
+      if (cand > cur) it->second = std::make_tuple(e.status, e.progress, e.score, e.updated_at);
+    }
+    if (e.import_seed.has_value() && !seeds.contains(key)) {
+      Enrichment seed = *e.import_seed;
+      seed.anilist_id = key;  // a rekeyed MAL row seeds under the library's id.
+      seeds.emplace(key, std::move(seed));
+    }
   }
 
   std::unordered_set<std::int64_t> matched;
@@ -1853,6 +1885,12 @@ Result<SyncPlan, StoreError> Store::reconcile_plan(const std::vector<RemoteEntry
   for (const auto& c : candidates) {
     const auto it = remote_map.find(c.id);
     if (it == remote_map.end()) continue;  // library row absent from the remote list.
+    if (mal && !c.mal_id.has_value()) {
+      if (const auto seed = seeds.find(c.id);
+          seed != seeds.end() && seed->second.mal_id.has_value()) {
+        out.mal_backfill.emplace_back(c.id, *seed->second.mal_id);
+      }
+    }
     const auto [rstatus, rprogress, rscore, rupdated] = it->second;
     (void)rupdated;
     const store_detail::Reconciled r =
@@ -1867,14 +1905,17 @@ Result<SyncPlan, StoreError> Store::reconcile_plan(const std::vector<RemoteEntry
     out.plan.push_back(SyncPlanRow{c.id, c.local, merged, snapshot, r.conflict});
   }
 
-  // Partition the remote-only ids: auto-import the WATCHING slice that
-  // carries a usable seed (O3); everything else is counted, not imported.
+  // Partition the remote-only ids. AniList auto-imports the WATCHING slice
+  // that carries a usable seed (O3) and counts the rest; the MAL list is the
+  // account's whole library, so every status with a seed imports.
+  const std::size_t cap = mal ? kMalImportCap : kImportCap;
   for (auto& [id, rv] : remote_map) {
     if (matched.contains(id)) continue;
     const auto [status, progress, score, updated] = rv;
     (void)updated;
     auto seed_it = seeds.find(id);
-    if (seed_it != seeds.end() && status == ListStatus::Watching && seed_has_title(seed_it->second)) {
+    const bool wanted = mal || status == ListStatus::Watching;
+    if (seed_it != seeds.end() && wanted && seed_has_title(seed_it->second)) {
       out.imports.push_back(SyncImportRow{seed_it->second, status, progress, score});
     } else {
       out.unmatched.push_back(id);
@@ -1884,33 +1925,43 @@ Result<SyncPlan, StoreError> Store::reconcile_plan(const std::vector<RemoteEntry
             [](const SyncImportRow& a, const SyncImportRow& b) {
               return a.seed.anilist_id < b.seed.anilist_id;
             });
-  if (out.imports.size() > kImportCap) {
-    for (std::size_t i = kImportCap; i < out.imports.size(); ++i) {
+  if (out.imports.size() > cap) {
+    for (std::size_t i = cap; i < out.imports.size(); ++i) {
       out.unmatched.push_back(out.imports[i].seed.anilist_id);
     }
-    out.imports.resize(kImportCap);
+    out.imports.resize(cap);
   }
   std::sort(out.unmatched.begin(), out.unmatched.end());
   return out;
 }
 
-// Apply each planned write, merged pair and snapshot in one guarded UPDATE.
-// Zero rows changed = a concurrent edit moved the pair past the guard: count
-// contended, leave the row (06 §5.4).
 Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPlanRow>& plan,
                                                         const std::vector<SyncImportRow>& imports,
                                                         std::vector<std::int64_t> unmatched,
                                                         std::int64_t now) {
-  sqlite3* db = conn_;
-  PullOutcome out;
-  out.unmatched = std::move(unmatched);
+  SyncPlan p;
+  p.plan = plan;
+  p.imports = imports;
+  p.unmatched = std::move(unmatched);
+  return apply_reconcile_for(SyncTracker::AniList, p, now);
+}
 
-  // Mint each WATCHING/REPEATING seed (O3), then adopt the remote pair as
-  // truth with a matching snapshot. Both statements run under ONE BEGIN
-  // IMMEDIATE so no other connection sees the transient Planning/0/unsynced
-  // mint (which list_dirty_for_sync would push back as PLANNING, clobbering
-  // the server).
-  for (const SyncImportRow& r : imports) {
+Result<PullOutcome, StoreError> Store::apply_reconcile_for(SyncTracker tracker, const SyncPlan& sp,
+                                                            std::int64_t now) {
+  sqlite3* db = conn_;
+  const bool mal = tracker == SyncTracker::Mal;
+  PullOutcome out;
+  out.unmatched = sp.unmatched;
+  // The mirror's snapshot score column is on MAL's own 0..=10 scale.
+  auto snap_score = [mal](std::uint32_t raw) -> std::int64_t {
+    return mal ? static_cast<std::int64_t>((raw + 5) / 10) : static_cast<std::int64_t>(raw);
+  };
+
+  // Mint each import seed, then adopt the remote triple as truth with a
+  // matching snapshot. Both statements run under ONE BEGIN IMMEDIATE so no
+  // other connection sees the transient Planning/0/unsynced mint (which the
+  // dirty work-list would push back as PLANNING, clobbering the server).
+  for (const SyncImportRow& r : sp.imports) {
     if (auto b = begin_immediate(db); !b.has_value()) return err(b.error());
     if (auto m = add_to_library_on(db, r.seed, now); !m.has_value()) {
       sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -1919,18 +1970,28 @@ Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPla
     // The CAS pins the pre-mint progress at 0, so rise-only and any-change
     // are equivalent here; kept in the rise-only form the merge apply below
     // requires.
-    Stmt s(db,
-           "UPDATE show SET "
-           "  list_status = :status, "
-           "  progress = :progress, "
-           "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
-           "                             ELSE progress_stamped_at END, "
-           "  user_score = :score, "
-           "  synced_status = :status, "
-           "  synced_progress = :progress, "
-           "  synced_score = :score "
-           "WHERE anilist_id = :id AND list_status = :minted AND progress = 0 "
-           "  AND synced_status IS NULL");
+    Stmt s(db, mal ? "UPDATE show SET "
+                     "  list_status = :status, "
+                     "  progress = :progress, "
+                     "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
+                     "                             ELSE progress_stamped_at END, "
+                     "  user_score = :score, "
+                     "  mal_synced_status = :status, "
+                     "  mal_synced_progress = :progress, "
+                     "  mal_synced_score = :snap_score "
+                     "WHERE anilist_id = :id AND list_status = :minted AND progress = 0 "
+                     "  AND mal_synced_status IS NULL"
+                   : "UPDATE show SET "
+                     "  list_status = :status, "
+                     "  progress = :progress, "
+                     "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
+                     "                             ELSE progress_stamped_at END, "
+                     "  user_score = :score, "
+                     "  synced_status = :status, "
+                     "  synced_progress = :progress, "
+                     "  synced_score = :snap_score "
+                     "WHERE anilist_id = :id AND list_status = :minted AND progress = 0 "
+                     "  AND synced_status IS NULL");
     if (!s.prepared()) {
       sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
       return err(StoreError::sqlite(driver_msg(db)));
@@ -1938,6 +1999,7 @@ Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPla
     s.bind_text(":status", to_string(r.status));
     s.bind_int64(":progress", static_cast<std::int64_t>(r.progress));
     s.bind_int64(":score", static_cast<std::int64_t>(r.score));
+    s.bind_int64(":snap_score", snap_score(r.score));
     s.bind_int64(":now", now);
     s.bind_int64(":id", r.seed.anilist_id);
     s.bind_text(":minted", to_string(ListStatus::Planning));
@@ -1960,20 +2022,31 @@ Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPla
   // behind the partial, which cannot retire it (ROD-497). No wrapping
   // transaction: a single guarded UPDATE is its own atomic unit (matches
   // store.rs apply_reconcile exactly).
-  for (const SyncPlanRow& p : plan) {
-    Stmt s(db,
-           "UPDATE show SET "
-           "  list_status = :status, "
-           "  progress = :progress, "
-           "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
-           "                             ELSE progress_stamped_at END, "
-           "  user_score = :score, "
-           "  synced_status = :snap_status, "
-           "  synced_progress = :snap_progress, "
-           "  synced_score = :snap_score "
-           "WHERE anilist_id = :id AND list_status = :guard_status "
-           "  AND progress = :guard_progress "
-           "  AND IFNULL(user_score, 0) = :guard_score");
+  for (const SyncPlanRow& p : sp.plan) {
+    Stmt s(db, mal ? "UPDATE show SET "
+                     "  list_status = :status, "
+                     "  progress = :progress, "
+                     "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
+                     "                             ELSE progress_stamped_at END, "
+                     "  user_score = :score, "
+                     "  mal_synced_status = :snap_status, "
+                     "  mal_synced_progress = :snap_progress, "
+                     "  mal_synced_score = :snap_score "
+                     "WHERE anilist_id = :id AND list_status = :guard_status "
+                     "  AND progress = :guard_progress "
+                     "  AND IFNULL(user_score, 0) = :guard_score"
+                   : "UPDATE show SET "
+                     "  list_status = :status, "
+                     "  progress = :progress, "
+                     "  progress_stamped_at = CASE WHEN progress < :progress THEN :now "
+                     "                             ELSE progress_stamped_at END, "
+                     "  user_score = :score, "
+                     "  synced_status = :snap_status, "
+                     "  synced_progress = :snap_progress, "
+                     "  synced_score = :snap_score "
+                     "WHERE anilist_id = :id AND list_status = :guard_status "
+                     "  AND progress = :guard_progress "
+                     "  AND IFNULL(user_score, 0) = :guard_score");
     if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
     s.bind_text(":status", to_string(p.merged.status));
     s.bind_int64(":progress", static_cast<std::int64_t>(p.merged.progress));
@@ -1981,7 +2054,7 @@ Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPla
     s.bind_int64(":now", now);
     s.bind_text(":snap_status", to_string(p.snapshot.status));
     s.bind_int64(":snap_progress", static_cast<std::int64_t>(p.snapshot.progress));
-    s.bind_int64(":snap_score", static_cast<std::int64_t>(p.snapshot.score));
+    s.bind_int64(":snap_score", snap_score(p.snapshot.score));
     s.bind_int64(":id", p.id);
     s.bind_text(":guard_status", to_string(p.guard.status));
     s.bind_int64(":guard_progress", static_cast<std::int64_t>(p.guard.progress));
@@ -1994,7 +2067,24 @@ Result<PullOutcome, StoreError> Store::apply_reconcile(const std::vector<SyncPla
     out.reconciled++;
     if (p.conflict) out.conflicts++;
   }
+
+  // MAL only: a library row matched through its mal_id-less identity gets
+  // the id filled in, so the push's NULL-mal_id skip stops hiding it.
+  for (const auto& [anilist_id, mal_id] : sp.mal_backfill) {
+    Stmt s(db, "UPDATE show SET mal_id = ?2 WHERE anilist_id = ?1 AND mal_id IS NULL");
+    if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
+    s.bind_int64(1, anilist_id);
+    s.bind_int64(2, mal_id);
+    if (s.step() != SQLITE_DONE) return err(StoreError::sqlite(driver_msg(db)));
+  }
   return out;
+}
+
+Result<PullOutcome, StoreError> Store::reconcile_mal_pull(const std::vector<RemoteEntry>& remote,
+                                                           std::int64_t now) {
+  auto plan = reconcile_plan_for(SyncTracker::Mal, remote);
+  if (!plan.has_value()) return err(plan.error());
+  return apply_reconcile_for(SyncTracker::Mal, *plan, now);
 }
 
 Result<std::vector<SyncRow>, StoreError> Store::list_dirty_for_sync() const {

@@ -3,6 +3,8 @@
 
 #include "mal_catalog.hpp"
 
+#include "mal.hpp"  // list_status_from_mal: the one status table, both directions.
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -221,6 +223,29 @@ Result<Page, ProviderError> discover(const http::Client& client, std::string_vie
   return out;
 }
 
+Result<std::vector<UserListEntry>, ProviderError> user_list(const http::Client& client,
+                                                            std::string_view token,
+                                                            const IdBridge& bridge) {
+  std::vector<UserListEntry> all;
+  std::string url = detail::user_list_url();
+  for (std::uint32_t page = 0; page < kUserListPages; ++page) {
+    http::Request req;
+    req.method = http::Method::Get;
+    req.url = url;
+    req.accept = http::Accept::Any2xx;
+    req.extra_headers.push_back(http::Header{"Authorization", "Bearer " + std::string(token)});
+    auto resp = client.fetch(req);
+    if (!resp.has_value()) return err(resp.error());
+    auto parsed = detail::parse_user_list_page(as_view(*resp), bridge);
+    if (!parsed.has_value()) return err(parsed.error());
+    for (auto& e : parsed->entries) all.push_back(std::move(e));
+    if (!parsed->next.has_value() || parsed->next->empty()) break;
+    if (parsed->next->rfind(kApiBase, 0) != 0) break;  // never follow off-host.
+    url = *parsed->next;
+  }
+  return all;
+}
+
 Result<std::optional<Detail>, ProviderError> by_id(const http::Client& client,
                                                    std::string_view client_id, std::int64_t mal_id,
                                                    std::int64_t keep_anilist_id,
@@ -242,6 +267,87 @@ Result<std::optional<Detail>, ProviderError> by_id(const http::Client& client,
 // detail
 // ---------------------------------------------------------------------------
 namespace detail {
+
+std::string user_list_url() {
+  // list_status expands to its whole object (status, score, num_episodes_
+  // watched, is_rewatching, updated_at); the node fields are the subset
+  // map_node reads for a seed row. nsfw=true: the account's list is the
+  // account's business, nothing is hidden from it.
+  return std::string(kApiBase) +
+         "/users/@me/animelist?fields=list_status,alternative_titles,num_episodes,status,"
+         "start_season,start_date,media_type,mean&nsfw=true&limit=" +
+         std::to_string(kUserListPageSize);
+}
+
+std::int64_t parse_iso8601_utc(std::string_view s) {
+  auto digits = [&](std::size_t pos, std::size_t len, int lo, int hi) -> std::optional<int> {
+    if (pos + len > s.size()) return std::nullopt;
+    int v = 0;
+    for (std::size_t i = 0; i < len; ++i) {
+      const char c = s[pos + i];
+      if (c < '0' || c > '9') return std::nullopt;
+      v = v * 10 + (c - '0');
+    }
+    if (v < lo || v > hi) return std::nullopt;
+    return v;
+  };
+  if (s.size() < 19 || s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' ||
+      s[16] != ':') {
+    return 0;
+  }
+  const auto y = digits(0, 4, 1970, 9999), mo = digits(5, 2, 1, 12), d = digits(8, 2, 1, 31);
+  const auto hh = digits(11, 2, 0, 23), mi = digits(14, 2, 0, 59), ss = digits(17, 2, 0, 60);
+  if (!y || !mo || !d || !hh || !mi || !ss) return 0;
+  // Days from civil (proleptic Gregorian), the usual era arithmetic.
+  const int yy = *y - (*mo <= 2 ? 1 : 0);
+  const int era = yy / 400;
+  const int yoe = yy - era * 400;
+  const int doy = (153 * (*mo + (*mo > 2 ? -3 : 9)) + 2) / 5 + *d - 1;
+  const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const std::int64_t days = static_cast<std::int64_t>(era) * 146097 + doe - 719468;
+  std::int64_t secs = days * 86400 + *hh * 3600 + *mi * 60 + *ss;
+  // Offset suffix: Z, or ±HH:MM to subtract back to UTC. Anything else fails.
+  if (s.size() == 20 && s[19] == 'Z') return secs;
+  if (s.size() == 25 && (s[19] == '+' || s[19] == '-') && s[22] == ':') {
+    const auto oh = digits(20, 2, 0, 23), om = digits(23, 2, 0, 59);
+    if (!oh || !om) return 0;
+    const std::int64_t off = *oh * 3600 + *om * 60;
+    return s[19] == '+' ? secs - off : secs + off;
+  }
+  return 0;
+}
+
+Result<UserListPage, ProviderError> parse_user_list_page(std::string_view raw_json,
+                                                         const IdBridge& bridge) {
+  auto j = parse_json(raw_json);
+  if (!j.has_value()) return err(j.error());
+  if (!j->is_object()) return err(ProviderError::decode("malformed response"));
+  UserListPage out;
+  if (j->contains("data") && j->at("data").is_array()) {
+    for (const auto& row : j->at("data")) {
+      if (!row.is_object() || !row.contains("node") || !row.at("node").is_object()) continue;
+      UserListEntry e;
+      e.seed = map_node(row.at("node"), 0, bridge);
+      if (!e.seed.mal_id.has_value()) continue;  // a node without an id keys nothing.
+      if (row.contains("list_status") && row.at("list_status").is_object()) {
+        const json& ls = row.at("list_status");
+        const auto status = str_opt(ls, "status");
+        e.status = mal::detail::list_status_from_mal(
+            status.has_value() ? std::optional<std::string_view>(*status) : std::nullopt);
+        e.progress = num_opt<std::uint32_t>(ls, "num_episodes_watched").value_or(0);
+        e.score = num_opt<std::uint32_t>(ls, "score").value_or(0);
+        if (const auto u = str_opt(ls, "updated_at"); u.has_value()) {
+          e.updated_at = parse_iso8601_utc(*u);
+        }
+      }
+      out.entries.push_back(std::move(e));
+    }
+  }
+  if (j->contains("paging") && j->at("paging").is_object()) {
+    out.next = str_opt(j->at("paging"), "next");
+  }
+  return out;
+}
 
 std::string fields_param() {
   return "id,title,main_picture,alternative_titles,start_date,synopsis,mean,rank,"

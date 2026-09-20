@@ -258,29 +258,47 @@ int run_sync_cli() {
   }
 
   const std::int64_t now = unix_now();
-  if (auth.anilist.bearer().has_value() && !auth.anilist.is_expired(now)) {
+  const bool mal_on = auth.mal.bearer().has_value();
+  if ((auth.anilist.bearer().has_value() && !auth.anilist.is_expired(now)) || mal_on) {
     // Announce before the paced push; flush so it lands pre-network.
-    std::printf("  syncing with AniList, this can take a moment…\n");
+    std::printf("  syncing, this can take a moment…\n");
     flush_stdout();
   }
+
+  // The MAL mirror rides this same CLI invocation, with no drain rights of
+  // its own (A1) — same rationale and same order as the TUI worker wiring
+  // (app.cpp's spawn_sync): pull the account's list first, then the AniList
+  // run, then the mirror push. Each half runs regardless of the others'
+  // outcomes: two separate client relationships.
+  const mal_mirror::HttpMalMirrorClient mal_client(*client);
+  cli::MalPullCounts mal_pull;
+  if (mal_on) {
+    mal_pull.ran = true;
+    auto pulled = mal_mirror::pull_mirror(mal_client, auth.mal, *store, /*enabled=*/true, now);
+    if (!pulled.has_value()) {
+      mal_pull.failed = true;
+    } else {
+      using M = mal_mirror::MirrorOutcome;
+      mal_pull.unauthorized = pulled->outcome == M::Unauthorized;
+      mal_pull.failed = pulled->pull_failed || pulled->outcome == M::RateLimited;
+      mal_pull.pulled = pulled->pulled.reconciled;
+      mal_pull.imported = pulled->pulled.imported;
+    }
+  }
+
   const sync::HttpAniListSync ani(*client);
   // enabled=true: the CLI ignores the master switch. pull_only=false.
   auto summary = sync::run_sync(ani, auth, *store, now, /*enabled=*/true, /*pull_only=*/false,
                                 sync::thread_sleep);
 
-  // The MAL mirror push rides this same CLI invocation, with no drain rights
-  // of its own (A1) — same rationale as the TUI worker wiring (app.cpp's
-  // spawn_sync). Runs regardless of the AniList summary's outcome: MAL is a
-  // wholly separate push-only client relationship (mal_mirror.hpp).
   std::uint32_t mal_pushed = 0;
-  if (auth.mal.bearer().has_value()) {
-    const mal_mirror::HttpMalMirrorClient mal_client(*client);
+  if (mal_on) {
     auto mirrored = mal_mirror::push_mirror(mal_client, auth.mal, *store, /*enabled=*/true);
     if (mirrored.has_value()) mal_pushed = mirrored->pushed;
   }
 
   if (summary.has_value()) {
-    std::printf("%s", cli::render_sync_summary(*summary, mal_pushed).c_str());
+    std::printf("%s", cli::render_sync_summary(*summary, mal_pushed, mal_pull).c_str());
   } else {
     std::printf(
         "  sync failed: couldn't update the local library; re-run with --debug for details.\n");

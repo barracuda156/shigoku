@@ -3,6 +3,7 @@
 #include "views.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <optional>
 #include <string>
@@ -57,6 +58,7 @@ std::optional<std::int64_t> HistoryState::anchor_aid() const {
 }
 
 bool HistoryState::matches_filter(const Show& s) const {
+  if (status_filter.has_value() && s.list_status != *status_filter) return false;
   if (filter.empty()) return true;
   std::string needle = filter;
   std::transform(needle.begin(), needle.end(), needle.begin(),
@@ -114,6 +116,28 @@ void HistoryState::on_filter_cleared() {
   filter.clear();
   rebuild(std::nullopt);
   cursor = 0;
+  scroll = 0;
+}
+
+void HistoryState::cycle_status_filter(int dir) {
+  constexpr int n = static_cast<int>(std::size(kGroupOrder));
+  int ix = -1;  // -1 = all.
+  if (status_filter.has_value()) {
+    for (int i = 0; i < n; ++i) {
+      if (kGroupOrder[i] == *status_filter) ix = i;
+    }
+  }
+  ix += dir < 0 ? -1 : 1;
+  if (ix >= n) ix = -1;
+  if (ix < -1) ix = n - 1;
+  status_filter = ix < 0 ? std::nullopt : std::optional<ListStatus>(kGroupOrder[ix]);
+  rebuild(anchor_aid());
+  scroll = 0;
+}
+
+void HistoryState::clear_status_filter() {
+  status_filter = std::nullopt;
+  rebuild(anchor_aid());
   scroll = 0;
 }
 
@@ -419,6 +443,23 @@ std::string provider_caption(const EpisodeState& es) {
   return out;
 }
 
+std::string tried_caption(const EpisodeState& es) {
+  if (es.avail.empty()) return {};
+  std::string out = "tried: ";
+  bool first = true;
+  for (const auto& [name, mark] : es.avail) {
+    if (!first) out += " \xC2\xB7 ";  // · separator.
+    first = false;
+    out += name;
+    switch (mark) {
+      case AvailMark::Bound:     out += "[+]"; break;
+      case AvailMark::Absent:    out += "[-]"; break;
+      case AvailMark::Unchecked: out += "[?]"; break;
+    }
+  }
+  return out;
+}
+
 std::vector<std::string> wrap_text(std::string_view text, int max_cols) {
   std::vector<std::string> out;
   if (max_cols <= 0) return out;
@@ -582,10 +623,23 @@ void draw_history_title_row(CellBuffer& buf, int x0, int w, int y, const Show& s
   // per-show flag here, not a recomputed-every-draw cour check.
   const char* marker = show.notice_pending ? " NEW" : "";
   const int marker_w = show.notice_pending ? str_width(marker) : 0;
+  // Your score, right-aligned ("★ 8.5"), the tracker-client column the bar
+  // row has no room for. Raw 0..=100 -> one decimal, ".0" dropped.
+  std::string score;
+  if (show.user_score.has_value() && *show.user_score > 0) {
+    const std::uint32_t raw = *show.user_score;
+    score = "\xE2\x98\x85 " + std::to_string(raw / 10);
+    if (raw % 10 != 0) score += "." + std::to_string(raw % 10);
+  }
+  const int score_w = score.empty() ? 0 : str_width(score) + 2;
   const std::string title = truncate_to_cols(row_title(show.enrichment, title_pref),
-                                             (x0 + w - 1) - x - marker_w);
+                                             (x0 + w - 1) - x - marker_w - score_w);
   x = buf.put_str(x, y, title, title_col, bg, title_st);
   if (show.notice_pending) buf.put_str(x, y, marker, theme::focus, bg, Style::Bold);
+  if (!score.empty()) {
+    const int sx = x0 + w - 1 - str_width(score);
+    if (sx > x) buf.put_str(sx, y, score, theme::fg2, bg);
+  }
 }
 
 // One grouped-list progress-bar row: "[bar]  N / M eps". Completed rows
@@ -697,8 +751,25 @@ void draw_episode_grid(CellBuffer& buf, int x0, int w, int y0, int y1,
     return;  // no fetch fired yet (no item selected) — blank by design.
   }
   if (es.no_source && es.episodes.empty()) {
-    const char* msg = "no episodes";
-    buf.put_str(x0, y0, msg, theme::fg3, theme::bg, Style::Italic);
+    // The walk exhausted every source without a match. Say so, show what was
+    // tried and how it went, and point at the one thing that helps (a
+    // hand-picked source via `v`) — a bare "no episodes" under an "enter
+    // play" hint read as a dead end on hardware.
+    int y = y0;
+    buf.put_str(x0, y++, "no source has this show yet", theme::warn, theme::bg, Style::Italic);
+    if (const std::string tried = detail::tried_caption(es); !tried.empty() && y < y1) {
+      buf.put_str(x0, y++, truncate_to_cols(tried, w), theme::fg3, theme::bg, Style::None);
+      if (y < y1) {
+        buf.put_str(x0, y++, truncate_to_cols("[-] no match  [?] not reached  [+] has it", w),
+                    theme::fg3, theme::bg, Style::None);
+      }
+    }
+    if (y < y1) {
+      buf.put_str(x0, y,
+                  truncate_to_cols("v picks a source to try by hand \xC2\xB7 "
+                                   "P keeps the show in your list for later", w),
+                  theme::fg3, theme::bg, Style::None);
+    }
     return;
   }
 
@@ -1088,7 +1159,12 @@ void draw_history(const App& app, CellBuffer& buf, int y0, int y1) {
           x = buf.put_str(x, y, " ", theme::bg, theme::bg);
           x = buf.put_str(x, y, history_status_label(li.status), theme::fg, theme::bg,
                           Style::Bold);
-          buf.put_str(x, y, " (" + std::to_string(li.count) + ")", theme::fg2, theme::bg);
+          x = buf.put_str(x, y, " (" + std::to_string(li.count) + ")", theme::fg2, theme::bg);
+          if (hs.status_filter.has_value()) {
+            // The one group on screen is a filter, and the header is the
+            // only place that can say so.
+            buf.put_str(x, y, "   filter \xC2\xB7 f next \xC2\xB7 F all", theme::fg3, theme::bg);
+          }
           break;
         }
         case HistoryLine::Kind::Title: {

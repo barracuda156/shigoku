@@ -219,6 +219,55 @@ TEST_CASE("history: order walks groups, not store order") {
   CHECK(nav_ids(s) == std::vector<std::int64_t>{2, 4, 5, 1, 3});
 }
 
+TEST_CASE("history: status filter narrows to one group and cycles back to all") {
+  HistoryState s = history_state({
+      history_show(1, "A", ListStatus::Completed, 12),
+      history_show(2, "B", ListStatus::Watching, 3),
+      history_show(3, "C", ListStatus::Dropped, 1),
+      history_show(4, "D", ListStatus::Watching, 5),
+      history_show(5, "E", ListStatus::Planning, 0),
+  });
+  s.cycle_status_filter(1);
+  CHECK(s.status_filter == ListStatus::Watching);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{2, 4});
+  s.cycle_status_filter(1);
+  CHECK(s.status_filter == ListStatus::Planning);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{5});
+  s.cycle_status_filter(-1);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{2, 4});
+  s.cycle_status_filter(-1);
+  CHECK(!s.status_filter.has_value());
+  CHECK(nav_ids(s).size() == 5);
+  // Five groups forward and the sixth step is "all" again.
+  for (int i = 0; i < 6; ++i) s.cycle_status_filter(1);
+  CHECK(!s.status_filter.has_value());
+  // Backwards from "all" lands on the last group.
+  s.cycle_status_filter(-1);
+  CHECK(s.status_filter == ListStatus::Dropped);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3});
+  // The text filter ANDs with the status one; clearing the status keeps it.
+  s.cycle_status_filter(1);  // all
+  s.cycle_status_filter(1);  // Watching
+  s.filter = "d";
+  s.on_filter_edited();
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{4});
+  s.clear_status_filter();
+  CHECK(!s.status_filter.has_value());
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{4});
+}
+
+TEST_CASE("tried_caption: every probed source with its mark, empty when nothing was tried") {
+  EpisodeState es;
+  CHECK(detail::tried_caption(es).empty());
+  es.avail = {{"alpha", AvailMark::Bound}, {"beta", AvailMark::Absent},
+              {"gamma", AvailMark::Unchecked}};
+  const std::string cap = detail::tried_caption(es);
+  CHECK(cap.rfind("tried: ", 0) == 0);
+  CHECK(cap.find("alpha[+]") != std::string::npos);
+  CHECK(cap.find("beta[-]") != std::string::npos);
+  CHECK(cap.find("gamma[?]") != std::string::npos);
+}
+
 TEST_CASE("history: cursor follows identity across reorder and clamps") {
   HistoryState s = history_state({
       history_show(1, "A", ListStatus::Watching, 1),
