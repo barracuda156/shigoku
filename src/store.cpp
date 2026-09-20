@@ -979,7 +979,7 @@ Result<Unit, StoreError> Store::save_progress(std::int64_t anilist_id, Translati
                          watched, last_provider, now);
 }
 
-Result<Unit, StoreError> Store::record_finish(std::int64_t anilist_id, Translation translation,
+Result<bool, StoreError> Store::record_finish(std::int64_t anilist_id, Translation translation,
                                               std::string_view episode,
                                               std::uint32_t episode_index, double position_secs,
                                               double duration_secs,
@@ -988,7 +988,7 @@ Result<Unit, StoreError> Store::record_finish(std::int64_t anilist_id, Translati
   if (!std::isfinite(position_secs) || !std::isfinite(duration_secs)) {
     return err(StoreError::non_finite("record_finish: non-finite position/duration"));
   }
-  if (episode_index == 0) return Unit{};  // membership must not ride an unknown ep.
+  if (episode_index == 0) return false;  // membership must not ride an unknown ep.
 
   if (auto b = begin_immediate(conn_); !b.has_value()) return err(b.error());
   auto rollback = [&](StoreError e) {
@@ -1000,7 +1000,7 @@ Result<Unit, StoreError> Store::record_finish(std::int64_t anilist_id, Translati
   if (!cur.has_value()) return rollback(cur.error());
   if (!cur->found) {
     sqlite3_exec(conn_, "ROLLBACK", nullptr, nullptr, nullptr);
-    return Unit{};  // unknown show: no-op (not an error).
+    return false;  // unknown show: no-op (not an error).
   }
 
   const bool watched = duration_secs > 0.0 && position_secs / duration_secs >= kWatchedRatio;
@@ -1010,19 +1010,24 @@ Result<Unit, StoreError> Store::record_finish(std::int64_t anilist_id, Translati
     return rollback(u.error());
   }
 
-  const std::uint32_t new_progress =
-      natural_end(position_secs, duration_secs)
-          ? std::max(cur->progress, episode_index)
-          : cur->progress;
-  const ListStatus new_status =
-      after_play_status(cur->status, new_progress, cur->total, cur->airing);
-  if (auto e = bump_engagement(conn_, anilist_id, new_progress, new_status, now);
-      !e.has_value()) {
-    return rollback(e.error());
+  // Under the count tier the resume row is the whole write: no play counted,
+  // no membership, no status move — the show row stays exactly as it was.
+  const bool counted = play_counts(position_secs, duration_secs);
+  if (counted) {
+    const std::uint32_t new_progress =
+        natural_end(position_secs, duration_secs)
+            ? std::max(cur->progress, episode_index)
+            : cur->progress;
+    const ListStatus new_status =
+        after_play_status(cur->status, new_progress, cur->total, cur->airing);
+    if (auto e = bump_engagement(conn_, anilist_id, new_progress, new_status, now);
+        !e.has_value()) {
+      return rollback(e.error());
+    }
   }
 
   if (auto c = exec(conn_, "COMMIT"); !c.has_value()) return rollback(c.error());
-  return Unit{};
+  return counted;
 }
 
 // --- Readers ---------------------------------------------------------------

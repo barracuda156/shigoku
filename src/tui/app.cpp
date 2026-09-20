@@ -3829,18 +3829,20 @@ void tick(App& app, const Event& ev) {
               // playback.rs on_finished's None-failure arm).
               app.play_continuation.reset();
               // Persist the finish (02 §4b): record_finish saves the resume row
-              // AND ratchets progress / marks fully_watched atomically, deriving
-              // the 0.80/0.95 thresholds internally from position/duration (the
-              // single authority). Gate on a meaningful position (finite > 0,
-              // A6) so a failed-before-playback finish writes nothing. The
-              // duration comes from the last PositionUpdate we saw (PlayDone
-              // carries only the position). UI-thread (A7).
+              // AND — once the play counts, i.e. at least half the episode —
+              // ratchets progress / marks fully_watched / stamps the engagement
+              // atomically, deriving the 0.50/0.80/0.95 thresholds internally
+              // from position/duration (the single authority). Gate on a
+              // meaningful position (finite > 0, A6) so a failed-before-
+              // playback finish writes nothing. The duration comes from the
+              // last PositionUpdate we saw (PlayDone carries only the
+              // position). UI-thread (A7).
               if (app.deps != nullptr && app.deps->store != nullptr &&
                   std::isfinite(p.final_position) && p.final_position > 0.0 &&
                   app.play.episode_index != 0) {
                 // The serving provider (P15), not primary() — see save_progress.
                 const std::string_view provider = play_provider_name(app);
-                (void)app.deps->store->record_finish(
+                const auto counted = app.deps->store->record_finish(
                     p.for_id, app.play.translation, p.episode,
                     app.play.episode_index, p.final_position, app.play.duration,
                     provider.empty() ? std::nullopt
@@ -3862,7 +3864,9 @@ void tick(App& app, const Event& ev) {
                     app.episode.cursor = app.episode_session->cursor();
                   }
                 }
-                arm_sync(app);
+                // A play under the count tier changed no library row: nothing
+                // for the trackers to hear, so no flush is owed.
+                if (counted.has_value() && *counted) arm_sync(app);
               }
               // Toast (05 §14): natural end (>= 0.80) counts as a full watch;
               // "all caught up" only when the finished ep is the grid's last and

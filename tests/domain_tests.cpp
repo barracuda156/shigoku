@@ -651,6 +651,19 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
 
 // --- after_play_status (domain.rs after_play tests, ported 1:1 — P30/R-12) --
 
+// The count tier: half the episode, or the absolute floor with no duration.
+TEST_CASE("play_counts: half the episode, the floor with no duration") {
+  CHECK_FALSE(play_counts(0.0, 1000.0));
+  CHECK_FALSE(play_counts(499.9, 1000.0));
+  CHECK(play_counts(500.0, 1000.0));
+  CHECK(play_counts(1000.0, 1000.0));
+  CHECK(play_counts(800.0, 1000.0));  // every natural end counts.
+  CHECK_FALSE(play_counts(239.0, 0.0));
+  CHECK(play_counts(240.0, 0.0));
+  CHECK(play_counts(240.0, -1.0));
+  CHECK_FALSE(natural_end(240.0, 0.0));  // no duration is never a natural end.
+}
+
 TEST_CASE("after_play: completed sticks") {
   CHECK(after_play_status(ListStatus::Completed, 1, 12u, false) == ListStatus::Completed);
   CHECK(after_play_status(ListStatus::Completed, 0, std::nullopt, true) ==

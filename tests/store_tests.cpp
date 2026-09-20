@@ -276,6 +276,89 @@ TEST_CASE("record_finish_ratchets_and_marks_watched") {
             .has_value());
 }
 
+// A play counts only past half the episode (the scrobble rule): under it the
+// resume row lands and nothing else moves — no membership, no status, no play
+// counted — so neither tracker's dirty list ever sees a stream check.
+TEST_CASE("record_finish_counts_a_play_only_past_half") {
+  Store store = open_mem();
+  // A library-less row with a mal_id, so both dirty lists could pick it up.
+  REQUIRE(store.ensure_show(71, "Test Show", 171, 12u, std::string_view("RELEASING"))
+              .has_value());
+
+  // 3% in: resume point saved, the show untouched, nothing dirty.
+  {
+    auto c = store.record_finish(71, Translation::Sub, "1", 1, 30.0, 1000.0,
+                                 std::string_view("senshi"), 500);
+    REQUIRE(c.has_value());
+    CHECK_FALSE(*c);
+    auto r = store.get_resume(71, Translation::Sub, "1");
+    REQUIRE(r.has_value());
+    REQUIRE(r->has_value());
+    CHECK((*r)->position_secs == doctest::Approx(30.0));
+    auto g = store.get_show(71);
+    REQUIRE(g.has_value());
+    REQUIRE(g->has_value());
+    CHECK_FALSE((*g)->library_added_at.has_value());
+    CHECK_FALSE((*g)->last_watched_at.has_value());
+    CHECK((*g)->play_count == 0);
+    CHECK((*g)->list_status == ListStatus::Planning);
+    CHECK(store.list_dirty_for_sync()->empty());
+    CHECK(store.list_dirty_for_mal_mirror()->empty());
+  }
+
+  // Just under half: still nothing counted, the resume point moves along.
+  {
+    auto c = store.record_finish(71, Translation::Sub, "1", 1, 499.0, 1000.0,
+                                 std::string_view("senshi"), 600);
+    REQUIRE(c.has_value());
+    CHECK_FALSE(*c);
+    CHECK_FALSE((*store.get_show(71))->library_added_at.has_value());
+    CHECK((*store.get_resume(71, Translation::Sub, "1"))->position_secs ==
+          doctest::Approx(499.0));
+  }
+
+  // Half: the play counts — membership, Watching, play_count — but no
+  // ratchet yet (that is the natural end's own tier).
+  {
+    auto c = store.record_finish(71, Translation::Sub, "1", 1, 500.0, 1000.0,
+                                 std::string_view("senshi"), 700);
+    REQUIRE(c.has_value());
+    CHECK(*c);
+    auto g = store.get_show(71);
+    REQUIRE(g->has_value());
+    CHECK((*g)->library_added_at == 700);
+    CHECK((*g)->last_watched_at == 700);
+    CHECK((*g)->play_count == 1);
+    CHECK((*g)->list_status == ListStatus::Watching);
+    CHECK((*g)->progress == 0);
+    CHECK(store.list_dirty_for_sync()->size() == 1);
+    CHECK(store.list_dirty_for_mal_mirror()->size() == 1);
+  }
+
+  // No known duration: the absolute floor stands in for the half.
+  identity_row(store, 72);
+  {
+    auto c = store.record_finish(72, Translation::Sub, "1", 1, 239.0, 0.0, std::nullopt, 800);
+    REQUIRE(c.has_value());
+    CHECK_FALSE(*c);
+    CHECK_FALSE((*store.get_show(72))->library_added_at.has_value());
+    c = store.record_finish(72, Translation::Sub, "1", 1, 240.0, 0.0, std::nullopt, 900);
+    REQUIRE(c.has_value());
+    CHECK(*c);
+    CHECK((*store.get_show(72))->library_added_at == 900);
+  }
+
+  // Unknown show / zero index report "not counted", not an error.
+  {
+    auto c = store.record_finish(999, Translation::Sub, "1", 1, 900.0, 1000.0, std::nullopt, 950);
+    REQUIRE(c.has_value());
+    CHECK_FALSE(*c);
+    c = store.record_finish(71, Translation::Sub, "1", 0, 900.0, 1000.0, std::nullopt, 950);
+    REQUIRE(c.has_value());
+    CHECK_FALSE(*c);
+  }
+}
+
 // --- set_list_status / restore_list_status (store.rs:2808/2852, P16 ROD-139/193)
 
 TEST_CASE("set_list_status_snap_rules") {

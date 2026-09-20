@@ -560,11 +560,16 @@ class Store {
 
   // Atomic play-completion writer (02 §4b): the resume row AND the
   // engagement/ratchet land under ONE immediate transaction, so a mid-write
-  // failure never leaves a saved resume point with the play uncounted. progress
-  // ratchets (never lowers) only on a natural end (>= 0.80); play_count and
-  // last_watched_at always bump; library_added_at stamps set-once. Unknown show
-  // or a zero episode_index: no-op (membership must not ride an unknown ep).
-  [[nodiscard]] Result<Unit, StoreError> record_finish(
+  // failure never leaves a saved resume point with the play uncounted. The
+  // engagement half runs only once the play counts (domain.hpp play_counts:
+  // at least half the episode, or the absolute floor with no duration) —
+  // under that the call is the resume row alone, exactly save_progress, so a
+  // stream check never joins History or reaches a tracker as Watching. Once
+  // counted: progress ratchets (never lowers) only on a natural end (>= 0.80);
+  // play_count and last_watched_at bump; library_added_at stamps set-once.
+  // Returns whether the play counted. Unknown show or a zero episode_index:
+  // no-op returning false (membership must not ride an unknown ep).
+  [[nodiscard]] Result<bool, StoreError> record_finish(
       std::int64_t anilist_id, Translation translation, std::string_view episode,
       std::uint32_t episode_index, double position_secs, double duration_secs,
       std::optional<std::string_view> last_provider, std::int64_t now);

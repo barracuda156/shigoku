@@ -261,7 +261,9 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
 
   // A meaningful watch returns Ok with a position even when mpv then exits
   // badly; persist it. record_finish shuts its own gate on a None position, so
-  // an empty watch writes nothing.
+  // an empty watch writes nothing; and it counts the play (library, status,
+  // the trackers) only past half the episode, so a short check leaves just
+  // its resume point.
   if (store != nullptr && anilist_id.has_value() && outcome->position.has_value()) {
     const player::Position& pos = *outcome->position;
     (void)store->record_finish(*anilist_id, translation, episode, episode_index, pos.secs,

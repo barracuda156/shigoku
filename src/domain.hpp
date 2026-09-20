@@ -18,9 +18,10 @@ namespace shigoku {
 
 // --- Resume thresholds (domain.rs:9, 02 §4b) -------------------------------
 // The 02 §4b table is the single authority. fully_watched past 0.95; natural
-// end (0.80) ratchets progress but does NOT mark fully_watched. Kept here (not
-// the store) so the pure resume/ratchet logic tests offline (§8) and the store
-// and player agree on one constant.
+// end (0.80) ratchets progress but does NOT mark fully_watched; half (0.50)
+// is where a play counts at all (below). Kept here (not the store) so the
+// pure resume/ratchet logic tests offline (§8) and the store and player
+// agree on one constant.
 inline constexpr double kWatchedRatio = 0.95;
 inline constexpr double kNaturalEndRatio = 0.80;
 
@@ -36,6 +37,20 @@ inline constexpr std::uint32_t kMaxEpisodeHint = 10000;
 // derivation so a zero never divides into a spurious restart.
 inline bool natural_end(double position_secs, double duration_secs) {
   return duration_secs > 0.0 && position_secs / duration_secs >= kNaturalEndRatio;
+}
+
+// The count tier, under both of the above: a play is recorded at all — the
+// play counted, the show stamped into the library, its list status moved, so
+// the trackers hear of it — only once at least half of the episode has
+// played (the scrobble rule: a stream check that runs a few seconds and quits
+// is not a watch). Under it the resume point still lands, nothing else. With
+// no known duration the absolute floor stands in for the half.
+inline constexpr double kCountedRatio = 0.50;
+inline constexpr double kCountedMinSecs = 240.0;
+
+inline bool play_counts(double position_secs, double duration_secs) {
+  if (duration_secs > 0.0) return position_secs / duration_secs >= kCountedRatio;
+  return position_secs >= kCountedMinSecs;
 }
 
 // --- Translation (domain.rs:30) --------------------------------------------
