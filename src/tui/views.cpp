@@ -59,6 +59,10 @@ std::optional<std::int64_t> HistoryState::anchor_aid() const {
 
 bool HistoryState::matches_filter(const Show& s) const {
   if (status_filter.has_value() && s.list_status != *status_filter) return false;
+  if (behind_filter &&
+      (s.list_status != ListStatus::Watching || episodes_behind(s, now_secs) == 0)) {
+    return false;
+  }
   if (filter.empty()) return true;
   std::string needle = filter;
   std::transform(needle.begin(), needle.end(), needle.begin(),
@@ -121,22 +125,28 @@ void HistoryState::on_filter_cleared() {
 
 void HistoryState::cycle_status_filter(int dir) {
   constexpr int n = static_cast<int>(std::size(kGroupOrder));
-  int ix = -1;  // -1 = all.
-  if (status_filter.has_value()) {
+  // Stops: all (-1), the five groups (0..n-1), behind (n).
+  int ix = -1;
+  if (behind_filter) {
+    ix = n;
+  } else if (status_filter.has_value()) {
     for (int i = 0; i < n; ++i) {
       if (kGroupOrder[i] == *status_filter) ix = i;
     }
   }
   ix += dir < 0 ? -1 : 1;
-  if (ix >= n) ix = -1;
-  if (ix < -1) ix = n - 1;
-  status_filter = ix < 0 ? std::nullopt : std::optional<ListStatus>(kGroupOrder[ix]);
+  if (ix > n) ix = -1;
+  if (ix < -1) ix = n;
+  behind_filter = ix == n;
+  status_filter = (ix < 0 || ix == n) ? std::nullopt
+                                      : std::optional<ListStatus>(kGroupOrder[ix]);
   rebuild(anchor_aid());
   scroll = 0;
 }
 
 void HistoryState::clear_status_filter() {
   status_filter = std::nullopt;
+  behind_filter = false;
   rebuild(anchor_aid());
   scroll = 0;
 }
@@ -609,7 +619,8 @@ int history_bar_filled(std::uint32_t progress, std::optional<std::uint32_t> tota
 // rides the bar row; DESIGN §5.4 "not built" note: the row-1 right-meta comp
 // was never ratified, so shipped row 1 stays title-only).
 void draw_history_title_row(CellBuffer& buf, int x0, int w, int y, const Show& show,
-                            bool selected, bool list_focused, TitleLanguage title_pref) {
+                            bool selected, bool list_focused, TitleLanguage title_pref,
+                            std::int64_t now_secs) {
   const Rgb bg = selected && list_focused ? theme::surface : theme::bg;
   buf.fill(Rect{x0, y, w, 1}, bg);
   const Rgb glyph_col = selected ? (list_focused ? theme::focus : theme::fg3) : theme::fg2;
@@ -623,6 +634,15 @@ void draw_history_title_row(CellBuffer& buf, int x0, int w, int y, const Show& s
   // per-show flag here, not a recomputed-every-draw cour check.
   const char* marker = show.notice_pending ? " NEW" : "";
   const int marker_w = show.notice_pending ? str_width(marker) : 0;
+  // Aired episodes still unwatched, Watching rows only: "+2 aired" in amber —
+  // the row to open next. Recomputed every draw from the airing stamp, so it
+  // clears by catching up, never by opening (that is NEW's job).
+  std::string behind;
+  if (show.list_status == ListStatus::Watching) {
+    const std::uint32_t n = episodes_behind(show, now_secs);
+    if (n > 0) behind = " +" + std::to_string(n) + " aired";
+  }
+  const int behind_w = behind.empty() ? 0 : str_width(behind);
   // Your score, right-aligned ("★ 8.5"), the tracker-client column the bar
   // row has no room for. Raw 0..=100 -> one decimal, ".0" dropped.
   std::string score;
@@ -633,9 +653,10 @@ void draw_history_title_row(CellBuffer& buf, int x0, int w, int y, const Show& s
   }
   const int score_w = score.empty() ? 0 : str_width(score) + 2;
   const std::string title = truncate_to_cols(row_title(show.enrichment, title_pref),
-                                             (x0 + w - 1) - x - marker_w - score_w);
+                                             (x0 + w - 1) - x - marker_w - behind_w - score_w);
   x = buf.put_str(x, y, title, title_col, bg, title_st);
-  if (show.notice_pending) buf.put_str(x, y, marker, theme::focus, bg, Style::Bold);
+  if (show.notice_pending) x = buf.put_str(x, y, marker, theme::focus, bg, Style::Bold);
+  if (!behind.empty()) buf.put_str(x, y, behind, theme::warn, bg);
   if (!score.empty()) {
     const int sx = x0 + w - 1 - str_width(score);
     if (sx > x) buf.put_str(sx, y, score, theme::fg2, bg);
@@ -646,11 +667,19 @@ void draw_history_title_row(CellBuffer& buf, int x0, int w, int y, const Show& s
 // de-emphasize to fg3 (DESIGN §5.4: "completed rows use text.dim; they've
 // earned their de-emphasis").
 void draw_history_bar_row(CellBuffer& buf, int x0, int w, int y, const Show& show,
-                          bool selected, bool list_focused) {
+                          bool selected, bool list_focused, std::int64_t now_secs) {
   const Rgb bg = selected && list_focused ? theme::surface : theme::bg;
   buf.fill(Rect{x0, y, w, 1}, bg);
   const int bar_w = history_bar_width(w);
   const int filled = history_bar_filled(show.progress, show.enrichment.total_episodes, bar_w);
+  // Aired-but-unwatched cells shade a step below the watched fill (the
+  // tracker-client sub-bar): the bar reads watched / aired / still to come.
+  // Scaled on the same denominator as the fill, so a null total shows none.
+  const std::optional<std::uint32_t> aired = aired_episodes(show.enrichment, now_secs);
+  const int aired_filled =
+      aired.has_value() && show.enrichment.total_episodes.value_or(0) > 0
+          ? history_bar_filled(*aired, show.enrichment.total_episodes, bar_w)
+          : 0;
   // The filled blocks sit a step below the text (fg2, not fg): a row of
   // full-brightness █ beside every title made the titles harder to read.
   const bool dim = show.list_status == ListStatus::Completed;
@@ -658,8 +687,12 @@ void draw_history_bar_row(CellBuffer& buf, int x0, int w, int y, const Show& sho
   int x = x0 + 1;
   x = buf.put_str(x, y, "[", theme::chrome, bg);
   for (int i = 0; i < bar_w; ++i) {
-    const char* glyph = (i < filled) ? "\xE2\x96\x88" : "\xE2\x96\x91";  // █ / ░
-    x = buf.put_str(x, y, glyph, i < filled ? fill_col : theme::chrome, bg);
+    const bool watched = i < filled;
+    const bool aired_cell = !watched && i < aired_filled;
+    const char* glyph = watched ? "\xE2\x96\x88"                       // █
+                                : aired_cell ? "\xE2\x96\x93" : "\xE2\x96\x91";  // ▓ / ░
+    x = buf.put_str(x, y, glyph, watched ? fill_col : aired_cell ? theme::fg3 : theme::chrome,
+                    bg);
   }
   x = buf.put_str(x, y, "]", theme::chrome, bg);
   const std::string total = show.enrichment.total_episodes.has_value()
@@ -1162,22 +1195,26 @@ void draw_history(const App& app, CellBuffer& buf, int y0, int y1) {
           x = buf.put_str(x, y, history_status_label(li.status), theme::fg, theme::bg,
                           Style::Bold);
           x = buf.put_str(x, y, " (" + std::to_string(li.count) + ")", theme::fg2, theme::bg);
-          if (hs.status_filter.has_value()) {
+          if (hs.status_filter.has_value() || hs.behind_filter) {
             // The one group on screen is a filter, and the header is the
             // only place that can say so.
-            buf.put_str(x, y, "   filter \xC2\xB7 f next \xC2\xB7 F all", theme::fg3, theme::bg);
+            buf.put_str(x, y,
+                        hs.behind_filter ? "   behind \xC2\xB7 f next \xC2\xB7 F all"
+                                         : "   filter \xC2\xB7 f next \xC2\xB7 F all",
+                        theme::fg3, theme::bg);
           }
           break;
         }
         case HistoryLine::Kind::Title: {
           const Show& show = hs.rows[hs.order[li.ord]];
           draw_history_title_row(buf, 2, list_w, y, show, li.ord == hs.cursor, list_focused,
-                                 parse_title_language(app.config.title_language));
+                                 parse_title_language(app.config.title_language), hs.now_secs);
           break;
         }
         case HistoryLine::Kind::Bar: {
           const Show& show = hs.rows[hs.order[li.ord]];
-          draw_history_bar_row(buf, 2, list_w, y, show, li.ord == hs.cursor, list_focused);
+          draw_history_bar_row(buf, 2, list_w, y, show, li.ord == hs.cursor, list_focused,
+                               hs.now_secs);
           break;
         }
       }

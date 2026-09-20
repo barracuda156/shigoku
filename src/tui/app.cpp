@@ -163,6 +163,7 @@ void load_history(App& app) {
     app.history.resume.push_back(ep);
   }
   app.history.rows = std::move(*rows);
+  app.history.now_secs = now_epoch_secs();
   app.history.rebuild(anchor);
 }
 
@@ -2784,7 +2785,9 @@ void on_key(App& app, const KeyEvent& k) {
           }
         } else if (app.view == View::History && app.pane == Pane::List) {
           // History: step the status filter (the list's one narrowing
-          // besides `/`); `F` below clears it.
+          // besides `/`); `F` below clears it. The behind stop reads the
+          // clock, so stamp it first.
+          app.history.now_secs = now_epoch_secs();
           app.history.cycle_status_filter(1);
           app.dirty = true;
         }
@@ -3424,6 +3427,10 @@ void tick(App& app, const Event& ev) {
             } else {
               app.clock_epoch_secs = fresh_now;
             }
+            // History's aired-so-far reading (the +N tag, the bar's aired
+            // cells) follows the same stamp; a stamp passing mid-session
+            // shows at the next repaint, no per-second redraw owed.
+            app.history.now_secs = app.clock_epoch_secs;
             // The connect modal runs its own spinner/paste-hint clock off
             // elapsed ticks (draw_connect is pure, no clock of its own) — every
             // tick must repaint while the session is live, same as the

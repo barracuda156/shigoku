@@ -238,14 +238,24 @@ TEST_CASE("history: status filter narrows to one group and cycles back to all") 
   s.cycle_status_filter(-1);
   CHECK(!s.status_filter.has_value());
   CHECK(nav_ids(s).size() == 5);
-  // Five groups forward and the sixth step is "all" again.
+  // Five groups forward, then the behind stop, and the seventh step is
+  // "all" again.
   for (int i = 0; i < 6; ++i) s.cycle_status_filter(1);
+  CHECK(s.behind_filter);
   CHECK(!s.status_filter.has_value());
-  // Backwards from "all" lands on the last group.
+  CHECK(nav_ids(s).empty());  // no airing stamps: nobody is behind.
+  s.cycle_status_filter(1);
+  CHECK(!s.behind_filter);
+  CHECK(!s.status_filter.has_value());
+  // Backwards from "all" lands on behind, then the last group.
   s.cycle_status_filter(-1);
+  CHECK(s.behind_filter);
+  s.cycle_status_filter(-1);
+  CHECK(!s.behind_filter);
   CHECK(s.status_filter == ListStatus::Dropped);
   CHECK(nav_ids(s) == std::vector<std::int64_t>{3});
   // The text filter ANDs with the status one; clearing the status keeps it.
+  s.cycle_status_filter(1);  // behind
   s.cycle_status_filter(1);  // all
   s.cycle_status_filter(1);  // Watching
   s.filter = "d";
@@ -254,6 +264,43 @@ TEST_CASE("history: status filter narrows to one group and cycles back to all") 
   s.clear_status_filter();
   CHECK(!s.status_filter.has_value());
   CHECK(nav_ids(s) == std::vector<std::int64_t>{4});
+}
+
+TEST_CASE("history: the behind stop keeps Watching rows with aired episodes unwatched") {
+  const std::int64_t now = 1700000000;
+  auto stamped = [&](std::int64_t aid, const char* title, ListStatus status,
+                     std::uint32_t progress) {
+    Show s = history_show(aid, title, status, progress);
+    s.enrichment.status = "RELEASING";
+    s.enrichment.next_airing_at = now + 3600;
+    s.enrichment.next_airing_episode = 8;  // seven aired.
+    return s;
+  };
+  Show unstamped = history_show(4, "D", ListStatus::Watching, 1);  // nothing to go on.
+  unstamped.enrichment.status = "RELEASING";
+  HistoryState s = history_state({
+      stamped(1, "A", ListStatus::Watching, 5),  // two behind.
+      stamped(2, "B", ListStatus::Watching, 7),  // caught up.
+      stamped(3, "C", ListStatus::Planning, 0),  // aired, but not Watching.
+      unstamped,
+  });
+  s.now_secs = now;
+  for (int i = 0; i < 6; ++i) s.cycle_status_filter(1);
+  REQUIRE(s.behind_filter);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1});
+  // Once the stamped episode's time passes, B is one behind too.
+  s.now_secs = now + 3600;
+  s.cycle_status_filter(-1);
+  s.cycle_status_filter(1);
+  REQUIRE(s.behind_filter);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1, 2});
+  // F clears both stops.
+  s.clear_status_filter();
+  CHECK(!s.behind_filter);
+  CHECK(nav_ids(s).size() == 4);
+  // The count the tag and the bar show.
+  CHECK(episodes_behind(s.rows[0], now) == 2u);
+  CHECK(episodes_behind(s.rows[1], now + 3600) == 1u);
 }
 
 TEST_CASE("tried_caption: every probed source with its mark, empty when nothing was tried") {

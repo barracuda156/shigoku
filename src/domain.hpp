@@ -586,4 +586,21 @@ struct ScheduleNotice {
 [[nodiscard]] std::vector<ScheduleNotice> detect_schedule_notices(
     const std::vector<Show>& shows, std::int64_t now_secs);
 
+// --- Aired so far ----------------------------------------------------------
+// How many episodes of a show have aired by `now_secs`, from what the row
+// already knows: a settled show (FINISHED / CANCELLED) has aired its total; a
+// still-airing one with an airing stamp has aired every episode before the
+// stamped one, plus that one once its time has passed (the notices' own
+// reading of "episode N airs at T"), never more than the total. Nothing to
+// go on — no stamp, or a settled show with no total — is nullopt, never a
+// guess from the calendar. Pure.
+[[nodiscard]] std::optional<std::uint32_t> aired_episodes(const Enrichment& e,
+                                                          std::int64_t now_secs);
+
+// Episodes aired but not yet watched: aired_episodes minus progress, floored
+// at zero, and zero when the estimate is unknown. History tags a Watching row
+// with it and shades those cells of its bar; the `behind` filter keeps the
+// Watching rows where it is positive.
+[[nodiscard]] std::uint32_t episodes_behind(const Show& s, std::int64_t now_secs);
+
 }  // namespace shigoku

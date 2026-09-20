@@ -365,4 +365,26 @@ std::vector<ScheduleNotice> detect_schedule_notices(const std::vector<Show>& sho
   return out;
 }
 
+std::optional<std::uint32_t> aired_episodes(const Enrichment& e, std::int64_t now_secs) {
+  const std::optional<std::string_view> status =
+      e.status.has_value() ? std::optional<std::string_view>(*e.status) : std::nullopt;
+  if (!is_still_airing(status)) return e.total_episodes;
+  if (!e.next_airing_episode.has_value() || *e.next_airing_episode == 0) return std::nullopt;
+  // "Episode N airs at T": N-1 have aired, and N itself once T has passed.
+  std::uint32_t aired = *e.next_airing_episode - 1;
+  if (e.next_airing_at.has_value() && *e.next_airing_at <= now_secs) {
+    aired = *e.next_airing_episode;
+  }
+  if (e.total_episodes.has_value() && *e.total_episodes > 0) {
+    aired = std::min(aired, *e.total_episodes);
+  }
+  return aired;
+}
+
+std::uint32_t episodes_behind(const Show& s, std::int64_t now_secs) {
+  const std::optional<std::uint32_t> aired = aired_episodes(s.enrichment, now_secs);
+  if (!aired.has_value() || *aired <= s.progress) return 0;
+  return *aired - s.progress;
+}
+
 }  // namespace shigoku

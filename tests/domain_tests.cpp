@@ -664,6 +664,56 @@ TEST_CASE("play_counts: half the episode, the floor with no duration") {
   CHECK_FALSE(natural_end(240.0, 0.0));  // no duration is never a natural end.
 }
 
+// The aired-so-far estimate behind History's "+N aired" tag and bar cells.
+TEST_CASE("aired_episodes: the stamp, a passed stamp, a settled total, unknown") {
+  const std::int64_t now = 1700000000;
+  auto row = [](const char* status, std::optional<std::uint32_t> total,
+                std::optional<std::int64_t> at, std::optional<std::uint32_t> ep) {
+    Enrichment e;
+    e.status = status;
+    e.total_episodes = total;
+    e.next_airing_at = at;
+    e.next_airing_episode = ep;
+    return e;
+  };
+  // "Episode 6 airs at T": five aired while T is ahead, six once it passed.
+  CHECK(aired_episodes(row("RELEASING", 12u, now + 3600, 6u), now) == 5u);
+  CHECK(aired_episodes(row("RELEASING", 12u, now - 1, 6u), now) == 6u);
+  CHECK(aired_episodes(row("RELEASING", 12u, now, 6u), now) == 6u);
+  // A stamp with no time reads as ahead.
+  CHECK(aired_episodes(row("RELEASING", 12u, std::nullopt, 6u), now) == 5u);
+  // Never past the total; a premiere still ahead is zero; no total is no cap.
+  CHECK(aired_episodes(row("RELEASING", 5u, now - 1, 6u), now) == 5u);
+  CHECK(aired_episodes(row("NOT_YET_RELEASED", 12u, now + 3600, 1u), now) == 0u);
+  CHECK(aired_episodes(row("RELEASING", std::nullopt, now - 1, 1000u), now) == 1000u);
+  // Settled: the total (whatever a stale stamp says), or nothing.
+  CHECK(aired_episodes(row("FINISHED", 12u, std::nullopt, std::nullopt), now) == 12u);
+  CHECK(aired_episodes(row("FINISHED", 12u, now - 1, 3u), now) == 12u);
+  CHECK_FALSE(aired_episodes(row("FINISHED", std::nullopt, std::nullopt, std::nullopt), now)
+                  .has_value());
+  // Still airing with no usable stamp: unknown, never a guess.
+  CHECK_FALSE(aired_episodes(row("RELEASING", 12u, std::nullopt, std::nullopt), now).has_value());
+  CHECK_FALSE(aired_episodes(row("RELEASING", 12u, now - 1, 0u), now).has_value());
+}
+
+TEST_CASE("episodes_behind: aired minus progress, floored, zero when unknown") {
+  const std::int64_t now = 1700000000;
+  Show s;
+  s.enrichment.status = "RELEASING";
+  s.enrichment.total_episodes = 12;
+  s.enrichment.next_airing_at = now + 3600;
+  s.enrichment.next_airing_episode = 8;  // seven aired.
+  s.progress = 5;
+  CHECK(episodes_behind(s, now) == 2u);
+  s.progress = 7;
+  CHECK(episodes_behind(s, now) == 0u);
+  s.progress = 9;  // ahead of a stale estimate: floored, never negative.
+  CHECK(episodes_behind(s, now) == 0u);
+  s.enrichment.next_airing_episode = std::nullopt;
+  s.progress = 0;
+  CHECK(episodes_behind(s, now) == 0u);
+}
+
 TEST_CASE("after_play: completed sticks") {
   CHECK(after_play_status(ListStatus::Completed, 1, 12u, false) == ListStatus::Completed);
   CHECK(after_play_status(ListStatus::Completed, 0, std::nullopt, true) ==

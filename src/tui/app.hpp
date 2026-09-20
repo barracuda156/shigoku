@@ -192,6 +192,14 @@ struct HistoryState {
   // Status narrowing (the tracker-client "Filter: Watching (41)" idiom):
   // nullopt = every group, else the one group shown. ANDs with `filter`.
   std::optional<ListStatus> status_filter;
+  // The cycle's one extra stop past the groups: Watching rows with aired
+  // episodes still unwatched (episodes_behind > 0). Exclusive with
+  // status_filter — the cycle sets one or the other, never both.
+  bool behind_filter = false;
+  // The clock the behind test, the `+N aired` tag and the bar's aired cells
+  // read (draw stays pure): stamped by the loader and by the filter key, and
+  // refreshed on the tick while the view is up, like Schedule's.
+  std::int64_t now_secs = 0;
   std::vector<Show> rows;               // store order, as loaded.
   std::vector<std::optional<std::uint32_t>> resume;  // parallel to rows; ◐ marker ep.
   std::vector<std::size_t> order;       // indices into rows: filtered, group-ordered.
@@ -221,7 +229,8 @@ struct HistoryState {
   void on_filter_edited();
   void on_filter_cleared();
   // Step the status filter through all -> Watching -> Planning -> Paused ->
-  // Completed -> Dropped -> all (dir < 0 walks it backwards); clear = all.
+  // Completed -> Dropped -> behind -> all (dir < 0 walks it backwards);
+  // clear = all.
   void cycle_status_filter(int dir);
   void clear_status_filter();
   void nav(int dy, int visible);
