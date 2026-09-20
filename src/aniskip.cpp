@@ -241,6 +241,44 @@ std::optional<std::int64_t> jikan_mal_id(std::string_view title) {
   return first.at("mal_id").get<std::int64_t>();
 }
 
+std::optional<std::string> build_chapters(const SkipTimes& t) {
+  if (!t.op.has_value() && !t.ed.has_value()) return std::nullopt;
+  auto ms = [](double secs) { return static_cast<long long>(secs * 1000.0 + 0.5); };
+  std::string out = ";FFMETADATA1\n";
+  auto chapter = [&](long long start, long long end, const char* title) {
+    if (end <= start) return;
+    out += "[CHAPTER]\nTIMEBASE=1/1000\nSTART=" + std::to_string(start) +
+           "\nEND=" + std::to_string(end) + "\ntitle=" + title + "\n";
+  };
+  // A leading gap before the opening reads as the episode's cold open.
+  long long cursor = 0;
+  if (t.op.has_value()) {
+    const auto [s, e] = *t.op;
+    if (ms(s) > 0) chapter(0, ms(s), "Episode");
+    chapter(ms(s), ms(e), "Opening");
+    cursor = ms(e);
+  }
+  if (t.ed.has_value()) {
+    const auto [s, e] = *t.ed;
+    if (ms(s) > cursor) chapter(cursor, ms(s), "Episode");
+    chapter(ms(s), ms(e), "Ending");
+  }
+  return out;
+}
+
+std::optional<std::string> write_chapters(std::string_view cache_dir, std::int64_t mal_id,
+                                          std::uint32_t episode, std::string_view text) {
+  mkdir_p(std::string(cache_dir));
+  const std::string path = std::string(cache_dir) + "/chapters-" + std::to_string(mal_id) + "-" +
+                           std::to_string(episode) + ".txt";
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) return std::nullopt;
+  out << text;
+  if (!out.good()) return std::nullopt;
+  out.close();
+  return path;
+}
+
 std::optional<std::string> ensure_script(std::string_view cache_dir) {
   mkdir_p(std::string(cache_dir));
   const std::string path = std::string(cache_dir) + "/skip.lua";
@@ -262,19 +300,31 @@ std::optional<player::SkipScript> prepare(std::optional<std::int64_t> mal_id,
                                           std::string_view title, std::uint32_t episode,
                                           SkipMode mode, std::string_view cache_dir) {
   if (mode == SkipMode::None) return std::nullopt;
+  return prepare_all(mal_id, title, episode, mode, cache_dir).skip;
+}
+
+Prepared prepare_all(std::optional<std::int64_t> mal_id, std::string_view title,
+                     std::uint32_t episode, SkipMode mode, std::string_view cache_dir) {
+  Prepared out;
   std::int64_t resolved_mal_id;
   if (mal_id.has_value()) {
     resolved_mal_id = *mal_id;
   } else {
+    if (title.empty()) return out;  // nothing to look up; never touch the network.
     auto looked_up = detail::jikan_mal_id(title);
-    if (!looked_up.has_value()) return std::nullopt;
+    if (!looked_up.has_value()) return out;
     resolved_mal_id = *looked_up;
   }
-  auto opts = detail::build_opts(detail::fetch(resolved_mal_id, episode), mode);
-  if (!opts.has_value()) return std::nullopt;
-  auto path = detail::ensure_script(cache_dir);
-  if (!path.has_value()) return std::nullopt;
-  return player::SkipScript{*path, *opts};
+  const SkipTimes times = detail::fetch(resolved_mal_id, episode);
+  if (auto chapters = detail::build_chapters(times); chapters.has_value()) {
+    out.chapters_file = detail::write_chapters(cache_dir, resolved_mal_id, episode, *chapters);
+  }
+  if (auto opts = detail::build_opts(times, mode); opts.has_value()) {
+    if (auto path = detail::ensure_script(cache_dir); path.has_value()) {
+      out.skip = player::SkipScript{*path, *opts};
+    }
+  }
+  return out;
 }
 
 }  // namespace shigoku::aniskip

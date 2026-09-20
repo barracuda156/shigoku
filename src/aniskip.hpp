@@ -64,6 +64,18 @@ struct SkipTimes {
     std::optional<std::int64_t> mal_id, std::string_view title,
     std::uint32_t episode, SkipMode mode, std::string_view cache_dir);
 
+// Both playback adjuncts from ONE lookup: the auto-skip script (per `mode`,
+// as prepare) and a chapters file marking the opening/episode/ending on the
+// seek bar (written whenever any interval is known, whatever the mode — the
+// marks are navigation, not skipping). Either half may be nullopt.
+struct Prepared {
+  std::optional<player::SkipScript> skip;
+  std::optional<std::string> chapters_file;
+};
+[[nodiscard]] Prepared prepare_all(std::optional<std::int64_t> mal_id, std::string_view title,
+                                   std::uint32_t episode, SkipMode mode,
+                                   std::string_view cache_dir);
+
 // --- Internals, exposed for the golden tests (aniskip.rs mod tests) --------
 namespace detail {
 
@@ -74,6 +86,18 @@ namespace detail {
 // `--script-opts` for `times` under `mode`, or nullopt (mode None / no
 // relevant interval). Missing segments emit as -1 (Lua: disabled).
 [[nodiscard]] std::optional<std::string> build_opts(const SkipTimes& t, SkipMode mode);
+
+// The ffmetadata chapters text for the intervals: "Opening" / "Episode" /
+// "Ending" (whichever the times allow, in order), millisecond timebase.
+// nullopt when neither interval is known.
+[[nodiscard]] std::optional<std::string> build_chapters(const SkipTimes& t);
+
+// Write the chapters text for one (mal, episode) under `cache_dir` and
+// return its path; nullopt on an unwritable cache.
+[[nodiscard]] std::optional<std::string> write_chapters(std::string_view cache_dir,
+                                                        std::int64_t mal_id,
+                                                        std::uint32_t episode,
+                                                        std::string_view text);
 
 // Fetch OP/ED for (mal_id, episode). Never errors: every failure returns
 // empty times.

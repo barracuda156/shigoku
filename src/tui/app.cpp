@@ -1247,8 +1247,10 @@ void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
     // miss, network down, unwritable cache) collapses to plain play.
     if (!deps.aniskip_cache_dir.empty()) {
       const std::uint32_t ep_num = aniskip::episode_number(episode, episode_ordinal);
-      opts.skip = aniskip::prepare(mal_id, show_title, ep_num, skip_mode,
-                                   deps.aniskip_cache_dir);
+      auto adjuncts =
+          aniskip::prepare_all(mal_id, show_title, ep_num, skip_mode, deps.aniskip_cache_dir);
+      opts.skip = std::move(adjuncts.skip);
+      opts.chapters_file = std::move(adjuncts.chapters_file);
     }
     auto outcome = [&]() -> Result<player::PlayOutcome, PlayError> {
       // Play-prefers-local (P35 slice 4): a completed download for this exact

@@ -220,7 +220,10 @@ playing or downloading carries a small spinner.
 `mpv` is the default backend and the only fully-featured one: live position
 tracking, checkpointed resume, and (if configured) AniSkip auto-skipping of
 openings/endings. Resume offset and skip mode both live under Settings →
-Player.
+Player. Whenever AniSkip knows an episode's opening or ending, they also
+show as chapters on mpv's seek bar (Opening / Episode / Ending), so you can
+see where they are and jump with mpv's chapter keys even with auto-skip
+off.
 
 Two alternate backends exist for machines where `mpv` itself is
 impractical, chosen via Settings → Player backend → *player*:

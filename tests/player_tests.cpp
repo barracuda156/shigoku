@@ -129,6 +129,30 @@ TEST_CASE("argv_minimal_link_skips_every_optional_flag") {
 // P22: aniskip's --script/--script-opts pair, position-based (not exact-vector,
 // since every other flag in this fixture is orthogonal) — lands right after
 // --start= and right before the positional url (03 §6.3.1 table order).
+TEST_CASE("argv_chapters_file_rides_after_the_skip_pair_before_the_positional") {
+  const StreamLink link = full_link();
+  auto o = opts("t", 0.0);
+  o.skip = SkipScript{"/cache/skip.lua", "aniskip-mode=both"};
+  o.chapters_file = "/cache/chapters-1-1.txt";
+  auto r = build_argv(link, link.url, o, "/tmp/s.sock");
+  REQUIRE(r.has_value());
+  const std::vector<std::string>& argv = *r;
+  REQUIRE(argv.size() >= 3);
+  CHECK(argv[argv.size() - 2] == "--chapters-file=/cache/chapters-1-1.txt");
+  CHECK(argv[argv.size() - 3] == "--script-opts=aniskip-mode=both");
+  CHECK(argv.back() == link.url);
+  // Absent: no flag at all.
+  o.chapters_file = std::nullopt;
+  auto r2 = build_argv(link, link.url, o, "/tmp/s.sock");
+  REQUIRE(r2.has_value());
+  for (const auto& a : *r2) CHECK(a.find("--chapters-file") == std::string::npos);
+  // The local arm carries it too.
+  o.chapters_file = "/cache/chapters-1-1.txt";
+  auto local = build_local_argv("/dl/700/sub/7.mp4", o, "/tmp/s.sock");
+  REQUIRE(local.has_value());
+  CHECK(local->at(local->size() - 2) == "--chapters-file=/cache/chapters-1-1.txt");
+}
+
 TEST_CASE("argv_skip_script_lands_in_table_position") {
   const StreamLink link = full_link();
   auto o = opts("t", 42.5);

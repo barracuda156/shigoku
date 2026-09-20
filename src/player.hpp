@@ -135,6 +135,11 @@ struct PlayOpts {
   double start_secs = 0.0;
   // AniSkip adjunct (P22, 03 §9), prepared caller-side; nullopt = plain play.
   std::optional<SkipScript> skip;
+  // Chapter marks for the seek bar (mpv --chapters-file, ffmetadata): the
+  // opening/ending intervals as chapters, so they show on the OSC and the
+  // chapter keys jump them. App-written under the cache dir like the skip
+  // script; nullopt = none. mpv only (the alternates have no equivalent).
+  std::optional<std::string> chapters_file;
 };
 
 // resume_start (03 §6.3.1, A6) — the resume rule as a pure function:

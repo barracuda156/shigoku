@@ -107,6 +107,49 @@ TEST_CASE("build_opts_emits_all_keys_gated_by_mode") {
         "aniskip-mode=intro");
 }
 
+TEST_CASE("build_chapters_marks_opening_episode_ending_in_order") {
+  SkipTimes both;
+  both.op = std::make_pair(12.5, 84.3);
+  both.ed = std::make_pair(1340.0, 1412.0);
+  auto text = build_chapters(both);
+  REQUIRE(text.has_value());
+  CHECK(text->rfind(";FFMETADATA1\n", 0) == 0);
+  CHECK(*text ==
+        ";FFMETADATA1\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=12500\ntitle=Episode\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=12500\nEND=84300\ntitle=Opening\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=84300\nEND=1340000\ntitle=Episode\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=1340000\nEND=1412000\ntitle=Ending\n");
+  // Ending only: the episode runs from 0 to the ending.
+  SkipTimes ed_only;
+  ed_only.ed = std::make_pair(1340.0, 1412.0);
+  auto ed_text = build_chapters(ed_only);
+  REQUIRE(ed_text.has_value());
+  CHECK(ed_text->find("START=0\nEND=1340000\ntitle=Episode") != std::string::npos);
+  CHECK(ed_text->find("Opening") == std::string::npos);
+  // An opening at 0 has no cold open before it.
+  SkipTimes cold;
+  cold.op = std::make_pair(0.0, 90.0);
+  auto cold_text = build_chapters(cold);
+  REQUIRE(cold_text.has_value());
+  CHECK(cold_text->find("title=Episode") == std::string::npos);
+  CHECK(!build_chapters(SkipTimes{}).has_value());
+}
+
+TEST_CASE("write_chapters_lands_under_the_cache_dir_and_prepare_all_stays_offline_without_a_key") {
+  const std::string dir = temp_dir("aniskip-chapters-test");
+  ::system(("rm -rf '" + dir + "'").c_str());
+  auto path = write_chapters(dir, 52991, 3, ";FFMETADATA1\n");
+  REQUIRE(path.has_value());
+  CHECK(path->find("/chapters-52991-3.txt") != std::string::npos);
+  CHECK(read_file(*path) == ";FFMETADATA1\n");
+  ::system(("rm -rf '" + dir + "'").c_str());
+  // No MAL id and no title: nothing to look up, both halves empty.
+  auto none = prepare_all(std::nullopt, "", 1, SkipMode::Both, dir);
+  CHECK(!none.skip.has_value());
+  CHECK(!none.chapters_file.has_value());
+}
+
 TEST_CASE("build_opts_none_when_no_relevant_interval_or_disabled") {
   SkipTimes op_only;
   op_only.op = std::make_pair(12.5, 84.3);

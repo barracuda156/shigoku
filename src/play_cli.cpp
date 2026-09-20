@@ -200,8 +200,11 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
   opts.start_secs = start_secs;
   if (!cache_dir.empty()) {
     const std::uint32_t ep_num = aniskip::episode_number(episode, episode_index);
-    opts.skip = aniskip::prepare(hit.mal_id, strip_controls(hit.title), ep_num,
-                                 aniskip::parse_skip_mode(config.skip_mode), cache_dir + "/aniskip");
+    auto adjuncts =
+        aniskip::prepare_all(hit.mal_id, strip_controls(hit.title), ep_num,
+                             aniskip::parse_skip_mode(config.skip_mode), cache_dir + "/aniskip");
+    opts.skip = std::move(adjuncts.skip);
+    opts.chapters_file = std::move(adjuncts.chapters_file);
   }
 
   // Quality rides config.default_quality; --quality is parsed-but-inert.

@@ -147,6 +147,7 @@ Result<std::vector<std::string>, PlayError> build_argv(
     argv.push_back("--script=" + opts.skip->path);
     argv.push_back("--script-opts=" + opts.skip->opts);
   }
+  if (opts.chapters_file) argv.push_back("--chapters-file=" + *opts.chapters_file);
   argv.push_back(std::string(play_url));
   return argv;
 }
@@ -171,6 +172,7 @@ Result<std::vector<std::string>, PlayError> build_local_argv(
     argv.push_back("--script=" + opts.skip->path);
     argv.push_back("--script-opts=" + opts.skip->opts);
   }
+  if (opts.chapters_file) argv.push_back("--chapters-file=" + *opts.chapters_file);
   std::string positional(path);
   if (positional.front() == '-') positional.insert(0, "./");
   argv.push_back(std::move(positional));
