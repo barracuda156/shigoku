@@ -360,7 +360,8 @@ CoverFetchFn make_http_fetch(const http::Client& client) {
 
 CoverAction CoverState::decide(std::optional<std::int64_t> target_id,
                                std::optional<std::string_view> target_url,
-                               std::uint64_t now, std::uint64_t cooldown) const {
+                               std::uint64_t now, std::uint64_t cooldown,
+                               std::uint32_t box_w, std::uint32_t box_h) const {
   if (!target_id.has_value()) {
     return CoverAction::None;
   }
@@ -372,7 +373,11 @@ CoverAction CoverState::decide(std::optional<std::int64_t> target_id,
     return CoverAction::None;
   }
   if (for_id_ == target_id && (loading_ || has_pixels_)) {
-    return CoverAction::UpToDate;  // a live cover wins over a stale failure.
+    // A live cover wins over a stale failure — unless it was sized for a
+    // different box: then it must be fetched (resized) again for this one.
+    const bool box_asked = box_w != 0 && box_h != 0;
+    if (box_asked && (box_w != box_w_ || box_h != box_h_)) return CoverAction::Fetch;
+    return CoverAction::UpToDate;
   }
   // Failure records survive navigation; only cooldown expiry, a url change, or
   // a successful fetch end the suppression.
@@ -384,12 +389,15 @@ CoverAction CoverState::decide(std::optional<std::int64_t> target_id,
   return CoverAction::Fetch;
 }
 
-void CoverState::begin_fetch(std::int64_t id, std::string_view url) {
+void CoverState::begin_fetch(std::int64_t id, std::string_view url, std::uint32_t box_w,
+                             std::uint32_t box_h) {
   failed_.reset();
   clear();
   for_id_ = id;
   inflight_url_ = std::string(url);
   loading_ = true;
+  box_w_ = box_w;
+  box_h_ = box_h;
 }
 
 bool CoverState::on_done(std::int64_t for_id) {

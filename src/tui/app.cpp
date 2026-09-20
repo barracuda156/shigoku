@@ -1538,7 +1538,18 @@ void reconcile_cover(App& app) {
   const std::optional<std::string_view> turl =
       target.has_value() ? std::optional<std::string_view>(target->url) : std::nullopt;
 
-  switch (app.cover.decide(tid, turl, app.tick_count)) {
+  // The box the art must be sized for is part of "up to date": the same
+  // show zoomed from a preview pane wants a bigger fetch, not the small
+  // pixels stretched into the poster rect.
+  const Rect r = detail::cover_rect(app);
+  const std::uint32_t cw =
+      app.cover_caps.cell.known() ? app.cover_caps.cell.width : kFallbackCellW;
+  const std::uint32_t ch =
+      app.cover_caps.cell.known() ? app.cover_caps.cell.height : kFallbackCellH;
+  const std::uint32_t box_w = r.empty() ? 0 : static_cast<std::uint32_t>(r.w) * cw;
+  const std::uint32_t box_h = r.empty() ? 0 : static_cast<std::uint32_t>(r.h) * ch;
+
+  switch (app.cover.decide(tid, turl, app.tick_count, kCoverCooldownTicks, box_w, box_h)) {
     case CoverAction::None:
       return;
     case CoverAction::UpToDate:
@@ -1552,17 +1563,14 @@ void reconcile_cover(App& app) {
       app.dirty = true;
       return;
     case CoverAction::Fetch: {
-      const Rect r = detail::cover_rect(app);
       if (r.empty()) return;  // no room to place a cover this frame.
-      const std::uint32_t cw =
-          app.cover_caps.cell.known() ? app.cover_caps.cell.width : kFallbackCellW;
-      const std::uint32_t ch =
-          app.cover_caps.cell.known() ? app.cover_caps.cell.height : kFallbackCellH;
-      const std::uint32_t box_w = static_cast<std::uint32_t>(r.w) * cw;
-      const std::uint32_t box_h = static_cast<std::uint32_t>(r.h) * ch;
-      app.cover.begin_fetch(target->id, target->url);
-      // A fresh cover supersedes any held pixels for a different show.
-      app.cover_render.have_pixels = false;
+      const bool same_show =
+          app.cover_render.have_pixels && app.cover_render.for_id == target->id;
+      app.cover.begin_fetch(target->id, target->url, box_w, box_h);
+      // A fresh cover supersedes any held pixels for a different show; a
+      // re-size of the same show keeps the old pixels up until the new ones
+      // land (a stretched frame beats a blank one).
+      if (!same_show) app.cover_render.have_pixels = false;
       const Generation gen = app.cover_gen.bump();
       spawn_cover(*app.queue, *app.deps->covers, target->url, target->id, box_w,
                   box_h, gen);

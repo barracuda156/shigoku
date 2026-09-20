@@ -263,15 +263,22 @@ class CoverState {
 
   // The 05 §12 decision table, pure. Order is law: a live cover wins over a
   // stale failure record, so UpToDate is decided before Suppress. `now` is the
-  // current tick; `cooldown` the suppress window in ticks.
+  // current tick; `cooldown` the suppress window in ticks. `box_w`/`box_h`
+  // is the pixel box the caller wants the art sized for: held or in-flight
+  // pixels for the same show but a DIFFERENT box are not up to date — they
+  // would be stretched into the new rect (a preview-pane cover zoomed to
+  // the poster) — so the answer is a fresh Fetch. 0/0 = box-agnostic.
   [[nodiscard]] CoverAction decide(std::optional<std::int64_t> target_id,
                                    std::optional<std::string_view> target_url,
                                    std::uint64_t now,
-                                   std::uint64_t cooldown = kCoverCooldownTicks) const;
+                                   std::uint64_t cooldown = kCoverCooldownTicks,
+                                   std::uint32_t box_w = 0, std::uint32_t box_h = 0) const;
 
   // The Fetch transition (caller spawns the worker). On spawn failure the
-  // caller must clear() so no spinner strands.
-  void begin_fetch(std::int64_t id, std::string_view url);
+  // caller must clear() so no spinner strands. The box is remembered so a
+  // later decide() for another box re-fetches.
+  void begin_fetch(std::int64_t id, std::string_view url, std::uint32_t box_w = 0,
+                   std::uint32_t box_h = 0);
   // Worker success. False = stale (wrong id): state untouched, pixels dropped.
   bool on_done(std::int64_t for_id);
   // Worker failure. False = stale drop. Records the id+url cooldown at `now`,
@@ -292,6 +299,8 @@ class CoverState {
   bool loading_ = false;
   std::optional<Failure> failed_;
   std::optional<std::string> inflight_url_;
+  std::uint32_t box_w_ = 0;  // the box the held / in-flight pixels are sized for.
+  std::uint32_t box_h_ = 0;
 };
 
 }  // namespace shigoku::tui

@@ -781,6 +781,24 @@ TEST_CASE("cover: loading or pixels for target is UpToDate") {
   CHECK(s.decide(ID8, URL, 0) == CoverAction::Fetch);
 }
 
+TEST_CASE("cover: pixels sized for another box are not up to date") {
+  CoverState s;
+  s.begin_fetch(ID7, URL, 200, 300);
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 200, 300) == CoverAction::UpToDate);
+  // A bigger box wanted while the small fetch is in flight: fetch again.
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 400, 600) == CoverAction::Fetch);
+  CHECK(s.on_done(ID7));
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 200, 300) == CoverAction::UpToDate);
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 400, 600) == CoverAction::Fetch);  // the zoom case.
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 100, 150) == CoverAction::Fetch);  // and back.
+  // A box-agnostic ask (0/0) keeps the old answer.
+  CHECK(s.decide(ID7, URL, 0) == CoverAction::UpToDate);
+  // The re-fetch remembers its box.
+  s.begin_fetch(ID7, URL, 400, 600);
+  CHECK(s.on_done(ID7));
+  CHECK(s.decide(ID7, URL, 0, COOLDOWN, 400, 600) == CoverAction::UpToDate);
+}
+
 TEST_CASE("cover: failure suppresses same id+url within cooldown") {
   CoverState s;
   s.begin_fetch(ID7, URL);
