@@ -83,23 +83,25 @@ constexpr int kMaxPickAttempts = 1000;
 // both try sources in this order (after any configured preference). The
 // two id-keyed sources lead (they cannot search, so the CLI walks past
 // them); senshi is the first that can search, English-catalogued and keyed
-// by MAL id; AniLibria closes (a Russian-dub catalogue).
+// by MAL id; AniLibria (a Russian-dub catalogue) next; anidb.app last while
+// its "under maintenance" 503 holds — every walk would otherwise spend a
+// request on it before reaching a live source.
 std::optional<ProviderRegistry> build_registry() {
   auto megaplay_provider = megaplay::MegaPlay::create();
   auto anibd_provider = anibd::AniBd::create();
   auto senshi = senshi::Senshi::create();
-  auto anidbapp_provider = anidbapp::AniDbApp::create();
   auto anilibria_provider = anilibria::AniLibria::create();
-  if (!megaplay_provider || !anibd_provider || !senshi || !anidbapp_provider ||
-      !anilibria_provider) {
+  auto anidbapp_provider = anidbapp::AniDbApp::create();
+  if (!megaplay_provider || !anibd_provider || !senshi || !anilibria_provider ||
+      !anidbapp_provider) {
     return std::nullopt;
   }
   std::vector<std::unique_ptr<StreamProvider>> providers;
   providers.push_back(std::make_unique<megaplay::MegaPlay>(std::move(*megaplay_provider)));
   providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
   providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
-  providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
+  providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
   return ProviderRegistry(std::move(providers));
 }
 
