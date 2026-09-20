@@ -53,6 +53,8 @@ TEST_CASE("round trip preserves everything") {
   cfg.player = "mplayer";           // P39 slice 2.
   cfg.player_path = "/opt/mplayer";
   cfg.catalog = "mal";
+  cfg.cli_picker = "fzf";
+  cfg.picker_path = "/opt/local/bin/fzf";
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());

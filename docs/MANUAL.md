@@ -335,6 +335,15 @@ terminal:
 currently plays the best direct stream available regardless of what you ask
 for.
 
+Both pick steps use a numbered prompt by default. If an fzf-compatible
+picker is installed — `fzf`, or `fzf++`, the C++ reimplementation that
+builds on older Macs — and you are at a terminal, the pick opens in it
+instead: type to filter, Enter selects, Esc backs out (that is the "bye"
+the prompt's `q` gives). Two keys in `config.json` steer this: `cli_picker`
+(`auto`, the default; `prompt`; or `fzf`) and `picker_path` (the binary, when
+it is not simply `fzf` on your PATH). A piped or scripted run always gets
+the prompt.
+
 A command-line search walks the streaming sources that can search, your
 preferred one first: a source that fails or finds nothing is noted on the
 spot and the next one is tried, and the first that answers serves the whole

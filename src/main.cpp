@@ -9,6 +9,8 @@
 // Headless commands never touch the terminal layer (no tui::run, no term
 // init) — the tty-less contract for headless mode.
 
+#include <unistd.h>
+
 #include <ctime>
 #include <cstdint>
 #include <cstdio>
@@ -36,6 +38,7 @@
 #include "mal_mirror.hpp"
 #include "megaplay.hpp"
 #include "paths.hpp"
+#include "picker.hpp"
 #include "play_cli.hpp"
 #include "provider.hpp"
 #include "semver.hpp"
@@ -344,12 +347,16 @@ int run_update_cli() {
 
 // ── play ────────────────────────────────────────────────────────────────────
 
-// Numbered stdin pick loop: prints the prompt, reads one capped line, and lets
-// cli::classify_pick own the accept/reprompt/abort rule. nullopt on `q`, EOF,
-// or an overlong line.
-std::optional<std::size_t> prompt_pick(const char* prompt, std::size_t max) {
+// Numbered stdin pick loop: prints the numbered rows and the prompt, reads
+// one capped line, and lets cli::classify_pick own the accept/reprompt/abort
+// rule. nullopt on `q`, EOF, or an overlong line.
+std::optional<std::size_t> prompt_pick(std::string_view prompt,
+                                       const std::vector<std::string>& rows) {
+  const std::size_t max = rows.size();
+  std::printf("%s", cli::numbered_rows(rows, max >= 100 ? 3 : 2).c_str());
+  const std::string line_prompt = "\n  " + std::string(prompt) + " # (q to quit): ";
   for (int attempt = 0; attempt < kMaxPickAttempts; ++attempt) {
-    std::printf("%s", prompt);
+    std::printf("%s", line_prompt.c_str());
     flush_stdout();
     std::string line;
     line.reserve(16);
@@ -384,6 +391,31 @@ std::optional<std::size_t> prompt_pick(const char* prompt, std::size_t max) {
   }
   // Ran out of patience: a flood, not a user. Abort like EOF.
   return std::nullopt;
+}
+
+// The pick seam for both flows: the numbered prompt, or an fzf-compatible
+// picker (fzf / fzf++) when config asks for it or, under `auto`, when one is
+// on PATH and we are at a terminal (a piped stdin keeps the prompt, so
+// scripts keep working). `fzf` without a binary says so once and prompts.
+cli_play::PickFn make_picker(const Config& config) {
+  const picker::Mode mode = picker::parse_mode(config.cli_picker);
+  const auto prompt = [](std::string_view p, const std::vector<std::string>& rows) {
+    return prompt_pick(p, rows);
+  };
+  if (mode == picker::Mode::Prompt) return prompt;
+  auto binary = picker::find_binary(config.picker_path);
+  if (!binary.has_value()) {
+    if (mode == picker::Mode::Fzf) {
+      std::printf("  (note: no fzf-compatible picker found%s; using the numbered prompt.)\n",
+                  config.picker_path.empty() ? " on PATH" : "");
+    }
+    return prompt;
+  }
+  const bool at_terminal = ::isatty(STDIN_FILENO) != 0 && ::isatty(STDOUT_FILENO) != 0;
+  if (mode == picker::Mode::Auto && !at_terminal) return prompt;
+  return [binary = *binary](std::string_view p, const std::vector<std::string>& rows) {
+    return picker::fzf_pick(binary, p, rows);
+  };
 }
 
 // Effective download root: the config value, or <data>/downloads when blank
@@ -455,9 +487,7 @@ int run_play_cli(const cli::PlayArgs& args) {
       {sources.front()->name(), sources.front()->display_name()});
   if (note.has_value()) std::printf("%s\n", note->c_str());
 
-  const cli_play::PickFn pick = [](const char* prompt, std::size_t max) {
-    return prompt_pick(prompt, max);
-  };
+  const cli_play::PickFn pick = make_picker(config);
   return cli_play::play_flow(sources, pick, translation, config, paths->cache, paths->runtime,
                              resolve_download_dir(config, *paths), store, args);
 }
@@ -505,9 +535,7 @@ int run_download_cli(const cli::DownloadArgs& args) {
       {sources.front()->name(), sources.front()->display_name()});
   if (note.has_value()) std::printf("%s\n", note->c_str());
 
-  const cli_play::PickFn pick = [](const char* prompt, std::size_t max) {
-    return prompt_pick(prompt, max);
-  };
+  const cli_play::PickFn pick = make_picker(config);
   return cli_play::download_flow(sources, pick, translation, config,
                                  resolve_download_dir(config, *paths), store, args);
 }

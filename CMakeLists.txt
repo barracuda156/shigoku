@@ -734,6 +734,15 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_picker: the command line's selector seam — the numbered prompt's
+# rows, and an fzf-compatible picker (fzf, fzf++) spawned with them on stdin.
+# A leaf (posix_spawn + pipes, no curl); only the shigoku binary links it.
+# ---------------------------------------------------------------------------
+add_library(shigoku_picker STATIC src/picker.cpp)
+target_include_directories(shigoku_picker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_picker PUBLIC shigoku_flags shigoku_thirdparty)
+
+# ---------------------------------------------------------------------------
 # shigoku_nonce (P12): 128-bit hex nonce from /dev/urandom (nonce.rs). A leaf
 # (std-only). Used for the de-cloak proxy's per-playback token (ROD-447).
 # ---------------------------------------------------------------------------
@@ -970,7 +979,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
     target_link_libraries(shigoku PRIVATE shigoku_tui)
   endif()
   target_link_libraries(shigoku PRIVATE
-    shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
+    shigoku_picker shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
     shigoku_anilibria
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
@@ -1076,6 +1085,16 @@ endfunction()
 
 shigoku_add_test(scaffold_tests tests/scaffold_tests.cpp)
 shigoku_add_test(domain_tests tests/domain_tests.cpp)
+
+# picker_tests: the command line's selector seam — numbering / selection
+# parsing / PATH search pure, and the spawn against tests/fixtures/stub_fzf.sh
+# (an fzf-compatible stand-in that never touches a tty).
+add_executable(picker_tests tests/picker_tests.cpp)
+target_compile_definitions(picker_tests PRIVATE
+  SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+target_link_libraries(picker_tests PRIVATE
+  shigoku_picker shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
+add_test(NAME picker_tests COMMAND picker_tests)
 
 # config_tests (P18): config.json load/save — total-load defaults, atomic
 # save, oversized/corrupt/FIFO handling, concurrency clamp. Pure file I/O, no

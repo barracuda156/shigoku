@@ -228,6 +228,23 @@ TEST_CASE("mal_pushed_is_silent_by_default_and_renders_only_when_nonzero") {
   CHECK_MESSAGE(contains(loud, "pushed 3 change(s) to MyAnimeList"), loud);
 }
 
+TEST_CASE("rows_feed_the_picker_and_the_renderers_number_them") {
+  std::vector<SearchHit> hits;
+  SearchHit a;
+  a.title = "Frieren";
+  a.eps_sub = 28;
+  hits.push_back(a);
+  SearchHit b;
+  b.title = "Bare\x1b[31m";  // a control byte in a provider claim.
+  hits.push_back(b);
+  const auto rows = cli::search_hit_rows(hits, Translation::Sub);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0] == "Frieren  \xC2\xB7  28 sub eps");
+  CHECK(rows[1] == "Bare[31m");
+  CHECK(cli::episode_rows({"1", "OVA"}) == std::vector<std::string>{"ep 1", "ep OVA"});
+  CHECK(cli::numbered_rows({"x", "y"}, 2) == "   1. x\n   2. y\n");
+}
+
 TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilist_account") {
   cli::MalPullCounts m;
   m.ran = true;
@@ -596,21 +613,21 @@ TEST_CASE("no_results_exits_zero") {
   auto p = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{}; },
                 []() -> Fake::EpR { return std::vector<std::string>{}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
-  CHECK(run(p, [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 0);
+  CHECK(run(p, [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); }) == 0);
 }
 
 TEST_CASE("search_failure_exits_one") {
   auto p = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::network()); },
                 []() -> Fake::EpR { return std::vector<std::string>{}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
-  CHECK(run(p, [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 1);
+  CHECK(run(p, [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); }) == 1);
 }
 
 TEST_CASE("quitting_the_show_pick_exits_zero") {
   auto p = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
                 []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
-  CHECK(run(p, [](const char*, std::size_t) { return std::optional<std::size_t>{}; }) == 0);
+  CHECK(run(p, [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>{}; }) == 0);
 }
 
 TEST_CASE("resolve_failure_exits_one") {
@@ -619,7 +636,7 @@ TEST_CASE("resolve_failure_exits_one") {
   auto p = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
                 []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
-  CHECK(run(p, [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 1);
+  CHECK(run(p, [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); }) == 1);
 }
 
 // ── search walk: the CLI tries the next searchable source ───────────────────
@@ -662,8 +679,8 @@ Fake source_up(std::string_view name) {
 struct QuitPick {
   std::size_t seen = 0;
   shigoku::cli_play::PickFn fn() {
-    return [this](const char*, std::size_t max) {
-      seen = max;
+    return [this](std::string_view, const std::vector<std::string>& rows) {
+      seen = rows.size();
       return std::optional<std::size_t>{};
     };
   }
@@ -721,7 +738,7 @@ TEST_CASE("the_first_answering_source_binds_the_whole_run") {
   second.name_ = "second";
   second.display_ = "second";
   CHECK(run_all({&first, &second},
-                [](const char*, std::size_t) { return std::optional<std::size_t>(0); }) == 1);
+                [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); }) == 1);
 }
 
 TEST_CASE("no_sources_at_all_exits_one") {
@@ -815,7 +832,7 @@ TEST_CASE("play_prefers_a_completed_local_download_over_resolving (P35 slice 4)"
   plant_download(dl + "/700/sub/1.mp4");
   Config config;
   config.mpv_path = write_stub_mpv();
-  const auto pick = [](const char*, std::size_t) { return std::optional<std::size_t>(0); };
+  const auto pick = [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); };
   const cli::PlayArgs args{"frieren", false, std::nullopt};
   CHECK(shigoku::cli_play::play_flow({&p}, pick, Translation::Sub, config, /*cache_dir=*/"",
                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,

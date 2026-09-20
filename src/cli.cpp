@@ -333,32 +333,47 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
   return out;
 }
 
-std::string render_search_hits(const std::vector<SearchHit>& hits, Translation translation) {
-  std::string out = "\n  " + std::to_string(hits.size()) + " result(s):\n\n";
-  for (std::size_t i = 0; i < hits.size(); ++i) {
-    const SearchHit& h = hits[i];
-    std::string title = strip_controls(h.title);
+std::vector<std::string> search_hit_rows(const std::vector<SearchHit>& hits,
+                                         Translation translation) {
+  std::vector<std::string> rows;
+  rows.reserve(hits.size());
+  for (const SearchHit& h : hits) {
+    std::string row = strip_controls(h.title);
     const std::uint32_t per_track = translation == Translation::Dub ? h.eps_dub : h.eps_sub;
-    const std::string num = rjust(i + 1, 2);
     if (per_track > 0) {
-      out += "  " + num + ". " + title + "  ·  " + std::to_string(per_track) + " " +
-             std::string(to_string(translation)) + " eps\n";
+      row += "  ·  " + std::to_string(per_track) + " " + std::string(to_string(translation)) +
+             " eps";
     } else if (h.total_episodes.has_value()) {
-      out += "  " + num + ". " + title + "  ·  " + std::to_string(*h.total_episodes) + " eps\n";
-    } else {
-      out += "  " + num + ". " + title + "\n";
+      row += "  ·  " + std::to_string(*h.total_episodes) + " eps";
     }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+std::vector<std::string> episode_rows(const std::vector<std::string>& labels) {
+  std::vector<std::string> rows;
+  rows.reserve(labels.size());
+  for (const std::string& label : labels) rows.push_back("ep " + strip_controls(label));
+  return rows;
+}
+
+std::string numbered_rows(const std::vector<std::string>& rows, int width) {
+  std::string out;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    out += "  " + rjust(i + 1, width) + ". " + rows[i] + "\n";
   }
   return out;
 }
 
+std::string render_search_hits(const std::vector<SearchHit>& hits, Translation translation) {
+  return "\n  " + std::to_string(hits.size()) + " result(s):\n\n" +
+         numbered_rows(search_hit_rows(hits, translation), 2);
+}
+
 std::string render_episode_list(const std::vector<std::string>& labels) {
-  std::string out = "\n  " + std::to_string(labels.size()) + " episode(s):\n\n";
-  for (std::size_t i = 0; i < labels.size(); ++i) {
-    std::string label = strip_controls(labels[i]);
-    out += "  " + rjust(i + 1, 3) + ". ep " + label + "\n";
-  }
-  return out;
+  return "\n  " + std::to_string(labels.size()) + " episode(s):\n\n" +
+         numbered_rows(episode_rows(labels), 3);
 }
 
 PickResult classify_pick(std::string_view line, std::size_t max) {

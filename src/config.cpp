@@ -48,6 +48,8 @@ Config from_json(const json& j) {
   c.ffmpeg_path = j.value("ffmpeg_path", c.ffmpeg_path);
   c.player = j.value("player", c.player);
   c.player_path = j.value("player_path", c.player_path);
+  c.cli_picker = j.value("cli_picker", c.cli_picker);
+  c.picker_path = j.value("picker_path", c.picker_path);
   return c;
 }
 
@@ -75,6 +77,8 @@ json to_json(const Config& c) {
       {"ffmpeg_path", c.ffmpeg_path},
       {"player", c.player},
       {"player_path", c.player_path},
+      {"cli_picker", c.cli_picker},
+      {"picker_path", c.picker_path},
   };
 }
 

@@ -20,9 +20,13 @@
 
 namespace shigoku::cli_play {
 
-// Numbered-pick seam: prompt + max -> a 0-based index, or nullopt to abort
-// (q/EOF/overlong). Production wires prompt_pick (stdin); tests script it.
-using PickFn = std::function<std::optional<std::size_t>(const char*, std::size_t)>;
+// The pick seam: a prompt ("pick a show") + the unnumbered rows -> a 0-based
+// index, or nullopt to abort (q / EOF / overlong on the prompt; Esc, no
+// match or a spawn failure on an fzf-compatible picker). Production wires
+// main.cpp's numbered prompt or picker::fzf_pick; tests script it. The
+// picker owns the rows' presentation — the flow prints only the count line.
+using PickFn = std::function<std::optional<std::size_t>(std::string_view,
+                                                        const std::vector<std::string>&)>;
 
 // The ordered search-capable sources (ProviderRegistry::searchable): the
 // preferred one first when it can search, then the rest by registry position.

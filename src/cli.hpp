@@ -134,14 +134,21 @@ enum class FetchStage {
   Resolve,
 };
 
-// Numbered search results, the three-branch count line: per-track when the
-// chosen track is stocked, else the catalog total, else bare. Titles are
-// provider claims — strip terminal-hostile bytes before stdout.
+// One unnumbered row per hit ("Frieren  ·  28 sub eps": per-track count when
+// the chosen track is stocked, else the catalog total, else bare) and per
+// episode ("ep 7"): the picker seam's input. Titles and labels are provider
+// claims — terminal-hostile bytes are stripped here.
+[[nodiscard]] std::vector<std::string> search_hit_rows(const std::vector<SearchHit>& hits,
+                                                       Translation translation);
+[[nodiscard]] std::vector<std::string> episode_rows(const std::vector<std::string>& labels);
+
+// "  NN. row\n" per row, numbers right-aligned to `width` — the numbered
+// prompt's list.
+[[nodiscard]] std::string numbered_rows(const std::vector<std::string>& rows, int width);
+
+// The count line + the numbered rows (search: width 2, episodes: width 3).
 [[nodiscard]] std::string render_search_hits(const std::vector<SearchHit>& hits,
                                             Translation translation);
-
-// Numbered episode list, width-3 `ep <label>` rows. Labels are provider claims
-// — strip terminal-hostile bytes before stdout.
 [[nodiscard]] std::string render_episode_list(const std::vector<std::string>& labels);
 
 // One resolved pick from a numbered prompt. Reprompt is a blank line (retry,

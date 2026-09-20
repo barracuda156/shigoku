@@ -128,9 +128,9 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
   const StreamProvider& provider = *walked.provider;
   const std::vector<SearchHit>& hits = walked.hits;
 
-  std::printf("%s", cli::render_search_hits(hits, translation).c_str());
-  auto idx = pick("\n  pick a show # (q to quit): ", hits.size());
-  if (!idx.has_value()) {
+  std::printf("\n  %zu result(s):\n\n", hits.size());
+  auto idx = pick("pick a show", cli::search_hit_rows(hits, translation));
+  if (!idx.has_value() || *idx >= hits.size()) {
     std::printf("  bye.\n");
     return 0;
   }
@@ -167,9 +167,9 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
     return 0;
   }
 
-  std::printf("%s", cli::render_episode_list(episodes).c_str());
-  auto ep_idx = pick("\n  pick an episode # (q to quit): ", episodes.size());
-  if (!ep_idx.has_value()) {
+  std::printf("\n  %zu episode(s):\n\n", episodes.size());
+  auto ep_idx = pick("pick an episode", cli::episode_rows(episodes));
+  if (!ep_idx.has_value() || *ep_idx >= episodes.size()) {
     std::printf("  bye.\n");
     return 0;
   }
@@ -282,9 +282,9 @@ int download_flow(const Sources& sources, const PickFn& pick,
   const StreamProvider& provider = *walked.provider;
   const std::vector<SearchHit>& hits = walked.hits;
 
-  std::printf("%s", cli::render_search_hits(hits, translation).c_str());
-  auto idx = pick("\n  pick a show # (q to quit): ", hits.size());
-  if (!idx.has_value()) {
+  std::printf("\n  %zu result(s):\n\n", hits.size());
+  auto idx = pick("pick a show", cli::search_hit_rows(hits, translation));
+  if (!idx.has_value() || *idx >= hits.size()) {
     std::printf("  bye.\n");
     return 0;
   }
@@ -335,9 +335,9 @@ int download_flow(const Sources& sources, const PickFn& pick,
       return 0;
     }
   } else {
-    std::printf("%s", cli::render_episode_list(episodes).c_str());
-    ep_idx = pick("\n  pick an episode # (q to quit): ", episodes.size());
-    if (!ep_idx.has_value()) {
+    std::printf("\n  %zu episode(s):\n\n", episodes.size());
+    ep_idx = pick("pick an episode", cli::episode_rows(episodes));
+    if (!ep_idx.has_value() || *ep_idx >= episodes.size()) {
       std::printf("  bye.\n");
       return 0;
     }

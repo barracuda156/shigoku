@@ -63,6 +63,12 @@ struct Config {
   // name); mpv keeps reading mpv_path — the two never mix (§9 P39).
   std::string player = "mpv";
   std::string player_path;
+  // The command line's selector (picker.hpp): "auto" = an fzf-compatible
+  // picker when one is on PATH and stdin/stdout are a terminal, else the
+  // numbered prompt; "prompt" / "fzf" force one. picker_path names the
+  // binary ("" = `fzf` on PATH; fzf++ installs under that name too).
+  std::string cli_picker = "auto";
+  std::string picker_path;
 
   friend bool operator==(const Config&, const Config&) = default;
 
