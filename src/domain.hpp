@@ -297,6 +297,17 @@ struct StreamLink {
   // UNPROXIED, so its URL must pass the fetch guard at resolve time (A5).
   std::optional<std::string> sub_url;
 
+  // Playlists arrive encrypted (senshi): `magic` + base64( iv[12] ‖ ciphertext
+  // ‖ tag[16] ), AES-256-GCM under `key` (32 bytes), no AAD — master and
+  // media playlists alike; segments are plain. Set => playback routes
+  // through the loopback proxy, which decrypts every playlist it relays.
+  struct PlaylistCipher {
+    std::vector<std::uint8_t> key;
+    std::string magic;
+    friend bool operator==(const PlaylistCipher&, const PlaylistCipher&) = default;
+  };
+  std::optional<PlaylistCipher> playlist_cipher;
+
   friend bool operator==(const StreamLink&, const StreamLink&) = default;
 };
 

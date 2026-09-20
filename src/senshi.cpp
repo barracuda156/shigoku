@@ -15,10 +15,12 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <thread>
 
 #include <nlohmann/json.hpp>
 
+#include "crypto.hpp"
 #include "provider.hpp"
 
 namespace shigoku::senshi {
@@ -225,6 +227,157 @@ std::optional<std::string> guarded_sub_track(const std::vector<SubTrack>& tracks
   return src;
 }
 
+Result<Sources, ProviderError> parse_sources(std::string_view raw_json) {
+  json parsed;
+  try {
+    parsed = json::parse(raw_json.begin(), raw_json.end());
+  } catch (const json::parse_error& e) {
+    return err(ProviderError::decode(std::string("sources: ") + e.what()));
+  }
+  // Array-or-object; the site's own page takes the first element.
+  const json* row = nullptr;
+  if (parsed.is_array()) {
+    if (!parsed.empty() && parsed.front().is_object()) row = &parsed.front();
+  } else if (parsed.is_object()) {
+    row = &parsed;
+  }
+  if (row == nullptr) return err(ProviderError::decode("sources: not an object"));
+  Sources out;
+  if (row->contains("source") && row->at("source").is_object()) {
+    out.src = opt_str_opt(row->at("source"), "src");
+  }
+  if (row->contains("tracks") && row->at("tracks").is_array()) {
+    for (const auto& t : row->at("tracks")) {
+      if (!t.is_object()) continue;
+      SubTrack st;
+      // WebVTT is what the player wants; the .ass url is the fallback.
+      st.src = opt_str_opt(t, "vtt_url");
+      if (!st.src.has_value() || st.src->empty()) st.src = opt_str_opt(t, "url");
+      if (st.src.has_value() && st.src->empty()) st.src = std::nullopt;
+      st.label = opt_str_opt(t, "label");
+      st.is_default = t.value("default", false);
+      // A chapter/storyboard track is not a subtitle.
+      if (st.label.has_value() && *st.label == "chapter") continue;
+      out.tracks.push_back(std::move(st));
+    }
+  }
+  return out;
+}
+
+namespace {
+
+constexpr std::uint8_t kBakedA[32] = {226, 24, 149, 40, 170, 108, 184, 157, 168, 18, 90, 64, 186, 69, 66, 110, 109, 169, 203, 138, 29, 188, 78, 25, 203, 185, 211, 252, 76, 126, 134, 42};
+constexpr std::uint8_t kBakedB[32] = {140, 250, 231, 59, 141, 129, 254, 6, 30, 203, 96, 249, 13, 237, 122, 106, 60, 57, 126, 48, 152, 101, 128, 186, 122, 88, 171, 249, 187, 202, 40, 220};
+
+// "[n,n,...]" at `pos` (js[pos] == '['): the numbers, or empty on any
+// non-numeric content / no closing bracket within a sane span.
+std::vector<int> int_array_at(std::string_view js, std::size_t pos) {
+  std::vector<int> out;
+  if (pos >= js.size() || js[pos] != '[') return out;
+  std::size_t i = pos + 1;
+  int cur = -1;
+  const std::size_t limit = std::min(js.size(), pos + 4096);
+  while (i < limit) {
+    const char c = js[i];
+    if (c >= '0' && c <= '9') {
+      cur = (cur < 0 ? 0 : cur) * 10 + (c - '0');
+      if (cur > 100000) return {};
+    } else if (c == ',' || c == ']') {
+      if (cur < 0) return {};
+      out.push_back(cur);
+      cur = -1;
+      if (c == ']') return out;
+    } else if (c != ' ' && c != '\n') {
+      return {};
+    }
+    ++i;
+  }
+  return {};
+}
+
+bool identifier_byte(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+         c == '$';
+}
+
+}  // namespace
+
+BundleKey baked_bundle() {
+  BundleKey b;
+  b.key.resize(32);
+  for (std::size_t i = 0; i < 32; ++i) b.key[i] = static_cast<std::uint8_t>(kBakedA[i] ^ kBakedB[i]);
+  b.sources_base = kSourcesBase;
+  return b;
+}
+
+std::optional<BundleKey> scrape_bundle(std::string_view watch_js) {
+  constexpr std::string_view kFrom = "Uint8Array.from(";
+  std::vector<std::vector<int>> arrays;
+  for (std::size_t pos = watch_js.find(kFrom); pos != std::string_view::npos && arrays.size() < 2;
+       pos = watch_js.find(kFrom, pos + 1)) {
+    auto v = int_array_at(watch_js, pos + kFrom.size());
+    if (v.size() != 32) continue;
+    bool bytes = true;
+    for (const int x : v) bytes = bytes && x >= 0 && x <= 255;
+    if (bytes) arrays.push_back(std::move(v));
+  }
+  if (arrays.size() < 2) return std::nullopt;
+  BundleKey out;
+  out.key.resize(32);
+  for (std::size_t i = 0; i < 32; ++i) {
+    out.key[i] = static_cast<std::uint8_t>(arrays[0][i] ^ arrays[1][i]);
+  }
+  out.sources_base = kSourcesBase;
+  // The prefix: a char-code array bound to `ar` (`const ar=[...]`).
+  constexpr std::string_view kAr = "ar=[";
+  for (std::size_t pos = watch_js.find(kAr); pos != std::string_view::npos;
+       pos = watch_js.find(kAr, pos + 1)) {
+    if (pos > 0 && identifier_byte(watch_js[pos - 1])) continue;  // `var=[`, `bar=[`...
+    auto v = int_array_at(watch_js, pos + kAr.size() - 1);
+    if (v.empty()) continue;
+    std::string s;
+    for (const int x : v) {
+      if (x < 0x21 || x > 0x7e) {
+        s.clear();
+        break;
+      }
+      s.push_back(static_cast<char>(x));
+    }
+    if (s.rfind("https://", 0) == 0 && s.find("?id=") != std::string::npos &&
+        http::guard_fetch_url(s + "1").has_value()) {
+      out.sources_base = s;
+    }
+    break;
+  }
+  return out;
+}
+
+std::optional<std::string> index_bundle_path(std::string_view html) {
+  constexpr std::string_view kNeedle = "src=\"/assets/index-";
+  const auto pos = html.find(kNeedle);
+  if (pos == std::string_view::npos) return std::nullopt;
+  const std::size_t start = pos + 5;  // past `src="`.
+  const auto end = html.find('"', start);
+  if (end == std::string_view::npos || end - start > 200) return std::nullopt;
+  const std::string path(html.substr(start, end - start));
+  if (path.size() < 4 || path.compare(path.size() - 3, 3, ".js") != 0 || !clean_arg(path)) {
+    return std::nullopt;
+  }
+  return path;
+}
+
+std::optional<std::string> watch_chunk_path(std::string_view index_js) {
+  constexpr std::string_view kNeedle = "./WatchPage-";
+  const auto pos = index_js.find(kNeedle);
+  if (pos == std::string_view::npos) return std::nullopt;
+  const std::size_t start = pos + 2;  // past `./`.
+  const auto end = index_js.find(".js", start);
+  if (end == std::string_view::npos || end - start > 120) return std::nullopt;
+  const std::string name(index_js.substr(start, end + 3 - start));
+  if (!clean_arg(name) || name.find('/') != std::string::npos) return std::nullopt;
+  return "/assets/" + name;
+}
+
 Result<Unit, ProviderError> guard_ep_label(std::string_view s) {
   if (s.empty()) return err(ProviderError::decode("invalid episode"));
   int dots = 0;
@@ -244,12 +397,70 @@ Result<Unit, ProviderError> guard_ep_label(std::string_view s) {
 // The provider.
 // ---------------------------------------------------------------------------
 
+struct Senshi::BundleCache {
+  std::mutex mu;
+  std::optional<detail::BundleKey> key;
+};
+
+Senshi::Senshi(http::Client client, std::string api, std::string sources_base)
+    : http_(std::move(client)),
+      api_(std::move(api)),
+      sources_base_(std::move(sources_base)),
+      bundle_(std::make_shared<BundleCache>()) {}
+
 Result<Senshi, ProviderError> Senshi::create() { return with_endpoint(kApi); }
 
 Result<Senshi, ProviderError> Senshi::with_endpoint(std::string api) {
+  return with_endpoints(std::move(api), kSourcesBase);
+}
+
+Result<Senshi, ProviderError> Senshi::with_endpoints(std::string api, std::string sources_base) {
   auto client = http::Client::create();
   if (!client.has_value()) return err(ProviderError::network());
-  return Senshi(std::move(*client), std::move(api));
+  return Senshi(std::move(*client), std::move(api), std::move(sources_base));
+}
+
+const detail::BundleKey& Senshi::bundle_key() const {
+  std::lock_guard<std::mutex> lock(bundle_->mu);
+  if (bundle_->key.has_value()) return *bundle_->key;
+  // index.html -> the index bundle -> the WatchPage chunk -> the two arrays.
+  // Any miss along the way lands on the baked copy; the outcome is cached
+  // either way (one scrape per process, not one per resolve).
+  auto as_text = [](const std::vector<std::uint8_t>& b) {
+    return std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
+  };
+  std::optional<detail::BundleKey> scraped;
+  if (auto html = request(http::Method::Get, api_ + "/", std::nullopt); html.has_value()) {
+    if (auto index_path = detail::index_bundle_path(as_text(*html)); index_path.has_value()) {
+      if (auto index_js = request(http::Method::Get, api_ + *index_path, std::nullopt);
+          index_js.has_value()) {
+        if (auto chunk_path = detail::watch_chunk_path(as_text(*index_js));
+            chunk_path.has_value()) {
+          if (auto chunk = request(http::Method::Get, api_ + *chunk_path, std::nullopt);
+              chunk.has_value()) {
+            scraped = detail::scrape_bundle(as_text(*chunk));
+          }
+        }
+      }
+    }
+  }
+  bundle_->key = scraped.has_value() ? *scraped : detail::baked_bundle();
+  // A test seam pointing the sources hop elsewhere outranks whatever the
+  // bundle says; the live prefix only applies when the default was in use.
+  if (sources_base_ != kSourcesBase) bundle_->key->sources_base = sources_base_;
+  return *bundle_->key;
+}
+
+Result<std::vector<std::uint8_t>, ProviderError> Senshi::sources_get(const std::string& url) const {
+  http::Request req;
+  req.method = http::Method::Get;
+  req.url = url;
+  req.user_agent = http::kBrowserUserAgent;
+  req.extra_headers.push_back({"Accept", "application/json"});
+  req.extra_headers.push_back({"Referer", kStreamReferer});
+  req.extra_headers.push_back({"Origin", kApi});
+  req.accept = http::Accept::Any2xx;
+  return http_.fetch(req);
 }
 
 std::optional<std::string> Senshi::canonical_key(const Enrichment& show) const {
@@ -378,11 +589,20 @@ Result<std::vector<std::string>, ProviderError> Senshi::episodes(
   return detail::parse_episodes(raw_view);
 }
 
-std::optional<std::string> Senshi::cap_variant(const std::string& master_url,
-                                                Quality quality) const {
+std::optional<std::string> Senshi::cap_variant(const std::string& master_url, Quality quality,
+                                                const std::vector<std::uint8_t>& key) const {
   auto body = cdn_get(master_url);
   if (!body.has_value()) return std::nullopt;
-  const std::string_view body_view(reinterpret_cast<const char*>(body->data()), body->size());
+  std::string_view body_view(reinterpret_cast<const char*>(body->data()), body->size());
+  // An encrypted master opens here the same way the proxy opens it for mpv.
+  std::vector<std::uint8_t> opened;
+  const std::string_view magic = kPlaylistMagic;
+  if (body_view.size() > magic.size() && body_view.substr(0, magic.size()) == magic) {
+    auto plain = crypto::open_b64_gcm(body_view.substr(magic.size()), key);
+    if (!plain.has_value()) return std::nullopt;
+    opened = std::move(*plain);
+    body_view = std::string_view(reinterpret_cast<const char*>(opened.data()), opened.size());
+  }
   const auto variants = hls::parse_master_playlist(body_view);
   if (variants.empty()) return std::nullopt;  // media playlist: let mpv take the master.
 
@@ -428,13 +648,37 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
     em.url = opt_str_opt(e, "url");
     em.status = opt_str_opt(e, "status");
     em.server_fm = opt_str_opt(e, "serverFM");
+    if (e.contains("remote_source_id") && e.at("remote_source_id").is_number_integer()) {
+      const auto id = e.at("remote_source_id").get<std::int64_t>();
+      if (id > 0) em.remote_source_id = id;
+    }
     embeds.push_back(std::move(em));
   }
 
   auto picked = detail::pick_embed(embeds, translation);
   if (!picked.has_value()) return err(ProviderError::decode("no stream for track"));
-  if (!picked->url.has_value()) return err(ProviderError::decode("no stream for track"));
-  const std::string& stream = *picked->url;
+
+  // The sources hop (a row with a remote_source_id) answers the real master
+  // and the subtitle tracks; a row without one is the older direct shape.
+  std::string stream;
+  std::vector<detail::SubTrack> tracks;
+  bool from_sources = false;
+  const detail::BundleKey& bundle = bundle_key();
+  if (picked->remote_source_id.has_value()) {
+    auto raw_src = sources_get(bundle.sources_base + std::to_string(*picked->remote_source_id));
+    if (!raw_src.has_value()) return err(raw_src.error());
+    const std::string_view src_view(reinterpret_cast<const char*>(raw_src->data()),
+                                    raw_src->size());
+    auto sources = detail::parse_sources(src_view);
+    if (!sources.has_value()) return err(sources.error());
+    if (!sources->src.has_value()) return err(ProviderError::decode("no stream source"));
+    stream = *sources->src;
+    tracks = std::move(sources->tracks);
+    from_sources = true;
+  } else {
+    if (!picked->url.has_value()) return err(ProviderError::decode("no stream for track"));
+    stream = *picked->url;
+  }
 
   if (!is_absolute_url(stream) || !clean_arg(stream)) {
     return err(ProviderError::decode("bad stream url"));
@@ -444,16 +688,20 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   // Best-effort: failure falls back to the adaptive master.
   std::string chosen = stream;
   if (quality != Quality::Best) {
-    if (auto capped = cap_variant(stream, quality); capped.has_value()) {
+    if (auto capped = cap_variant(stream, quality, bundle.key); capped.has_value()) {
       chosen = std::move(*capped);
     }
   }
 
   std::optional<std::string> sub_url;
   if (translation == Translation::Sub) {
-    sub_url = fetch_subtitle(picked->server_fm.has_value()
-                                  ? std::optional<std::string_view>(*picked->server_fm)
-                                  : std::nullopt);
+    if (from_sources) {
+      sub_url = detail::guarded_sub_track(tracks);
+    } else {
+      sub_url = fetch_subtitle(picked->server_fm.has_value()
+                                   ? std::optional<std::string_view>(*picked->server_fm)
+                                   : std::nullopt);
+    }
   }
 
   StreamLink link;
@@ -461,10 +709,12 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   link.resolution = std::nullopt;
   link.referer = kStreamReferer;
   link.user_agent = http::kBrowserUserAgent;
-  // ninstream serves .ts cloaked as .jpg; mpv must relax its demuxer (A6).
+  // The CDN serves .ts behind a .jpg extension; mpv must relax its demuxer (A6).
   link.cloaked_segments = true;
   link.decloak_segments = false;
   link.sub_url = sub_url;
+  // Every playlist comes back enveloped: the proxy opens them for mpv.
+  link.playlist_cipher = StreamLink::PlaylistCipher{bundle.key, kPlaylistMagic};
   return link;
 }
 

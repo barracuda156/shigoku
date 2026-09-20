@@ -43,6 +43,7 @@
 #include <mutex>
 #include <thread>
 
+#include "crypto.hpp"  // the encrypted-playlist envelope
 #include "hls.hpp"
 #include "http.hpp"    // guard_fetch_url
 #include "nonce.hpp"   // playback token (ROD-447)
@@ -113,6 +114,16 @@ detail::KeepAlive close_with(std::vector<std::uint8_t>& out, const char* status)
 }  // namespace
 
 namespace detail {
+
+std::optional<std::string> origin_of(std::string_view url) {
+  const auto scheme_end = url.find("://");
+  if (scheme_end == std::string_view::npos) return std::nullopt;
+  const auto host_end = url.find('/', scheme_end + 3);
+  const std::string_view origin =
+      host_end == std::string_view::npos ? url : url.substr(0, host_end);
+  if (origin.size() <= scheme_end + 3 || !url_bytes_clean(origin)) return std::nullopt;
+  return std::string(origin);
+}
 
 std::string path_prefix(std::string_view token) {
   return "/r.ts?t=" + std::string(token) + "&u=";
@@ -279,9 +290,28 @@ std::string rewrite_playlist(std::string_view text, std::string_view base_url,
   return out;
 }
 
+std::optional<std::string> decrypt_playlist(std::string_view payload_b64,
+                                            const StreamLink::PlaylistCipher& cipher) {
+  auto plain = crypto::open_b64_gcm(payload_b64, cipher.key);
+  if (!plain.has_value()) return std::nullopt;
+  return std::string(plain->begin(), plain->end());
+}
+
 KeepAlive respond(std::vector<std::uint8_t>& out, const std::uint8_t* body,
                   std::size_t len, std::string_view final_url,
-                  std::uint16_t port, std::string_view prefix) {
+                  std::uint16_t port, std::string_view prefix,
+                  const StreamLink::PlaylistCipher* cipher) {
+  std::string opened;  // owns the decrypted text while `body` points into it.
+  if (cipher != nullptr && !cipher->magic.empty() && len >= cipher->magic.size() &&
+      std::memcmp(body, cipher->magic.data(), cipher->magic.size()) == 0) {
+    const std::string_view payload(reinterpret_cast<const char*>(body) + cipher->magic.size(),
+                                   len - cipher->magic.size());
+    auto text = decrypt_playlist(payload, *cipher);
+    if (!text.has_value()) return close_with(out, kStatusBadGateway);
+    opened = std::move(*text);
+    body = reinterpret_cast<const std::uint8_t*>(opened.data());
+    len = opened.size();
+  }
   if (is_playlist(body, len)) {
     // is_playlist already proved a text #EXTM3U head with no NUL; treat the
     // body as UTF-8 text (a stray non-UTF-8 byte would only mangle the rewrite,
@@ -419,6 +449,12 @@ Result<Fetched, FetchError> fetch_upstream(
     if (referer) {
       const std::string line = "Referer: " + std::string(*referer);
       cleanup.headers = curl_slist_append(cleanup.headers, line.c_str());
+      // The referer's origin rides along as a browser's fetch() would send
+      // it: some stream CDNs (senshi's) 403 a Referer without its Origin.
+      if (const auto origin = detail::origin_of(*referer); origin.has_value()) {
+        const std::string oline = "Origin: " + *origin;
+        cleanup.headers = curl_slist_append(cleanup.headers, oline.c_str());
+      }
     }
     if (user_agent) {
       const std::string ua(*user_agent);
@@ -487,6 +523,7 @@ class Proxy {
   std::string upstream_url_;
   std::optional<std::string> referer_;
   std::optional<std::string> user_agent_;
+  std::optional<StreamLink::PlaylistCipher> cipher_;
   std::atomic<bool> shutting_down_{false};
   std::thread accept_thread_;
 };
@@ -550,6 +587,7 @@ Result<std::shared_ptr<Proxy>, ProxyStartError> Proxy::start(
   proxy->upstream_url_ = link.url;
   proxy->referer_ = link.referer;
   proxy->user_agent_ = link.user_agent;
+  proxy->cipher_ = link.playlist_cipher;
   // Spawn the accept loop with its own shared_ptr so the Proxy outlives any
   // in-flight handlers even after the guard drops.
   std::shared_ptr<Proxy> accept_arc = proxy;
@@ -703,7 +741,8 @@ detail::KeepAlive Proxy::serve(std::string_view target, int fd) {
         ka = close_with(out, kStatusBadGateway);
       } else {
         ka = detail::respond(out, fetched->body.data(), fetched->body.size(),
-                             fetched->final_url, port_, path_prefix_);
+                             fetched->final_url, port_, path_prefix_,
+                             cipher_ ? &*cipher_ : nullptr);
       }
     }
   }
@@ -724,7 +763,7 @@ Decloak::~Decloak() {
 }
 
 Result<Decloak, ProxyStartError> engage(const StreamLink& link) {
-  if (!link.decloak_segments) {
+  if (!link.decloak_segments && !link.playlist_cipher.has_value()) {
     return Decloak(nullptr, link.url);
   }
   auto proxy = Proxy::start(link);

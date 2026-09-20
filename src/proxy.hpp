@@ -75,9 +75,10 @@ class Decloak {
   std::string url_;
 };
 
-// Start a de-cloaking proxy for `link` when it is flagged (decloak_segments),
-// else a transparent pass-through. The returned guard owns the proxy lifetime;
-// the caller points mpv at guard.url() and destroys the guard once mpv exits.
+// Start a proxy for `link` when it is flagged — decloak_segments (byte-strip)
+// or playlist_cipher (decrypt every playlist relayed) — else a transparent
+// pass-through. The returned guard owns the proxy lifetime; the caller points
+// mpv at guard.url() and destroys the guard once mpv exits.
 [[nodiscard]] Result<Decloak, ProxyStartError> engage(const StreamLink& link);
 
 // --- Internals, exposed for the golden tests (proxy.rs mod tests) -----------
@@ -92,6 +93,10 @@ inline constexpr std::size_t kMaxPrefixScan = 4096;
 
 // Whether one connection should be reused after a response (keep-alive).
 enum class KeepAlive { Yes, No };
+
+// `scheme://host[:port]` of a url, for the Origin header the upstream fetch
+// sends beside a Referer. nullopt when the url has no scheme or unclean bytes.
+[[nodiscard]] std::optional<std::string> origin_of(std::string_view url);
 
 // Loopback request path + query head: `/r.ts?t=<token>&u=`. The `.ts` suffix
 // sits in ffmpeg's default extension allowlist; the hex token carries no dot,
@@ -136,13 +141,21 @@ enum class KeepAlive { Yes, No };
                                            std::uint16_t port,
                                            std::string_view prefix);
 
-// Dispatch a fetched upstream body to `out`: a playlist is rewritten, a segment
+// Open one encrypted-playlist envelope (the bytes AFTER the magic prefix)
+// to playlist text. nullopt when the base64, the size, or the tag fails.
+[[nodiscard]] std::optional<std::string> decrypt_playlist(
+    std::string_view payload_b64, const StreamLink::PlaylistCipher& cipher);
+
+// Dispatch a fetched upstream body to `out`: a body carrying the cipher's
+// magic is decrypted first (a failure is a 502 — never relay ciphertext as
+// if it were a playlist), then a playlist is rewritten, a segment
 // de-cloaked. Split from serve so it is testable without a live upstream.
 // Appends the full HTTP response bytes to `out`.
 [[nodiscard]] KeepAlive respond(std::vector<std::uint8_t>& out,
                                 const std::uint8_t* body, std::size_t len,
                                 std::string_view final_url, std::uint16_t port,
-                                std::string_view prefix);
+                                std::string_view prefix,
+                                const StreamLink::PlaylistCipher* cipher = nullptr);
 
 // One fetched upstream object.
 struct Fetched {

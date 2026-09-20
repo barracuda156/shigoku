@@ -515,7 +515,8 @@ endif()
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_senshi STATIC src/senshi.cpp)
   target_include_directories(shigoku_senshi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_link_libraries(shigoku_senshi PUBLIC shigoku_http shigoku_hls shigoku_domain shigoku_flags shigoku_thirdparty)
+  target_link_libraries(shigoku_senshi
+    PUBLIC shigoku_http shigoku_hls shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -718,6 +719,21 @@ endif()
 endif()  # WITH_TUI OR SHIGOKU_BUILD_TESTS
 
 # ---------------------------------------------------------------------------
+# shigoku_crypto: AES-256-GCM + base64 over OpenSSL's libcrypto, for providers
+# whose playlists arrive encrypted (senshi). libcrypto is a hard requirement
+# alongside curl (which already pulls it in on every target this port cares
+# about); the linking lives here and nowhere else.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+  add_library(shigoku_crypto STATIC src/crypto.cpp)
+  target_include_directories(shigoku_crypto PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_crypto
+    PUBLIC shigoku_flags shigoku_thirdparty
+    PRIVATE OpenSSL::Crypto)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_nonce (P12): 128-bit hex nonce from /dev/urandom (nonce.rs). A leaf
 # (std-only). Used for the de-cloak proxy's per-playback token (ROD-447).
 # ---------------------------------------------------------------------------
@@ -746,7 +762,7 @@ if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_proxy STATIC src/proxy.cpp)
   target_include_directories(shigoku_proxy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_proxy
-    PUBLIC shigoku_domain shigoku_flags shigoku_thirdparty
+    PUBLIC shigoku_domain shigoku_crypto shigoku_flags shigoku_thirdparty
     PRIVATE shigoku_http shigoku_hls shigoku_nonce Threads::Threads shigoku::curl)
 endif()
 
@@ -1610,10 +1626,21 @@ endif()
 # stop-wakes-accept, and the token gate driven over a real loopback socket.
 if(SHIGOKU_HAVE_CURL)
   add_executable(proxy_tests tests/proxy_tests.cpp)
+  target_compile_definitions(proxy_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   target_link_libraries(proxy_tests PRIVATE
     shigoku_proxy shigoku_http shigoku_hls shigoku_nonce shigoku_domain
     shigoku_flags shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
   add_test(NAME proxy_tests COMMAND proxy_tests)
+endif()
+
+# crypto_tests: base64 vectors, AES-256-GCM seal/open round trip, tamper and
+# size rejection, the base64 envelope. Offline; libcrypto rides the curl gate.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(crypto_tests tests/crypto_tests.cpp)
+  target_link_libraries(crypto_tests PRIVATE
+    shigoku_crypto shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
+  add_test(NAME crypto_tests COMMAND crypto_tests)
 endif()
 
 # cells_tests / input_tests / toast_tests / cover_pool_tests (P6/P17b): pure

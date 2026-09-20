@@ -126,8 +126,8 @@ TEST_CASE("parse_episodes_drops_hostile_negative_never_mislabels_to_zero") {
 
 TEST_CASE("pick_embed_first_wins_on_a_score_tie") {
   const std::vector<Embed> embeds = {
-      Embed{"first", "SoftSub", std::nullopt},
-      Embed{"second", "SoftSub", std::nullopt},
+      Embed{"first", "SoftSub", std::nullopt, std::nullopt},
+      Embed{"second", "SoftSub", std::nullopt, std::nullopt},
   };
   auto picked = pick_embed(embeds, Translation::Sub);
   REQUIRE(picked.has_value());
@@ -146,15 +146,15 @@ TEST_CASE("match_score_ranks_sub_soft_over_hard_and_separates_dub") {
 
 TEST_CASE("pick_embed_takes_the_best_track_or_none") {
   const std::vector<Embed> embeds = {
-      Embed{"hard", "HardSub", std::nullopt},
-      Embed{"soft", "SoftSub", std::nullopt},
-      Embed{std::nullopt, "SoftSub", std::nullopt},  // no url, skip.
+      Embed{"hard", "HardSub", std::nullopt, std::nullopt},
+      Embed{"soft", "SoftSub", std::nullopt, std::nullopt},
+      Embed{std::nullopt, "SoftSub", std::nullopt, std::nullopt},  // no url, skip.
   };
   auto picked = pick_embed(embeds, Translation::Sub);
   REQUIRE(picked.has_value());
   CHECK(picked->url.value() == "soft");
 
-  const std::vector<Embed> dub_only = {Embed{"d", "Dub", std::nullopt}};
+  const std::vector<Embed> dub_only = {Embed{"d", "Dub", std::nullopt, std::nullopt}};
   CHECK_FALSE(pick_embed(dub_only, Translation::Sub).has_value());
 }
 
@@ -391,6 +391,93 @@ TEST_CASE("canonical_key_is_the_stringified_mal_id") {
   Enrichment no_mal;
   no_mal.anilist_id = 1;
   CHECK_FALSE(p->canonical_key(no_mal).has_value());
+}
+
+namespace {
+const char* kSourcesJson = R"([{"source":{"src":"https://cdn.example/i/abc/master.txt?token=x","quality":"Unknown","audio":"both"},
+  "tracks":[{"url":"https://cdn.example/sub_en.ass","vtt_url":"https://cdn.example/sub_en.vtt","label":"English","default":true},
+            {"url":"","vtt_url":"https://cdn.example/storyboard.vtt","label":"chapter","default":false}]}])";
+
+// A real fragment of the site's WatchPage chunk: the prefix as char codes,
+// the two key arrays, and a decoy `var=[...]` in front.
+const char* kWatchSnippet =
+    "var=[1,2,3];const ar=[104,116,116,112,115,58,47,47,115,46,118,105,100,99,108,111,117,100,46,"
+    "115,101,47,95,118,49,47,115,111,117,114,99,101,115,63,105,100,61];function or(t){const s=Ue;"
+    "return t?\"\"+String[s(519)](...ar)+t:\"\"}const ir=Uint8Array.from([226,24,149,40,170,108,184,"
+    "157,168,18,90,64,186,69,66,110,109,169,203,138,29,188,78,25,203,185,211,252,76,126,134,42]),"
+    "lr=Uint8Array.from([140,250,231,59,141,129,254,6,30,203,96,249,13,237,122,106,60,57,126,48,"
+    "152,101,128,186,122,88,171,249,187,202,40,220]);let Xe=null;";
+
+std::string hex(const std::vector<std::uint8_t>& v) {
+  static const char* d = "0123456789abcdef";
+  std::string out;
+  for (const auto b : v) {
+    out.push_back(d[b >> 4]);
+    out.push_back(d[b & 15]);
+  }
+  return out;
+}
+}  // namespace
+
+TEST_CASE("parse_sources_takes_the_master_and_the_vtt_tracks_minus_chapters") {
+  auto s = parse_sources(kSourcesJson);
+  REQUIRE(s.has_value());
+  CHECK(s->src == "https://cdn.example/i/abc/master.txt?token=x");
+  REQUIRE(s->tracks.size() == 1);
+  CHECK(s->tracks[0].src == "https://cdn.example/sub_en.vtt");
+  CHECK(s->tracks[0].label == "English");
+  CHECK(s->tracks[0].is_default);
+  // Object form, no source: a clean parse with no src.
+  auto bare = parse_sources(R"({"tracks":[]})");
+  REQUIRE(bare.has_value());
+  CHECK(!bare->src.has_value());
+  CHECK(!parse_sources("nope").has_value());
+  CHECK(!parse_sources("[]").has_value());
+}
+
+TEST_CASE("scrape_bundle_xors_the_two_arrays_and_reads_the_sources_prefix") {
+  auto b = scrape_bundle(kWatchSnippet);
+  REQUIRE(b.has_value());
+  CHECK(hex(b->key) == "6ee2721327ed469bb6d93ab9b7a838045190b5ba85d9cea3b1e17805f7b4aef6");
+  CHECK(b->sources_base == "https://s.vidcloud.se/_v1/sources?id=");
+  CHECK(*b == baked_bundle());
+  // One array only: no key.
+  CHECK(!scrape_bundle("const ir=Uint8Array.from([1,2,3]);").has_value());
+  // A prefix that is not an https URL keeps the baked one.
+  auto odd = scrape_bundle(
+      "ar=[104,105];ir=Uint8Array.from([" + std::string(31, '0') + "]),");
+  CHECK(!odd.has_value());
+}
+
+TEST_CASE("bundle_paths_come_out_of_index_html_and_the_index_chunk_table") {
+  CHECK(index_bundle_path(R"(<script type="module" crossorigin src="/assets/index-5Esc5H_t.js"></script>)") ==
+        "/assets/index-5Esc5H_t.js");
+  CHECK(!index_bundle_path("<html></html>").has_value());
+  CHECK(watch_chunk_path("./HomePage-oEdUO0xd.js,./WatchPage-CGgkZTkh.js,./x.js") ==
+        "/assets/WatchPage-CGgkZTkh.js");
+  CHECK(!watch_chunk_path("./HomePage-oEdUO0xd.js").has_value());
+}
+
+TEST_CASE("transport_resolve_follows_the_sources_hop_and_arms_the_playlist_cipher") {
+  const std::string_view embeds =
+      R"([{"url":"http://senshi.to/stream/abc/playlist.m3u8","status":"HardSub","remote_source_id":4788},
+          {"url":"http://senshi.to/stream/abc/playlist.m3u8","status":"Dub","remote_source_id":4788}])";
+  static std::vector<std::unique_ptr<OneShotServer>> keep;
+  keep.push_back(std::make_unique<OneShotServer>(response_with_body("200 OK", embeds)));
+  keep.push_back(std::make_unique<OneShotServer>(response_with_body("200 OK", kSourcesJson)));
+  auto p = Senshi::with_endpoints(keep[keep.size() - 2]->url(),
+                                  keep.back()->url() + "/sources?id=");
+  REQUIRE(p.has_value());
+  auto sl = p->resolve("59708", "1", Translation::Sub, Quality::Best);
+  REQUIRE(sl.has_value());
+  CHECK(sl->url == "https://cdn.example/i/abc/master.txt?token=x");
+  CHECK(sl->sub_url == "https://cdn.example/sub_en.vtt");
+  CHECK(sl->cloaked_segments);
+  CHECK_FALSE(sl->decloak_segments);
+  REQUIRE(sl->playlist_cipher.has_value());
+  CHECK(sl->playlist_cipher->magic == kPlaylistMagic);
+  CHECK(sl->playlist_cipher->key == baked_bundle().key);  // the scrape missed: baked.
+  CHECK(sl->referer.value() == kStreamReferer);
 }
 
 TEST_CASE("transport_resolve_builds_a_streamlink_from_an_embed") {

@@ -12,6 +12,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <cstdio>
+
 #include <sys/socket.h>
 
 #include <arpa/inet.h>
@@ -25,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/crypto.hpp"
 #include "../src/proxy.hpp"
 
 using namespace shigoku;
@@ -411,6 +414,100 @@ static StreamLink decloak_link() {
 // the "loopback positional iff decloak_segments" half of the P12 DoD; the other
 // half — that play_url becomes the argv positional verbatim — is player_tests'
 // argv golden (any play_url lands as the last argv entry).
+namespace {
+
+const std::vector<std::uint8_t> kSenshiKey = {
+    0x6e, 0xe2, 0x72, 0x13, 0x27, 0xed, 0x46, 0x9b, 0xb6, 0xd9, 0x3a, 0xb9, 0xb7, 0xa8, 0x38, 0x04,
+    0x51, 0x90, 0xb5, 0xba, 0x85, 0xd9, 0xce, 0xa3, 0xb1, 0xe1, 0x78, 0x05, 0xf7, 0xb4, 0xae, 0xf6};
+
+std::string envelope(const std::string& plain, const std::vector<std::uint8_t>& key) {
+  const std::vector<std::uint8_t> iv(12, 0x07);
+  auto sealed = shigoku::crypto::aes256gcm_seal(
+      key, iv, reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size());
+  REQUIRE(sealed.has_value());
+  std::vector<std::uint8_t> env = iv;
+  env.insert(env.end(), sealed->begin(), sealed->end());
+  return "EM3U8v1:" + shigoku::crypto::base64_encode(env.data(), env.size());
+}
+
+std::string read_file(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  REQUIRE(f != nullptr);
+  std::string out;
+  char buf[4096];
+  std::size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("respond_opens_an_enveloped_playlist_before_rewriting_and_502s_a_bad_one") {
+  const std::vector<std::uint8_t> key(32, 0x42);
+  const StreamLink::PlaylistCipher cipher{key, "EM3U8v1:"};
+  const std::string plain = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nvideo/1080/playlist.txt\n";
+  const std::string enc = envelope(plain, key);
+
+  std::vector<std::uint8_t> out;
+  const auto ka = respond(out, reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(),
+                          "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher);
+  CHECK(ka == KeepAlive::Yes);
+  const std::string wire(out.begin(), out.end());
+  CHECK(wire.find("HTTP/1.1 200") != std::string::npos);
+  CHECK(wire.find("EM3U8v1") == std::string::npos);  // never relayed as-is.
+  CHECK(wire.find("#EXTM3U") != std::string::npos);
+  CHECK(wire.find("127.0.0.1:4242/r.ts?t=tok&u=") != std::string::npos);  // rewritten.
+
+  // Same magic, garbage envelope: a 502, not a relayed body.
+  const std::string bad = "EM3U8v1:AAAA";
+  std::vector<std::uint8_t> out2;
+  (void)respond(out2, reinterpret_cast<const std::uint8_t*>(bad.data()), bad.size(),
+                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher);
+  CHECK(std::string(out2.begin(), out2.end()).find("502") != std::string::npos);
+
+  // No cipher on the link: the same bytes are just an unknown (non-playlist)
+  // body and take the segment path untouched.
+  std::vector<std::uint8_t> out3;
+  (void)respond(out3, reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(),
+                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=");
+  CHECK(std::string(out3.begin(), out3.end()).find("EM3U8v1") != std::string::npos);
+}
+
+TEST_CASE("decrypt_playlist_opens_a_captured_senshi_master_with_the_baked_key") {
+  const std::string raw = read_file(std::string(SHIGOKU_TEST_FIXTURES_DIR) + "/senshi_master.enc");
+  REQUIRE(raw.rfind("EM3U8v1:", 0) == 0);
+  const StreamLink::PlaylistCipher cipher{kSenshiKey, "EM3U8v1:"};
+  auto text = decrypt_playlist(std::string_view(raw).substr(8), cipher);
+  REQUIRE(text.has_value());
+  CHECK(text->rfind("#EXTM3U", 0) == 0);
+  CHECK(text->find("#EXT-X-STREAM-INF") != std::string::npos);
+  CHECK(text->find("video/1080/playlist.txt") != std::string::npos);
+  auto wrong = kSenshiKey;
+  wrong[5] ^= 1;
+  CHECK(!decrypt_playlist(std::string_view(raw).substr(8), StreamLink::PlaylistCipher{wrong, "EM3U8v1:"})
+             .has_value());
+}
+
+TEST_CASE("origin_of_reduces_a_url_to_its_origin") {
+  CHECK(origin_of("https://senshi.to/") == "https://senshi.to");
+  CHECK(origin_of("https://senshi.to") == "https://senshi.to");
+  CHECK(origin_of("http://cdn.example:8080/a/b?c") == "http://cdn.example:8080");
+  CHECK(!origin_of("senshi.to/").has_value());
+  CHECK(!origin_of("https://").has_value());
+  CHECK(!origin_of("https://bad host/").has_value());
+}
+
+TEST_CASE("engage_flags_on_a_playlist_cipher_alone") {
+  StreamLink link;
+  link.url = "https://cdn.example/i/x/master.txt";
+  link.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 1), "EM3U8v1:"};
+  auto guard = engage(link);
+  REQUIRE(guard.has_value());
+  CHECK(guard->url() != link.url);
+  CHECK(std::string(guard->url()).rfind("http://127.0.0.1:", 0) == 0);
+}
+
 TEST_CASE("engage_passes_through_an_unflagged_link_without_a_proxy") {
   StreamLink link;
   link.url = "https://cdn.example/plain/master.m3u8";

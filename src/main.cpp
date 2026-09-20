@@ -80,27 +80,26 @@ constexpr int kMaxPickAttempts = 1000;
 // forks. Returns nullopt if any provider client fails to init.
 //
 // Position is priority: the resolve walk's tiers and the CLI's search walk
-// both try sources in this order (after any configured preference). Senshi
-// sits last: its API host moved and its playlists are now encrypted, so
-// every call fails until the recipe is re-ported (senshi.hpp) — a dead
-// source at the head would otherwise be the first thing every fresh install
-// hits.
+// both try sources in this order (after any configured preference). The
+// two id-keyed sources lead (they cannot search, so the CLI walks past
+// them); senshi is the first that can search, English-catalogued and keyed
+// by MAL id; AniLibria closes (a Russian-dub catalogue).
 std::optional<ProviderRegistry> build_registry() {
   auto megaplay_provider = megaplay::MegaPlay::create();
   auto anibd_provider = anibd::AniBd::create();
+  auto senshi = senshi::Senshi::create();
   auto anidbapp_provider = anidbapp::AniDbApp::create();
   auto anilibria_provider = anilibria::AniLibria::create();
-  auto senshi = senshi::Senshi::create();
-  if (!megaplay_provider || !anibd_provider || !anidbapp_provider || !anilibria_provider ||
-      !senshi) {
+  if (!megaplay_provider || !anibd_provider || !senshi || !anidbapp_provider ||
+      !anilibria_provider) {
     return std::nullopt;
   }
   std::vector<std::unique_ptr<StreamProvider>> providers;
   providers.push_back(std::make_unique<megaplay::MegaPlay>(std::move(*megaplay_provider)));
   providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
+  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
-  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   return ProviderRegistry(std::move(providers));
 }
 
