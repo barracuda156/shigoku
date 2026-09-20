@@ -76,6 +76,27 @@ struct CatalogPage {
     const http::Client& client, std::int64_t anilist_id,
     MediaKind kind = MediaKind::Anime);
 
+// One media's next-airing answer from the batched airing lookup: the AniList
+// id, its MAL id, and the next episode (both nullopt = nothing scheduled —
+// finished, or not yet dated — which the caller stores as a cleared stamp).
+struct AiringRow {
+  std::int64_t anilist_id = 0;
+  std::optional<std::int64_t> mal_id;
+  std::optional<std::int64_t> next_airing_at;
+  std::optional<std::uint32_t> next_airing_episode;
+  friend bool operator==(const AiringRow&, const AiringRow&) = default;
+};
+
+// Batched next-airing lookup, public (no token): `ids` by AniList id and
+// `mal_ids` by MAL id (a row the library only knows by its MAL id), each in
+// pages of kAiringPage — AniList's per-page cap — one request per page. The
+// first failed page fails the call; a page that lists fewer media than asked
+// is normal (unknown ids simply do not come back).
+inline constexpr std::size_t kAiringPage = 50;
+[[nodiscard]] Result<std::vector<AiringRow>, ProviderError> fetch_airing(
+    const http::Client& client, const std::vector<std::int64_t>& ids,
+    const std::vector<std::int64_t>& mal_ids);
+
 // Detail zoom's on-demand `c` section (P36): characters page 1 (~12: name,
 // role, VA name) + recommendations (~10, Enrichment-shaped so a promote is a
 // direct catalog_cache upsert). Same three-state contract as enrich: Err = no
@@ -266,6 +287,15 @@ classify_characters_recs(std::string_view raw_json, MediaKind kind = MediaKind::
 // not a silent success: advancing the snapshot on a phantom save loses the
 // row (06 §5.3).
 [[nodiscard]] Result<std::int64_t, ProviderError> classify_save(std::string_view raw_json);
+
+// The airing lookup's query (one of two: by AniList id or by MAL id — the two
+// filters would AND if sent together), its body for one page of ids, and
+// the page's rows. A `data` null is no answer (Decode), an empty media list
+// is an answer.
+[[nodiscard]] std::string airing_query(bool by_mal);
+[[nodiscard]] std::string airing_body(const std::vector<std::int64_t>& page_ids, bool by_mal);
+[[nodiscard]] Result<std::vector<AiringRow>, ProviderError> classify_airing(
+    std::string_view raw_json);
 
 }  // namespace detail
 

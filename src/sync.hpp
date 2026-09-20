@@ -140,6 +140,18 @@ struct SyncSummary {
 
 // Quit flush (06 §5.2): push only, no pull. The caller skips this while a
 // pull is inflight and bounds it (04 §11) via the sleeper it passes.
+// The Calendar's bulk airing refresh: every Watching / Planning library row
+// whose stamp is missing or past is looked up in batches — public AniList
+// data, no token — and stamped (or cleared, when nothing is scheduled). A
+// row AniList only knows by MAL id is asked by that id and stamped under
+// its own (synthetic) row. `fetch` is anilist::fetch_airing over a client in
+// production; tests script it. Returns the rows written; a fetch failure is
+// Ok(0) — the rows simply wait for the next run.
+using AiringFetch = std::function<Result<std::vector<anilist::AiringRow>, ProviderError>(
+    const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& mal_ids)>;
+[[nodiscard]] Result<std::uint32_t, StoreError> refresh_airing(const AiringFetch& fetch,
+                                                               Store& store, std::int64_t now);
+
 [[nodiscard]] Result<SyncSummary, StoreError> flush_push(const AniListSync& client,
                                                           const Auth& auth, Store& store,
                                                           std::int64_t now, bool enabled,

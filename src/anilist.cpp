@@ -420,6 +420,49 @@ std::string by_id_body(std::int64_t anilist_id, MediaKind kind) {
   return body.dump();
 }
 
+std::string airing_query(bool by_mal) {
+  return std::string("query($ids:[Int]){Page(perPage:50){media(") +
+         (by_mal ? "idMal_in" : "id_in") +
+         ":$ids,type:ANIME){id idMal nextAiringEpisode{episode airingAt}}}}";
+}
+
+std::string airing_body(const std::vector<std::int64_t>& page_ids, bool by_mal) {
+  json body = {{"query", airing_query(by_mal)}, {"variables", {{"ids", page_ids}}}};
+  return body.dump();
+}
+
+Result<std::vector<AiringRow>, ProviderError> classify_airing(std::string_view raw_json) {
+  json resp;
+  try {
+    resp = json::parse(raw_json.begin(), raw_json.end());
+  } catch (const json::parse_error& e) {
+    return err(ProviderError::decode(e.what()));
+  }
+  if (!resp.is_object() || !resp.contains("data") || resp.at("data").is_null()) {
+    return err(ProviderError::decode("data is null"));
+  }
+  const json& data = resp.at("data");
+  std::vector<AiringRow> out;
+  if (!data.contains("Page") || !data.at("Page").is_object()) return out;
+  const json& page = data.at("Page");
+  if (!page.contains("media") || !page.at("media").is_array()) return out;
+  for (const json& m : page.at("media")) {
+    if (!m.is_object()) continue;
+    const auto id = num_opt<std::int64_t>(m, "id");
+    if (!id.has_value() || *id <= 0) continue;
+    AiringRow row;
+    row.anilist_id = *id;
+    row.mal_id = num_opt<std::int64_t>(m, "idMal");
+    if (m.contains("nextAiringEpisode") && m.at("nextAiringEpisode").is_object()) {
+      const json& na = m.at("nextAiringEpisode");
+      row.next_airing_at = num_opt<std::int64_t>(na, "airingAt");
+      row.next_airing_episode = num_opt<std::uint32_t>(na, "episode");
+    }
+    out.push_back(std::move(row));
+  }
+  return out;
+}
+
 Result<std::optional<Enrichment>, ProviderError> classify_by_id(std::string_view raw_json) {
   json resp;
   try {
@@ -878,6 +921,36 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> characters_an
 }
 
 // --- AniList sync (P20, 06 §5) -----------------------------------------------
+
+Result<std::vector<AiringRow>, ProviderError> fetch_airing(const http::Client& client,
+                                                           const std::vector<std::int64_t>& ids,
+                                                           const std::vector<std::int64_t>& mal_ids) {
+  std::vector<AiringRow> out;
+  auto run = [&](const std::vector<std::int64_t>& all, bool by_mal) -> Result<Unit, ProviderError> {
+    for (std::size_t off = 0; off < all.size(); off += kAiringPage) {
+      const std::size_t n = std::min(kAiringPage, all.size() - off);
+      const std::vector<std::int64_t> page(all.begin() + static_cast<std::ptrdiff_t>(off),
+                                           all.begin() + static_cast<std::ptrdiff_t>(off + n));
+      http::Request req;
+      req.method = http::Method::Post;
+      req.url = kEndpoint;
+      req.content_type = "application/json";
+      const std::string body = detail::airing_body(page, by_mal);
+      req.body.assign(body.begin(), body.end());
+      req.accept = http::Accept::Any2xx;
+      auto resp = client.fetch(req);
+      if (!resp.has_value()) return err(resp.error());
+      const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
+      auto rows = detail::classify_airing(raw);
+      if (!rows.has_value()) return err(rows.error());
+      for (auto& r : *rows) out.push_back(std::move(r));
+    }
+    return Unit{};
+  };
+  if (auto r = run(ids, false); !r.has_value()) return err(r.error());
+  if (auto r = run(mal_ids, true); !r.has_value()) return err(r.error());
+  return out;
+}
 
 Result<std::vector<RemoteEntry>, ProviderError> pull_list(const http::Client& client,
                                                            std::string_view token,

@@ -347,6 +347,9 @@ struct SyncFlushed {
   std::uint32_t mal_pulled = 0;
   std::uint32_t mal_imported = 0;
   bool mal_pull_failed = false;
+  // The Calendar's bulk airing refresh that rides every run: rows stamped
+  // or cleared (the History/Schedule copies reload when > 0).
+  std::uint32_t airing_refreshed = 0;
   friend bool operator==(const SyncFlushed&, const SyncFlushed&) = default;
 };
 

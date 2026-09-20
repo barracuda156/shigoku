@@ -651,8 +651,10 @@ void draw_history_bar_row(CellBuffer& buf, int x0, int w, int y, const Show& sho
   buf.fill(Rect{x0, y, w, 1}, bg);
   const int bar_w = history_bar_width(w);
   const int filled = history_bar_filled(show.progress, show.enrichment.total_episodes, bar_w);
+  // The filled blocks sit a step below the text (fg2, not fg): a row of
+  // full-brightness █ beside every title made the titles harder to read.
   const bool dim = show.list_status == ListStatus::Completed;
-  const Rgb fill_col = dim ? theme::fg3 : (selected && list_focused ? theme::focus : theme::fg);
+  const Rgb fill_col = dim ? theme::fg3 : (selected && list_focused ? theme::focus : theme::fg2);
   int x = x0 + 1;
   x = buf.put_str(x, y, "[", theme::chrome, bg);
   for (int i = 0; i < bar_w; ++i) {

@@ -123,7 +123,8 @@ struct MalPullCounts {
 
 [[nodiscard]] std::string render_sync_summary(const sync::SyncSummary& s,
                                                std::uint32_t mal_pushed = 0,
-                                               MalPullCounts mal_pull = {});
+                                               MalPullCounts mal_pull = {},
+                                               std::uint32_t airing_refreshed = 0);
 
 // Which network call failed. Data and Unsupported read per stage: a search
 // miss is not a resolve miss, and search-stage Unsupported is the

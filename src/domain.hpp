@@ -537,10 +537,15 @@ struct ScheduleGroup {
 // schedule() (P37 slice 1): watchlist rows with a future next_airing_at,
 // grouped by weekday (Monday..Sunday, only non-empty weekdays present),
 // entries within a group airing-time ordered. Rows with no next_airing_at, or
-// with next_airing_at <= now_secs, are excluded (already aired / unknown).
+// with next_airing_at <= now_secs, are excluded (already aired / unknown), as
+// are rows whose list status is not Watching or Planning — a calendar is for
+// what you follow or plan to, not what you dropped or finished.
 // Pure and total; `shows` is read-only (indices into it feed ScheduleEntry).
 [[nodiscard]] std::vector<ScheduleGroup> schedule(const std::vector<Show>& shows,
                                                   std::int64_t now_secs);
+
+// The statuses the Calendar (and its notices) follow: Watching and Planning.
+[[nodiscard]] bool calendar_status(ListStatus s);
 
 // --- Schedule notices (P37 slice 3) -----------------------------------------
 // Pure detection of "an episode aired since we last looked": the stored pair

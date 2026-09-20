@@ -134,8 +134,12 @@ matches or five pages have come back empty.
 
 ## Calendar (key `C`)
 
-Shows upcoming episodes for anything already on your watchlist, grouped by
-weekday and sorted soonest-first, with a countdown (`2d 4h`, `37m`, `<1m`).
+Shows upcoming episodes for the shows you are Watching or Planning, grouped
+by weekday and sorted soonest-first, with a countdown (`2d 4h`, `37m`,
+`<1m`). Airing times come from AniList's public schedule and are refreshed
+on every launch and after every sync for any followed show that lacks one
+or whose last one has passed — no account needed, and a show that reached
+your list through MyAnimeList is looked up by its MAL id.
 
 | Key | Action |
 |---|---|

@@ -119,6 +119,78 @@ ProviderError network_error() { return ProviderError::network(); }
 
 }  // namespace
 
+TEST_CASE("refresh_airing stamps real and MAL-only rows, clears the undated, survives a miss") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  Enrichment a;
+  a.anilist_id = 5;
+  a.title_romaji = "A";
+  REQUIRE(store->add_to_library(a, 10).has_value());
+  REQUIRE(store->restore_list_status(5, ListStatus::Watching, 1, 10).has_value());
+  Enrichment b;
+  b.anilist_id = 6;
+  b.title_romaji = "B";
+  REQUIRE(store->add_to_library(b, 10).has_value());
+  REQUIRE(store->restore_list_status(6, ListStatus::Planning, 0, 10).has_value());
+  REQUIRE(store->set_next_airing(6, 500, 3).has_value());  // stale: aired already.
+  Enrichment m;
+  m.anilist_id = -105;
+  m.mal_id = 105;
+  m.title_romaji = "M";
+  REQUIRE(store->add_to_library(m, 10).has_value());
+  REQUIRE(store->restore_list_status(-105, ListStatus::Watching, 2, 10).has_value());
+
+  std::vector<std::int64_t> asked_ids;
+  std::vector<std::int64_t> asked_mal;
+  const AiringFetch fetch = [&](const std::vector<std::int64_t>& ids,
+                                const std::vector<std::int64_t>& mal_ids)
+      -> Result<std::vector<anilist::AiringRow>, ProviderError> {
+    asked_ids = ids;
+    asked_mal = mal_ids;
+    std::vector<anilist::AiringRow> rows;
+    rows.push_back(anilist::AiringRow{5, 5, 5000, 8});
+    rows.push_back(anilist::AiringRow{6, 6, std::nullopt, std::nullopt});  // finished.
+    rows.push_back(anilist::AiringRow{777, 105, 6000, 2});  // the MAL-only row's answer.
+    rows.push_back(anilist::AiringRow{999, 999, 7000, 1});  // never asked: ignored.
+    return rows;
+  };
+  auto n = refresh_airing(fetch, *store, 1000);
+  REQUIRE(n.has_value());
+  CHECK(*n == 3);
+  CHECK(asked_ids == std::vector<std::int64_t>{5, 6});
+  CHECK(asked_mal == std::vector<std::int64_t>{105});
+  auto five = store->get_show(5);
+  CHECK((*five)->enrichment.next_airing_at == 5000);
+  CHECK((*five)->enrichment.next_airing_episode == 8);
+  auto six = store->get_show(6);
+  CHECK(!(*six)->enrichment.next_airing_at.has_value());  // stale stamp cleared.
+  auto mal_row = store->get_show(-105);
+  CHECK((*mal_row)->enrichment.next_airing_at == 6000);
+  auto none = store->get_show(999);
+  CHECK(!none->has_value());
+
+  // Nothing left to ask: no fetch at all.
+  bool called = false;
+  const AiringFetch spy = [&](const std::vector<std::int64_t>&, const std::vector<std::int64_t>&)
+      -> Result<std::vector<anilist::AiringRow>, ProviderError> {
+    called = true;
+    return std::vector<anilist::AiringRow>{};
+  };
+  auto again = refresh_airing(spy, *store, 1000);
+  REQUIRE(again.has_value());
+  CHECK(*again == 0);  // row 6 (cleared) is asked again; the spy answers nothing.
+  CHECK(called);
+
+  // A transport miss is Ok(0) and leaves the rows for next time.
+  const AiringFetch down = [](const std::vector<std::int64_t>&, const std::vector<std::int64_t>&)
+      -> Result<std::vector<anilist::AiringRow>, ProviderError> {
+    return err(ProviderError::network());
+  };
+  auto missed = refresh_airing(down, *store, 1000);
+  REQUIRE(missed.has_value());
+  CHECK(*missed == 0);
+}
+
 TEST_CASE("disabled_is_a_noop") {
   FakeAni client(std::vector<RemoteEntry>{}, {});
   auto store = Store::open_memory();

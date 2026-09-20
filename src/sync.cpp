@@ -1,6 +1,8 @@
 #include "sync.hpp"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace shigoku::sync {
 
@@ -151,6 +153,47 @@ Result<SyncSummary, StoreError> run_sync(const AniListSync& client, const Auth& 
                                    auth.anilist.score_format);
   if (!pushed.has_value()) return err(pushed.error());
   return summary;
+}
+
+Result<std::uint32_t, StoreError> refresh_airing(const AiringFetch& fetch, Store& store,
+                                                 std::int64_t now) {
+  auto candidates = store.list_airing_candidates(now);
+  if (!candidates.has_value()) return err(candidates.error());
+  if (candidates->empty()) return std::uint32_t{0};
+
+  std::vector<std::int64_t> ids;
+  std::vector<std::int64_t> mal_ids;
+  std::unordered_map<std::int64_t, std::int64_t> row_by_mal;  // mal_id -> synthetic row.
+  for (const AiringCandidate& c : *candidates) {
+    if (c.anilist_id > 0) {
+      ids.push_back(c.anilist_id);
+    } else if (c.mal_id.has_value() && *c.mal_id > 0) {
+      mal_ids.push_back(*c.mal_id);
+      row_by_mal.emplace(*c.mal_id, c.anilist_id);
+    }
+  }
+  if (ids.empty() && mal_ids.empty()) return std::uint32_t{0};
+
+  auto rows = fetch(ids, mal_ids);
+  if (!rows.has_value()) return std::uint32_t{0};  // no answer: try again next run.
+
+  std::unordered_set<std::int64_t> wanted(ids.begin(), ids.end());
+  std::uint32_t written = 0;
+  for (const anilist::AiringRow& r : *rows) {
+    // A real-id row answers under its own id; a MAL-only row under its
+    // mal_id. A media the library never asked for is ignored.
+    std::optional<std::int64_t> target;
+    if (wanted.contains(r.anilist_id)) {
+      target = r.anilist_id;
+    } else if (r.mal_id.has_value()) {
+      if (const auto it = row_by_mal.find(*r.mal_id); it != row_by_mal.end()) target = it->second;
+    }
+    if (!target.has_value()) continue;
+    auto w = store.set_next_airing(*target, r.next_airing_at, r.next_airing_episode);
+    if (!w.has_value()) return err(w.error());
+    ++written;
+  }
+  return written;
 }
 
 Result<SyncSummary, StoreError> flush_push(const AniListSync& client, const Auth& auth,

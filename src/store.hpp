@@ -216,6 +216,13 @@ struct RemoteEntry {
 
 // Push work-list row (store.rs SyncRow): a library show's live pair plus the
 // last server-accepted snapshot, or nullopt if never synced.
+// One row of the Calendar's refresh work-list (list_airing_candidates).
+struct AiringCandidate {
+  std::int64_t anilist_id = 0;
+  std::optional<std::int64_t> mal_id;
+  friend bool operator==(const AiringCandidate&, const AiringCandidate&) = default;
+};
+
 struct SyncRow {
   std::int64_t anilist_id = 0;
   std::string title_romaji;
@@ -453,6 +460,19 @@ class Store {
       std::int64_t anilist_id, std::string_view provider, Translation translation,
       const std::vector<std::string>& episodes, std::optional<std::string_view> airing_status,
       std::int64_t now);
+
+  // The Calendar's refresh work-list: library rows it could show (Watching /
+  // Planning) whose airing stamp is missing or already passed, minus shows
+  // whose media status says FINISHED (nothing to schedule). (anilist_id,
+  // mal_id) pairs — a synthetic (negative) id is looked up by its mal_id.
+  [[nodiscard]] Result<std::vector<AiringCandidate>, StoreError> list_airing_candidates(
+      std::int64_t now) const;
+
+  // Stamp a show's next airing, or clear it (nullopt = nothing scheduled).
+  // Unknown show: silent no-op.
+  [[nodiscard]] Result<Unit, StoreError> set_next_airing(std::int64_t anilist_id,
+                                                          std::optional<std::int64_t> at,
+                                                          std::optional<std::uint32_t> episode);
 
   // Cached episode list if unexpired; stale or a corrupt blob is a miss (not an
   // error). nullopt = miss; an empty vector = a cached empty listing.

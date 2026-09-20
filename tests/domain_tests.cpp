@@ -151,6 +151,34 @@ TEST_CASE("schedule: groups by weekday, drops past/absent airings") {
   CHECK(groups[1].entries[0].show_index == 3);
 }
 
+TEST_CASE("schedule: only Watching and Planning rows make the calendar") {
+  const std::int64_t now = 1'765'756'800;
+  std::vector<Show> shows{
+      schedule_show(1, now + 3600, 5), schedule_show(2, now + 3600, 5),
+      schedule_show(3, now + 3600, 5), schedule_show(4, now + 3600, 5),
+      schedule_show(5, now + 3600, 5),
+  };
+  shows[0].list_status = ListStatus::Watching;
+  shows[1].list_status = ListStatus::Planning;
+  shows[2].list_status = ListStatus::Completed;
+  shows[3].list_status = ListStatus::Dropped;
+  shows[4].list_status = ListStatus::Paused;
+  const auto groups = schedule(shows, now);
+  REQUIRE(groups.size() == 1);
+  REQUIRE(groups[0].entries.size() == 2);
+  CHECK(groups[0].entries[0].show_index == 0);
+  CHECK(groups[0].entries[1].show_index == 1);
+  // The notices follow the same lens.
+  for (Show& s : shows) s.enrichment.next_airing_at = now - 60;
+  const auto notices = detect_schedule_notices(shows, now);
+  REQUIRE(notices.size() == 2);
+  CHECK(notices[0].show_index == 0);
+  CHECK(notices[1].show_index == 1);
+  CHECK(calendar_status(ListStatus::Watching));
+  CHECK(calendar_status(ListStatus::Planning));
+  CHECK(!calendar_status(ListStatus::Completed));
+}
+
 TEST_CASE("schedule: entries within a weekday are airing-time ordered") {
   const std::int64_t now = 1'765'756'800;  // 2025-12-15 00:00 UTC (Monday)
   const std::vector<Show> shows{

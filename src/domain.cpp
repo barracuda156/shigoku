@@ -310,12 +310,17 @@ Weekday weekday_of(std::int64_t unix_secs) {
   return static_cast<Weekday>(idx);
 }
 
+bool calendar_status(ListStatus s) {
+  return s == ListStatus::Watching || s == ListStatus::Planning;
+}
+
 std::vector<ScheduleGroup> schedule(const std::vector<Show>& shows,
                                     std::int64_t now_secs) {
   // One bucket per weekday, Monday..Sunday, populated only where non-empty.
   std::array<std::vector<ScheduleEntry>, 7> buckets;
   for (std::size_t i = 0; i < shows.size(); ++i) {
     const Enrichment& e = shows[i].enrichment;
+    if (!calendar_status(shows[i].list_status)) continue;
     if (!e.next_airing_at.has_value()) continue;
     const std::int64_t at = *e.next_airing_at;
     if (at <= now_secs) continue;  // already aired, or unknown-past.
@@ -346,6 +351,7 @@ std::vector<ScheduleNotice> detect_schedule_notices(const std::vector<Show>& sho
   std::vector<ScheduleNotice> out;
   for (std::size_t i = 0; i < shows.size(); ++i) {
     const Enrichment& e = shows[i].enrichment;
+    if (!calendar_status(shows[i].list_status)) continue;
     if (!e.next_airing_at.has_value() || !e.next_airing_episode.has_value()) continue;
     if (*e.next_airing_at > now_secs) continue;  // still in the future: nothing new aired.
     if (*e.next_airing_episode == 0) continue;   // defensive: ordinals are 1-based.

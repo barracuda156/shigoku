@@ -952,7 +952,8 @@ void arm_sync(App& app) {
 // push_skipped row simply stays dirty for next run, silently, same as the
 // AniList mirror's own quieter outcomes).
 SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed,
-                            const mal_mirror::MirrorPullSummary& mal_pull) {
+                            const mal_mirror::MirrorPullSummary& mal_pull,
+                            std::uint32_t airing_refreshed) {
   using K = sync::SyncOutcome;
   SyncOutcome outcome;
   switch (s.outcome) {
@@ -979,6 +980,7 @@ SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed
     // a failed one for the toast's purposes.
     out.mal_pull_failed = mal_pull.outcome != M::Disabled;
   }
+  out.airing_refreshed = airing_refreshed;
   return out;
 }
 
@@ -995,6 +997,7 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
                   pull_only, now]() mutable {
     sync::SyncSummary summary = sync::SyncSummary::terminal(sync::SyncOutcome::Failed);
     std::uint32_t mal_pushed = 0;
+    std::uint32_t airing_refreshed = 0;
     mal_mirror::MirrorPullSummary mal_pull =
         mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled);
     auto store = Store::open(db_path);
@@ -1016,15 +1019,26 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
       if (r.has_value()) summary = *r;
       auto m = mal_mirror::push_mirror(mal_client, auth.mal, *store, mal_on);
       if (m.has_value()) mal_pushed = m->pushed;
+      // The Calendar's airing stamps ride the same run, accounts or not:
+      // public AniList data for every Watching / Planning row missing one.
+      const sync::AiringFetch fetch = [&http](const std::vector<std::int64_t>& ids,
+                                              const std::vector<std::int64_t>& mal_ids) {
+        return anilist::fetch_airing(http, ids, mal_ids);
+      };
+      auto refreshed = sync::refresh_airing(fetch, *store, now);
+      if (refreshed.has_value()) airing_refreshed = *refreshed;
     }
-    queue.try_post(Event{to_sync_flushed(summary, mal_pushed, mal_pull)});
+    queue.try_post(Event{to_sync_flushed(summary, mal_pushed, mal_pull, airing_refreshed)});
   });
 }
 
 // Spawn a sync run, unless one is already inflight (re-arm to retry) or the
 // gate is closed. `pull_only` is the launch-refresh path (06 §5.2).
 void flush_sync(App& app, bool pull_only) {
-  if (!any_tracker(app)) return;
+  // The launch refresh (pull_only) runs with no account too: the airing
+  // stamps it carries are public data, and the account halves go quiet on
+  // their own (NoToken / Disabled outcomes toast nothing).
+  if (!any_tracker(app) && !pull_only) return;
   if (app.syncing) {
     // A run is going; retry after another period rather than overlap.
     app.sync_flush_deadline = app.tick_count + kSyncFlushTicks;
@@ -1073,7 +1087,7 @@ void on_sync_flushed(App& app, const SyncFlushed& s) {
   }
   // A first import lands in an empty History that check_schedule_notices
   // (below) would not reload; anything adopted is worth the two local reads.
-  if (s.imported + s.mal_imported + s.reconciled + s.mal_pulled > 0) {
+  if (s.imported + s.mal_imported + s.reconciled + s.mal_pulled + s.airing_refreshed > 0) {
     load_history(app);
     load_schedule(app);
   }

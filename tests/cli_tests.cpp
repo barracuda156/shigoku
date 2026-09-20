@@ -277,6 +277,14 @@ TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilis
   CHECK(line_count(none) == 1);
 }
 
+TEST_CASE("airing_refresh_count_renders_only_when_nonzero") {
+  const std::string quiet = cli::render_sync_summary(summary(sync::SyncOutcome::Completed));
+  CHECK(!contains(quiet, "airing"));
+  const std::string loud =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, {}, 12);
+  CHECK_MESSAGE(contains(loud, "refreshed airing times for 12 show(s)"), loud);
+}
+
 TEST_CASE("counts_render_and_conflicts_suppress_up_to_date") {
   auto s = summary(sync::SyncOutcome::Completed);
   s.pulled.reconciled = 2;

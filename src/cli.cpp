@@ -229,7 +229,7 @@ std::string render_mal_pull(const MalPullCounts& m) {
 }  // namespace
 
 std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pushed,
-                                MalPullCounts mal_pull) {
+                                MalPullCounts mal_pull, std::uint32_t airing_refreshed) {
   using O = sync::SyncOutcome;
   std::string out;
   std::string anilist_terminal;
@@ -330,6 +330,9 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
     out += "  pushed " + std::to_string(mal_pushed) + " change(s) to MyAnimeList.\n";
   }
   out += render_mal_pull(mal_pull);
+  if (airing_refreshed > 0) {
+    out += "  refreshed airing times for " + std::to_string(airing_refreshed) + " show(s).\n";
+  }
   return out;
 }
 

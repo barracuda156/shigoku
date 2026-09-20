@@ -391,6 +391,54 @@ TEST_CASE("set_user_score_round_trip_and_clear") {
 
 // --- schedule notices (P37 slice 3) -----------------------------------------
 
+TEST_CASE("airing_candidates_are_watching_or_planning_rows_missing_or_past_a_stamp") {
+  Store store = open_mem();
+  // sample() is a FINISHED show; the candidates here are still airing.
+  auto row = [&](std::int64_t id, ListStatus status, std::uint32_t progress) {
+    Enrichment e = sample(id);
+    e.status = "RELEASING";
+    REQUIRE(store.add_to_library(e, 10).has_value());
+    REQUIRE(store.restore_list_status(id, status, progress, 10).has_value());
+  };
+  row(1, ListStatus::Watching, 3);   // no stamp: wanted.
+  row(2, ListStatus::Planning, 0);   // no stamp: wanted.
+  row(3, ListStatus::Completed, 12); // not followed.
+  row(4, ListStatus::Watching, 1);   // future stamp: fine as is.
+  REQUIRE(store.set_next_airing(4, 2000, 2).has_value());
+  row(5, ListStatus::Watching, 1);   // past stamp: wanted again.
+  REQUIRE(store.set_next_airing(5, 500, 2).has_value());
+  Enrichment done = sample(6);                  // FINISHED media: nothing to schedule.
+  done.status = "FINISHED";
+  REQUIRE(store.add_to_library(done, 10).has_value());
+  REQUIRE(store.restore_list_status(6, ListStatus::Watching, 1, 10).has_value());
+  Enrichment synthetic = sample(-700);          // MAL-only row: asked by mal_id.
+  synthetic.mal_id = 700;
+  synthetic.status = "RELEASING";
+  REQUIRE(store.add_to_library(synthetic, 10).has_value());
+  REQUIRE(store.restore_list_status(-700, ListStatus::Planning, 0, 10).has_value());
+
+  auto c = store.list_airing_candidates(1000);
+  REQUIRE(c.has_value());
+  REQUIRE(c->size() == 4);
+  std::vector<std::int64_t> ids;
+  for (const auto& x : *c) ids.push_back(x.anilist_id);
+  CHECK(ids == std::vector<std::int64_t>{-700, 1, 2, 5});
+  CHECK((*c)[0].mal_id == 700);
+
+  // A stamp round-trips and clears.
+  REQUIRE(store.set_next_airing(1, 4000, 7).has_value());
+  auto g = store.get_show(1);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->enrichment.next_airing_at == 4000);
+  CHECK((*g)->enrichment.next_airing_episode == 7);
+  REQUIRE(store.set_next_airing(1, std::nullopt, std::nullopt).has_value());
+  g = store.get_show(1);
+  CHECK(!(*g)->enrichment.next_airing_at.has_value());
+  CHECK(!(*g)->enrichment.next_airing_episode.has_value());
+  REQUIRE(store.set_next_airing(999, 1, 1).has_value());  // unknown: silent no-op.
+}
+
 TEST_CASE("set_schedule_notice_round_trip_and_clear_notice_pending") {
   Store store = open_mem();
   REQUIRE(store.add_to_library(sample(14), 50).has_value());

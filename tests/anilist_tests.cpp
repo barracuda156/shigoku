@@ -110,6 +110,39 @@ TEST_CASE("golden_by_id_full_mapping") {
   CHECK(desc.find('\n') == std::string::npos);
 }
 
+TEST_CASE("airing_query_and_body: one filter per query, ids as the variable") {
+  CHECK(detail::airing_query(false).find("id_in:$ids") != std::string::npos);
+  CHECK(detail::airing_query(false).find("idMal_in") == std::string::npos);
+  CHECK(detail::airing_query(true).find("idMal_in:$ids") != std::string::npos);
+  CHECK(detail::airing_query(true).find("nextAiringEpisode{episode airingAt}") != std::string::npos);
+  const std::string body = detail::airing_body({52991, 21}, true);
+  CHECK(body.find("\"ids\":[52991,21]") != std::string::npos);
+  CHECK(body.find("idMal_in") != std::string::npos);
+}
+
+TEST_CASE("classify_airing: dated, undated and id-less media; data null is no answer") {
+  const std::string_view raw = R"({"data":{"Page":{"media":[
+    {"id":52991,"idMal":52991,"nextAiringEpisode":{"episode":12,"airingAt":1714566896}},
+    {"id":21,"idMal":21,"nextAiringEpisode":null},
+    {"id":null,"idMal":5}]}}})";
+  auto rows = detail::classify_airing(raw);
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 2);
+  CHECK((*rows)[0].anilist_id == 52991);
+  CHECK((*rows)[0].mal_id == 52991);
+  CHECK((*rows)[0].next_airing_at == 1714566896);
+  CHECK((*rows)[0].next_airing_episode == 12);
+  CHECK((*rows)[1].anilist_id == 21);
+  CHECK(!(*rows)[1].next_airing_at.has_value());
+  CHECK(!(*rows)[1].next_airing_episode.has_value());
+  auto empty = detail::classify_airing(R"({"data":{"Page":{"media":[]}}})");
+  REQUIRE(empty.has_value());
+  CHECK(empty->empty());
+  auto none = detail::classify_airing(R"({"data":null})");
+  REQUIRE(!none.has_value());
+  CHECK(none.error().kind == ProviderError::Kind::Decode);
+}
+
 TEST_CASE("by_id_media_null_is_confirmed_no_match") {
   const std::string_view raw = R"({"data":{"Media":null}})";
   auto r = detail::classify_by_id(raw);

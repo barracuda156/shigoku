@@ -1686,6 +1686,49 @@ Result<Unit, StoreError> Store::set_user_score(std::int64_t anilist_id,
 
 // --- Schedule notices (P37 slice 3) -----------------------------------------
 
+Result<std::vector<AiringCandidate>, StoreError> Store::list_airing_candidates(
+    std::int64_t now) const {
+  Stmt s(conn_,
+         "SELECT anilist_id, mal_id FROM show "
+         "WHERE library_added_at IS NOT NULL "
+         "  AND list_status IN (?1, ?2) "
+         "  AND (next_airing_at IS NULL OR next_airing_at <= ?3) "
+         "  AND (status IS NULL OR status <> 'FINISHED') "
+         "ORDER BY anilist_id");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+  s.bind_text(1, to_string(ListStatus::Watching));
+  s.bind_text(2, to_string(ListStatus::Planning));
+  s.bind_int64(3, now);
+  std::vector<AiringCandidate> out;
+  for (;;) {
+    const int rc = s.step();
+    if (rc == SQLITE_DONE) break;
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(conn_)));
+    AiringCandidate c;
+    c.anilist_id = s.col_int64(0);
+    c.mal_id = s.col_opt_int64(1);
+    out.push_back(c);
+  }
+  return out;
+}
+
+Result<Unit, StoreError> Store::set_next_airing(std::int64_t anilist_id,
+                                                 std::optional<std::int64_t> at,
+                                                 std::optional<std::uint32_t> episode) {
+  Stmt s(conn_,
+         "UPDATE show SET next_airing_at = ?1, next_airing_episode = ?2 WHERE anilist_id = ?3");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+  s.bind_opt_int64(1, at);
+  if (episode.has_value()) {
+    s.bind_int64(2, static_cast<std::int64_t>(*episode));
+  } else {
+    s.bind_null(2);
+  }
+  s.bind_int64(3, anilist_id);
+  if (s.step() != SQLITE_DONE) return err(StoreError::sqlite(driver_msg(conn_)));
+  return Unit{};
+}
+
 Result<Unit, StoreError> Store::set_schedule_notice(std::int64_t anilist_id,
                                                      std::uint32_t episode) {
   Stmt s(conn_,

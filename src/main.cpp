@@ -301,8 +301,20 @@ int run_sync_cli() {
     if (mirrored.has_value()) mal_pushed = mirrored->pushed;
   }
 
+  // The Calendar's airing stamps: public data, every run, accounts or not.
+  std::uint32_t airing_refreshed = 0;
+  {
+    const sync::AiringFetch fetch = [&client](const std::vector<std::int64_t>& ids,
+                                              const std::vector<std::int64_t>& mal_ids) {
+      return anilist::fetch_airing(*client, ids, mal_ids);
+    };
+    auto refreshed = sync::refresh_airing(fetch, *store, now);
+    if (refreshed.has_value()) airing_refreshed = *refreshed;
+  }
+
   if (summary.has_value()) {
-    std::printf("%s", cli::render_sync_summary(*summary, mal_pushed, mal_pull).c_str());
+    std::printf("%s", cli::render_sync_summary(*summary, mal_pushed, mal_pull, airing_refreshed)
+                          .c_str());
   } else {
     std::printf(
         "  sync failed: couldn't update the local library; re-run with --debug for details.\n");
