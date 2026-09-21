@@ -1,7 +1,7 @@
-// megaplay.hpp — megaplay.buzz StreamProvider (P13, ROD-445; P51 for the
-// `enc` envelope). Ported from sabigoku src/providers/megaplay.rs (P51 is a
-// shigoku-only follow-up: the site re-encrypted getSources after the Rust
-// reference was frozen, PROVIDER_INTEL.md §7). Tier-A, MAL-keyed:
+// megaplay.hpp — megaplay.buzz StreamProvider (P13, ROD-445). Ported from
+// sabigoku src/providers/megaplay.rs; the `enc` envelope below is shigoku-only
+// (the site re-encrypted getSources after the Rust reference was frozen).
+// Tier-A, MAL-keyed:
 // `/stream/mal/{mal}/{ep}/{lang}` — the show handle is the stringified MAL id,
 // episode labels are true MAL numbers (senshi-shaped key, zero resolve changes).
 //
@@ -14,7 +14,7 @@
 //   1. GET embed  -> scrape `data-id` (the only sub/dub fork). 200 with no
 //      data-id = not stocked.
 //   2. GET /stream/getSources?id=... -> JSON: either the legacy cleartext
-//      `sources.file` (master m3u8 + softsubs), or (since 2026-09) an `enc`
+//      `sources.file` (master m3u8 + softsubs), or (the current shape) an `enc`
 //      string — base64url(AES-256-CBC-PKCS7({"file":…})) under a key/iv the
 //      site's `lib/newclient.min.js` carries as string literals. A present
 //      `enc` triggers ONE extra GET (the script, scraped for a live key/iv
@@ -61,7 +61,7 @@ inline constexpr std::size_t kMaxDataIdLen = 20;
 // Cap English subtitle probes per resolve (hostile getSources flood guard).
 inline constexpr std::size_t kMaxSubtitleProbes = 6;
 // Bound on a getSources `enc` string before base64url+CBC touches it — an
-// envelope is one URL, live ones run ~170 chars (P51).
+// envelope is one URL, live ones run ~170 chars.
 inline constexpr std::size_t kMaxEncLen = 4096;
 
 // --- Pure helpers (megaplay.rs file-private fns), exposed for golden tests ---
@@ -79,8 +79,8 @@ struct Track {
 
 // intro/outro `{start,end}` stamps riding the same getSources body — shaped
 // like aniskip::SkipTimes (op/ed, each an optional [start,end) pair) so a
-// later slice can hand this straight to aniskip::prepare_all without another
-// round trip. Not wired into StreamLink yet (P51 slice 4, optional).
+// later change can hand this straight to aniskip::prepare_all without another
+// round trip. Not wired into StreamLink yet.
 struct Skip {
   std::optional<std::pair<double, double>> op;
   std::optional<std::pair<double, double>> ed;
@@ -88,22 +88,22 @@ struct Skip {
 };
 
 // The mapped stream: the mpv-ready link plus the vetted tracks the softsub pick
-// draws from (megaplay.rs Sources), plus P51's site-provided skip stamps.
+// draws from (megaplay.rs Sources), plus the site-provided skip stamps.
 struct Sources {
   StreamLink link;
   std::vector<Track> tracks;
   Skip skip;
 };
 
-// The AES-256-CBC key/iv pair that opens a getSources `enc` envelope (P51).
+// The AES-256-CBC key/iv pair that opens a getSources `enc` envelope.
 struct Envelope {
   std::vector<std::uint8_t> key;  // 32 bytes, zero-padded from the site's literal.
   std::vector<std::uint8_t> iv;   // 16 bytes.
   friend bool operator==(const Envelope&, const Envelope&) = default;
 };
 
-// The pair baked at port time from `lib/newclient.min.js`'s literals
-// (PROVIDER_INTEL.md §7): the fallback when a live scrape misses.
+// The pair baked from `lib/newclient.min.js`'s literals as captured live:
+// the fallback when a scrape misses.
 [[nodiscard]] Envelope baked_envelope();
 
 // Scrape the two labelled defaults out of a `newclient.min.js` slice:
@@ -122,8 +122,8 @@ struct Envelope {
 // resolve. Err(Decode) on a missing/unsafe stream url; unsafe tracks are
 // dropped, never fatal. The picked sub_url is SSRF-guarded here (it reaches mpv
 // --sub-file unproxied) (megaplay.rs map_sources). A present `sources` object
-// keeps the legacy cleartext path; else a string `enc` opens under `envelope`
-// (P51) — a non-string `enc` is a type error like every other known field, an
+// keeps the legacy cleartext path; else a string `enc` opens under `envelope`;
+// a non-string `enc` is a type error like every other known field, an
 // unopenable one is Decode "bad envelope", neither field is "no stream source".
 [[nodiscard]] Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt,
                                                           const Envelope& envelope);
@@ -204,7 +204,7 @@ class MegaPlay final : public StreamProvider {
   // GET getSources as XHR (the host gates the JSON on these headers).
   [[nodiscard]] Result<std::vector<std::uint8_t>, ProviderError> xhr_get(
       const std::string& url) const;
-  // GET the newclient.min.js script (referer only; any 2xx), for the P51
+  // GET the newclient.min.js script (referer only; any 2xx), for the
   // envelope scrape.
   [[nodiscard]] Result<std::vector<std::uint8_t>, ProviderError> script_get(
       const std::string& url) const;

@@ -1,8 +1,8 @@
-// megaplay.cpp — P13 + P51. Ported from sabigoku src/providers/megaplay.rs
-// (P51 is shigoku-only, PROVIDER_INTEL.md §7).
+// megaplay.cpp — P13. Ported from sabigoku src/providers/megaplay.rs; the
+// `enc` envelope handling is shigoku-only (see megaplay.hpp).
 //
 // Two GETs: embed (scrape data-id, the sub/dub fork) then getSources, whose
-// JSON is either the legacy cleartext `sources.file` or (since 2026-09) an
+// JSON is either the legacy cleartext `sources.file` or (the current shape) an
 // `enc` envelope opened via crypto::aes256cbc_open under a key/iv the site's
 // newclient.min.js carries. MAL-keyed like senshi, so it needs zero
 // resolve-walk changes. The one megaplay-specific machinery beyond that is the
@@ -195,8 +195,8 @@ std::vector<std::string> labels(std::uint32_t n) {
 
 namespace {
 
-// The site's own literals, straight out of lib/newclient.min.js (PROVIDER_INTEL.md
-// §7): the key is 16 bytes zero-padded to 32 by the page's importKey call, the
+// The site's own literals, straight out of lib/newclient.min.js as captured
+// live: the key is 16 bytes zero-padded to 32 by the page's importKey call, the
 // iv is used as-is (already 16).
 constexpr std::string_view kBakedKeyLiteral = "i?LMTAx0Q6,:}50U";
 constexpr std::string_view kBakedIvLiteral = "W0;27ToaUpl_P%'c";
@@ -270,7 +270,7 @@ Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt,
   // to false on any type mismatch.
   bool ok = true;
 
-  // sources: Option<RawSources>. Absent/null -> the P51 `enc` fallback below;
+  // sources: Option<RawSources>. Absent/null -> the `enc` fallback below;
   // a present non-object is a type error.
   const bool has_sources = resp.is_object() && resp.contains("sources") &&
                            !resp.at("sources").is_null();
@@ -283,7 +283,7 @@ Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt,
     if (!ok) return err(ProviderError::decode("getSources: bad field type"));
   } else if (resp.is_object() && resp.contains("enc") && !resp.at("enc").is_null()) {
     // enc: String (base64url(AES-256-CBC-PKCS7({"file":…})))), present only
-    // once the site stopped shipping cleartext sources (P51). A non-string is
+    // once the site stopped shipping cleartext sources. A non-string is
     // a type error like every other known field; an unopenable/malformed one
     // is a distinct "bad envelope" (never silently "no stream source").
     if (!resp.at("enc").is_string()) return err(ProviderError::decode("getSources: bad field type"));
@@ -356,14 +356,14 @@ Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt,
   s.link.resolution = std::nullopt;
   s.link.referer = std::string(kStreamReferer);
   s.link.user_agent = std::string(kUserAgent);
-  // Segment CDN serves .ts as .jpg; the decoy PNG header is gone (P51) but the
+  // Segment CDN serves .ts as .jpg; the decoy PNG header is gone but the
   // strip is self-detecting (decloak_offset returns 0 on a sync-first body),
   // so both flags stay on in case it returns.
   s.link.cloaked_segments = true;
   s.link.decloak_segments = true;
   s.link.sub_url = std::move(sub_url);
   s.tracks = std::move(tracks);
-  // intro/outro `{start,end}` (P51 free extra, both shapes carry it): first
+  // intro/outro `{start,end}` (both shapes carry it): first
   // wins, a degenerate window (< 1s, matching aniskip's valid_interval rule)
   // drops rather than making a future auto-skip seek-loop at the start.
   s.skip.op = parse_skip_interval(resp, "intro");

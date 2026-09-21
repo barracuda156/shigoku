@@ -20,7 +20,7 @@ std::vector<std::uint8_t> key32() { return std::vector<std::uint8_t>(32, 0x42); 
 std::vector<std::uint8_t> iv12() { return std::vector<std::uint8_t>(12, 0x01); }
 std::vector<std::uint8_t> iv16() { return std::vector<std::uint8_t>(16, 0x02); }
 
-// megaplay's baked envelope pair (PROVIDER_INTEL.md §7): the 16-byte key
+// megaplay's baked envelope pair: the 16-byte key
 // literal zero-padded to 32, and the 16-byte iv literal as-is.
 std::vector<std::uint8_t> megaplay_key() {
   const std::string_view lit = "i?LMTAx0Q6,:}50U";
@@ -165,9 +165,8 @@ TEST_CASE("base64url decodes the -_ alphabet padding-optional, rejects the stand
 }
 
 TEST_CASE("open_b64url_cbc opens the megaplay enc envelope over a captured live blob") {
-  // Live-captured `enc` value (One Piece 21, ep1 sub — PROVIDER_INTEL.md §7),
-  // decrypted under the site's baked key/iv literal; verified against openssl
-  // on 2026-09-21.
+  // Live-captured `enc` value (One Piece 21, ep1 sub), decrypted under the
+  // site's baked key/iv literal; verified against the openssl CLI.
   const std::string enc =
       "wdeBruh3qqn_i5wUNnyaPcXqidp1UWP84FfPHzGyKXA2hDZBfMCmZ4FLvs7_pQuH549Eptax8UOjAJyRIZfrRhUGUKy9O"
       "BeGh2yB_-m_JLAlLnWTLzYZC3_C5I4ltveYoiaU66Do9RgI9bCetmk_o87-sd66brXnWV1MbjhLnjw=";

@@ -1,6 +1,6 @@
 // megaplay_tests.cpp — P13 golden tests, ported 1:1 from
-// src/providers/megaplay.rs's `mod tests`, plus P51 (the `enc` envelope,
-// shigoku-only — PROVIDER_INTEL.md §7). Pure parsers + guards run offline;
+// src/providers/megaplay.rs's `mod tests`, plus the `enc` envelope cases
+// (shigoku-only). Pure parsers + guards run offline;
 // the transport cases (episodes probe, private-host sub drop, the two/three-
 // hop resolve, the envelope cache) run over a loopback fixture server, same
 // SequenceServer shape as anibd_tests.cpp.
@@ -183,7 +183,7 @@ TEST_CASE("map_sources_rejects_type_mismatched_fields_like_serde") {
 }
 
 // ===========================================================================
-// P51: the getSources `enc` envelope — baked_envelope / scrape_envelope /
+// The getSources `enc` envelope — baked_envelope / scrape_envelope /
 // newclient_path / map_sources' enc branch.
 // ===========================================================================
 
@@ -218,7 +218,7 @@ TEST_CASE("scrape_envelope_reads_the_captured_newclient_slice_and_misses_cleanly
 }
 
 TEST_CASE("newclient_path_reads_the_first_matching_script_tag") {
-  // The captured embed page's actual head (PROVIDER_INTEL.md §7).
+  // The live-captured embed page's actual head.
   const char* html =
       R"(<script src="https://megaplay.buzz/lib/newclient.min.js?v=4.17"></script><script>const x=1;</script>)";
   CHECK(newclient_path(html) == "/lib/newclient.min.js?v=4.17");
@@ -231,7 +231,7 @@ TEST_CASE("newclient_path_reads_the_first_matching_script_tag") {
 }
 
 TEST_CASE("map_sources_opens_the_enc_envelope_under_the_baked_pair") {
-  // Live-captured `enc` (One Piece 21, ep1 sub — PROVIDER_INTEL.md §7),
+  // Live-captured `enc` (One Piece 21, ep1 sub),
   // decrypting under the baked pair to a real captured master URL.
   const std::string raw =
       R"({"tracks":[{"file":"https://1oe.club/eng.vtt","label":"English","kind":"captions","default":true}],)"
@@ -533,8 +533,8 @@ TEST_CASE("resolve_two_hop_embed_then_get_sources") {
 
 TEST_CASE("resolve_scrapes_the_envelope_on_the_first_enc_body_then_reuses_the_cache") {
   // Fresh key/iv (NOT the baked pair) so success can only come from the
-  // scrape, not a baked-fallback coincidence. Sealed offline (see the P51
-  // memory note / crypto_tests) under key "ShigokuTestKey12" (zero-padded to
+  // scrape, not a baked-fallback coincidence. Sealed offline (see
+  // crypto_tests) under key "ShigokuTestKey12" (zero-padded to
   // 32) and iv "ShigokuTestIV123".
   const char* embed1 =
       R"(<div id="megaplay-player" data-id="500"><script src="/lib/newclient.min.js?v=9"></script>)";
