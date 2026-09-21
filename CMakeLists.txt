@@ -564,6 +564,20 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_hianime (P47): hianime.at StreamProvider — no canonical key (tier-C
+# search binds it), a 4-hop HTML/JSON scrape chain ending in a base64+XOR
+# embed payload (shigoku_crypto for the base64; the XOR itself is a few lines,
+# no libcrypto). No TLS fingerprinting: plain requests pass as of the P47
+# walk, unlike anidbapp.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_hianime STATIC src/hianime.cpp)
+  target_include_directories(shigoku_hianime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_hianime
+    PUBLIC shigoku_http shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_anilibria: AniLibria (AniLiberty API v1) StreamProvider — no
 # canonical key (the API carries no MAL/AniList ids; tier-C search binds it),
 # pure JSON chain with DIRECT per-quality HLS urls in the release object. No
@@ -982,7 +996,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   endif()
   target_link_libraries(shigoku PRIVATE
     shigoku_picker shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
-    shigoku_anilibria
+    shigoku_anilibria shigoku_hianime
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
     shigoku_loopback shigoku_mal_login shigoku_mal_loopback
@@ -1545,6 +1559,32 @@ if(SHIGOKU_HAVE_CURL)
   add_executable(anidbapp_live_smoke tests/anidbapp_live_smoke.cpp)
   target_link_libraries(anidbapp_live_smoke PRIVATE
     shigoku_anidbapp shigoku_hls shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# hianime_tests (P47): every hianime #[test] — pure parsers/guards offline
+# (search card scrape + main-sidebar cut, episode-list/servers JSON-envelope
+# unwrap, data-hash base64, the __P XOR+JSON decode, entity decode, url
+# encode) plus transport cases (episode listing, dub-prefix bisection, the
+# two-server resolve hop) over loopback fixture servers. Fixtures captured
+# live under tests/fixtures/hianime/ (P47 walk, 2026-09-21).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(hianime_tests tests/hianime_tests.cpp)
+  target_compile_definitions(hianime_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(hianime_tests PRIVATE
+    shigoku_hianime shigoku_http shigoku_crypto shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME hianime_tests COMMAND hianime_tests)
+endif()
+
+# hianime_live_smoke (P47 DoD): real resolve against hianime.at + the
+# ZokoAnime embed host, gated on SHIGOKU_LIVE=1 (not a ctest — driven by hand,
+# and picked up by scripts/provider_canary.sh).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(hianime_live_smoke tests/hianime_live_smoke.cpp)
+  target_link_libraries(hianime_live_smoke PRIVATE
+    shigoku_hianime shigoku_http shigoku_crypto shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
