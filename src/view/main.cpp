@@ -229,6 +229,26 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  // What was asked for, decided by extension alone (classify_paths). The
+  // document and archive arms are filled in by the libmupdf and libarchive
+  // work; a build without them says so here rather than reporting "no pages".
+  auto plan = classify_paths(opt.paths);
+  if (!plan.has_value()) {
+    std::fputs(plan.error().c_str(), stderr);
+    std::fputc('\n', stderr);
+    return 2;
+  }
+  if (plan->kind == SourceKind::Document) {
+    std::fputs("shigoku-view: built without PDF/EPUB support (libmupdf not "
+               "found at build time, or -DWITH_MUPDF=OFF)\n", stderr);
+    return 5;
+  }
+  if (plan->kind == SourceKind::Archive) {
+    std::fputs("shigoku-view: built without archive support (libarchive not "
+               "found at build time, or -DWITH_LIBARCHIVE=OFF)\n", stderr);
+    return 5;
+  }
+
   const std::vector<std::string> pages = build_page_list(opt.paths);
   if (pages.empty()) {
     std::fputs("shigoku-view: no .jpg/.jpeg/.png/.webp pages in the given path(s)\n",

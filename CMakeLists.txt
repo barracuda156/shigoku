@@ -1019,7 +1019,7 @@ endif()
 #     X11-only there — hence opt-in). Rename knob: SHIGOKU_VIEW_BIN.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_BUILD_TESTS)
-add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp)
+add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp src/view/docsrc.cpp)
 target_include_directories(viewer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(viewer_tests PRIVATE
   shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
@@ -1036,7 +1036,8 @@ if(WITH_VIEWER AND PkgConfig_FOUND)
     pkg_check_modules(SDLX IMPORTED_TARGET sdl2)
   endif()
   if(SDLX_FOUND)
-    set(SHIGOKU_VIEW_SRC src/view/main.cpp src/view/sdl_compat.cpp src/view/pager.cpp)
+    set(SHIGOKU_VIEW_SRC src/view/main.cpp src/view/sdl_compat.cpp src/view/pager.cpp
+        src/view/docsrc.cpp)
     # macOS: SDL's own "Toggle Full Screen" menu item is wired to a 10.7-only
     # NSWindow selector, so it is greyed out on the systems this port cares
     # about. mac_menu.mm takes that item over and adds the zoom items; it is

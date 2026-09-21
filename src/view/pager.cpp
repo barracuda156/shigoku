@@ -22,19 +22,67 @@ int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 // Round a non-negative double to int (dest dims are always >= 0).
 int round_pos(double v) { return static_cast<int>(v + 0.5); }
 
-bool is_image_ext(const std::filesystem::path& p) {
-  std::string ext = p.extension().string();
+// Lower-cased extension of `name`, dot included, "" when there is none.
+// Lexical on purpose (no std::filesystem): archive entry names are not
+// filesystem paths. A dot at or before the last separator is part of a
+// directory name, and a leading dot is a hidden file, not an extension.
+std::string lower_ext(const std::string& name) {
+  const std::size_t sep = name.find_last_of("/\\");
+  const std::size_t start = sep == std::string::npos ? 0 : sep + 1;
+  const std::size_t dot = name.find_last_of('.');
+  if (dot == std::string::npos || dot <= start) return std::string();
+  std::string ext = name.substr(dot);
   for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext;
+}
+
+// The extension table behind classify_paths(). Images is the default, so an
+// unknown extension keeps the behaviour the viewer has always had.
+SourceKind kind_of(const std::string& name) {
+  const std::string ext = lower_ext(name);
+  if (ext == ".pdf" || ext == ".epub" || ext == ".fb2" || ext == ".xps" ||
+      ext == ".oxps") {
+    return SourceKind::Document;
+  }
+  if (ext == ".cbz" || ext == ".cbr" || ext == ".cbt") return SourceKind::Archive;
+  return SourceKind::Images;
+}
+
+}  // namespace
+
+bool is_image_ext(const std::string& name) {
+  const std::string ext = lower_ext(name);
   // WeebCentral/Dynasty/nhentai chapters can land .webp pages (decode_page
   // in main.cpp routes those to libwebp; stb handles the rest).
   return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp";
 }
 
-}  // namespace
+Result<SourcePlan, std::string> classify_paths(
+    const std::vector<std::string>& paths) {
+  SourcePlan plan;
+  if (paths.empty()) return plan;  // Images; main decides what nothing means.
+  if (paths.size() == 1) {
+    plan.kind = kind_of(paths[0]);
+    if (plan.kind != SourceKind::Images) plan.path = paths[0];
+    return plan;
+  }
+  for (const auto& p : paths) {
+    if (kind_of(p) != SourceKind::Images) {
+      return err("one document or archive at a time: '" + p +
+                 "' cannot be combined with other inputs");
+    }
+  }
+  return plan;
+}
 
 std::string usage() {
   return "usage: shigoku-view [--rtl] [--start-page N] [--report-file PATH]\n"
-         "                    [--fit page|width] [--title S] <dir | file...>\n"
+         "                    [--fit page|width] [--title S]\n"
+         "                    <dir | file... | doc.pdf/.epub/.fb2/.xps |\n"
+         "                     comic.cbz/.cbr/.cbt>\n"
+         "\n"
+         "documents (.pdf .epub .fb2 .xps .oxps) need a build with libmupdf;\n"
+         "comic archives (.cbz .cbr .cbt) need a build with libarchive.\n"
          "\n"
          "keys: space / PgDn / j      next page\n"
          "      backspace / PgUp / k  previous page\n"
@@ -140,14 +188,14 @@ std::vector<std::string> build_page_list(const std::vector<std::string>& paths) 
 
   if (paths.size() == 1 && fs::is_directory(paths[0], ec)) {
     for (fs::directory_iterator it(paths[0], ec), end; !ec && it != end; it.increment(ec)) {
-      if (it->is_regular_file(ec) && is_image_ext(it->path())) {
+      if (it->is_regular_file(ec) && is_image_ext(it->path().string())) {
         out.push_back(it->path().string());
       }
     }
   } else {
     for (const auto& p : paths) {
       const fs::path path(p);
-      if (fs::is_regular_file(path, ec) && is_image_ext(path)) out.push_back(p);
+      if (fs::is_regular_file(path, ec) && is_image_ext(p)) out.push_back(p);
     }
   }
   std::sort(out.begin(), out.end(), natural_less);
@@ -268,6 +316,14 @@ ViewState advance(ViewState s, Key k, Viewport vp) {
     case Key::Other:
       break;
   }
+  return s;
+}
+
+ViewState remap_after_relayout(ViewState s, int new_count, int new_page) {
+  s.page_count = new_count > 1 ? new_count : 1;
+  s.page = clampi(new_page < 0 ? s.page : new_page, 0, s.page_count - 1);
+  s.scroll_x = 0;  // the offsets addressed the old layout's pixels.
+  s.scroll_y = 0;
   return s;
 }
 

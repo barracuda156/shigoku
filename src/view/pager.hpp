@@ -126,6 +126,37 @@ struct Viewport {
 // under --help).
 [[nodiscard]] Result<Options, std::string> parse_cli(int argc, char** argv);
 
+// What the positionals turn out to be. The extension decides, and only the
+// extension: Images is everything the viewer already handled (a directory or
+// a list of page files), Document is the libmupdf formats, Archive the comic
+// archives. Three kinds, one table, so the CLI, the dispatch and the archive
+// entry filter can never disagree about what a `.cbz` is.
+enum class SourceKind { Images, Document, Archive };
+
+// The classification result. `path` is the single document/archive file and
+// is EMPTY for Images — there the positional list itself is the input and
+// build_page_list() resolves it.
+struct SourcePlan {
+  SourceKind kind = SourceKind::Images;
+  std::string path;
+  friend bool operator==(const SourcePlan&, const SourcePlan&) = default;
+};
+
+// Classify the positionals. `.pdf .epub .fb2 .xps .oxps` -> Document,
+// `.cbz .cbr .cbt` -> Archive, anything else -> Images (today's
+// build_page_list semantics, untouched). A single positional of a tabled
+// kind selects that kind; several positionals are Images only if none of
+// them is tabled — a document or an archive is a whole book and cannot be
+// mixed with other inputs. Purely lexical and case-insensitive: nothing is
+// opened here, so whether the path exists stays main's business.
+[[nodiscard]] Result<SourcePlan, std::string> classify_paths(
+    const std::vector<std::string>& paths);
+
+// True for the page-image extensions the viewer decodes (.jpg/.jpeg/.png/
+// .webp), case-insensitively. Lexical, so `name` may equally be a filesystem
+// path or a bare archive entry name.
+[[nodiscard]] bool is_image_ext(const std::string& name);
+
 // Numeric-aware ("natural") comparison so 002.jpg < 010.jpg and page_2 <
 // page_10: maximal digit runs compare by value (leading zeros ignored),
 // everything else byte-wise. A superset of the MangaDex source's
@@ -148,6 +179,15 @@ struct Viewport {
 // Up/Down half-window scroll, clamped by `vp`. A page change or fit toggle
 // resets scroll; zoom survives both.
 [[nodiscard]] ViewState advance(ViewState s, Key k, Viewport vp = {});
+
+// Re-seat the paging state on a page list that just changed under it — a
+// reflowable document relaid out at a new window size. `new_page` is where
+// the old reading position landed, or -1 for "unknown", which keeps the old
+// index and lets the clamp deal with it. Scroll offsets belong to the old
+// layout and are dropped; zoom, fit, RTL, HUD and fullscreen are the
+// reader's settings and survive.
+[[nodiscard]] ViewState remap_after_relayout(ViewState s, int new_count,
+                                             int new_page);
 
 // One step along the zoom ladder from `percent` (which need not be on it —
 // off-ladder values snap to the next/previous step). Clamped at both ends, so

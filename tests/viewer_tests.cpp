@@ -1,7 +1,9 @@
 // viewer_tests.cpp — golden tests for the PURE viewer core
-// (src/view/pager.hpp/.cpp). No SDL, no decode: CLI parse, natural sort +
+// (src/view/pager.hpp/.cpp, src/view/docsrc.hpp/.cpp). No SDL, no decode, no
+// document library: CLI parse, the source-kind table, natural sort +
 // page-list build, the key table (incl. the "RTL mirrors spatial keys only"
-// rule), fit-rect and zoom geometry, and the exit report line.
+// rule), fit-rect and zoom geometry, the exit report line, and the resize
+// relayout flow against a scripted DocSource.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -14,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/view/docsrc.hpp"
 #include "../src/view/pager.hpp"
 
 using namespace shigoku;        // Result<T, E>.
@@ -81,6 +84,17 @@ TEST_CASE("parse_cli_help_needs_no_paths") {
   // The usage text is where the keys are documented — it must list them.
   CHECK(usage().find("shift+f / F11") != std::string::npos);
   CHECK(usage().find("zoom in / out / reset") != std::string::npos);
+}
+
+TEST_CASE("usage_names_the_document_and_archive_formats") {
+  // The formats are only discoverable here — nothing else tells a reader
+  // that this viewer opens a book, or which build flag gates it.
+  const std::string u = usage();
+  for (const char* needle : {".pdf", ".epub", ".fb2", ".xps", ".oxps",
+                             ".cbz", ".cbr", ".cbt", "libmupdf", "libarchive"}) {
+    CAPTURE(needle);
+    CHECK(u.find(needle) != std::string::npos);
+  }
 }
 
 TEST_CASE("parse_cli_end_of_flags_double_dash") {
@@ -170,6 +184,78 @@ TEST_CASE("build_page_list_explicit_files_filter_and_sort") {
 
 TEST_CASE("build_page_list_empty_when_nothing_matches") {
   CHECK(build_page_list({"/nonexistent/path/xyz"}).empty());
+}
+
+// ===========================================================================
+// classify_paths + is_image_ext — the one extension table
+// ===========================================================================
+
+TEST_CASE("classify_paths_tables_every_document_and_archive_extension") {
+  for (const char* name : {"book.pdf", "book.epub", "book.fb2", "book.xps",
+                           "book.oxps"}) {
+    CAPTURE(name);
+    auto r = classify_paths({name});
+    REQUIRE(r.has_value());
+    CHECK(r->kind == SourceKind::Document);
+    CHECK(r->path == name);
+  }
+  for (const char* name : {"vol1.cbz", "vol1.cbr", "vol1.cbt"}) {
+    CAPTURE(name);
+    auto r = classify_paths({name});
+    REQUIRE(r.has_value());
+    CHECK(r->kind == SourceKind::Archive);
+    CHECK(r->path == name);
+  }
+}
+
+TEST_CASE("classify_paths_is_case_insensitive_and_lexical") {
+  // Spelling, not content: nothing is opened, so these paths need not exist.
+  CHECK(classify_paths({"BOOK.PDF"})->kind == SourceKind::Document);
+  CHECK(classify_paths({"Vol1.CbZ"})->kind == SourceKind::Archive);
+  // A dot inside a directory name is not an extension; a dotless name has none.
+  CHECK(classify_paths({"/srv/comics.pdf/ch1"})->kind == SourceKind::Images);
+  CHECK(classify_paths({"README"})->kind == SourceKind::Images);
+  CHECK(classify_paths({".epub"})->kind == SourceKind::Images);  // hidden file.
+}
+
+TEST_CASE("classify_paths_defaults_to_images_and_leaves_the_path_empty") {
+  // Images is the old behaviour: a directory or N files, resolved by
+  // build_page_list from the positional list, so `path` carries nothing.
+  for (std::vector<std::string> in : {std::vector<std::string>{"/srv/chapter"},
+                                      std::vector<std::string>{"a.jpg"},
+                                      std::vector<std::string>{"a.jpg", "b.png", "c.webp"},
+                                      std::vector<std::string>{}}) {
+    auto r = classify_paths(in);
+    REQUIRE(r.has_value());
+    CHECK(r->kind == SourceKind::Images);
+    CHECK(r->path.empty());
+  }
+}
+
+TEST_CASE("classify_paths_refuses_to_mix_a_book_with_anything_else") {
+  // A document or an archive IS the whole input; combining is a usage error
+  // rather than a silent "the pdf was ignored".
+  for (std::vector<std::string> in : {std::vector<std::string>{"a.pdf", "b.jpg"},
+                                      std::vector<std::string>{"b.jpg", "a.pdf"},
+                                      std::vector<std::string>{"a.pdf", "b.epub"},
+                                      std::vector<std::string>{"a.cbz", "b.pdf"},
+                                      std::vector<std::string>{"a.cbz", "b.cbz"}}) {
+    auto r = classify_paths(in);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().find("one document or archive at a time") != std::string::npos);
+  }
+}
+
+TEST_CASE("is_image_ext_matches_the_decoders_the_viewer_has") {
+  for (const char* name : {"001.jpg", "001.JPEG", "cover.png", "p.webp",
+                           "ch1/002.PNG"}) {
+    CAPTURE(name);
+    CHECK(is_image_ext(name));
+  }
+  for (const char* name : {"notes.txt", "book.pdf", "noext", "dir.png/file"}) {
+    CAPTURE(name);
+    CHECK_FALSE(is_image_ext(name));
+  }
 }
 
 // ===========================================================================
@@ -515,4 +601,136 @@ TEST_CASE("render_hud_draws_ink_on_a_translucent_box") {
     if (blank.rgba[i] == 255) any_ink = true;
   }
   CHECK_FALSE(any_ink);
+}
+
+// ===========================================================================
+// DocSource seam — remap_after_relayout + relayout_and_remap
+// ===========================================================================
+
+namespace {
+
+// A scripted DocSource: the page count a relayout produces, the answer
+// lookup() gives back, and a trace of the calls — enough to pin the resize
+// ORDER, which is the only thing the seam's flow actually decides. Renders
+// nothing; no pixels are involved in carrying a reading position.
+class FakeDoc final : public DocSource {
+ public:
+  int count = 10;
+  int count_after_relayout = 10;
+  int lookup_answer = 0;
+  bool reflow = true;
+
+  std::vector<std::string> calls;
+  int count_seen_at_mark = 0;
+  int count_seen_at_lookup = 0;
+  int marked_page = -1;
+  int layout_w = 0;
+  int layout_h = 0;
+
+  int page_count() const override { return count; }
+  PageSize page_size(int) const override { return PageSize{600, 800}; }
+  Result<RgbaImage, std::string> render(int, int, int) override {
+    return RgbaImage{};
+  }
+  bool reflowable() const override { return reflow; }
+  void relayout(int w, int h) override {
+    calls.push_back("relayout");
+    layout_w = w;
+    layout_h = h;
+    count = count_after_relayout;
+  }
+  Bookmark mark(int page) override {
+    calls.push_back("mark");
+    marked_page = page;
+    count_seen_at_mark = count;
+    return Bookmark{42, 1, 0.5};
+  }
+  int lookup(const Bookmark&) override {
+    calls.push_back("lookup");
+    count_seen_at_lookup = count;
+    return lookup_answer;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("remap_after_relayout_takes_the_new_index_and_clamps_it") {
+  ViewState s = st(7, 20);
+  const ViewState r = remap_after_relayout(s, 12, 3);
+  CHECK(r.page == 3);
+  CHECK(r.page_count == 12);
+  // A book that shrank past the cursor lands on its last page, not past it.
+  CHECK(remap_after_relayout(st(7, 20), 4, 9).page == 3);
+  CHECK(remap_after_relayout(st(7, 20), 4, 9).page_count == 4);
+  // A count of zero is still one page: page_count is a divisor for the HUD.
+  CHECK(remap_after_relayout(st(7, 20), 0, 0).page_count == 1);
+  CHECK(remap_after_relayout(st(7, 20), 0, 0).page == 0);
+}
+
+TEST_CASE("remap_after_relayout_minus_one_keeps_the_old_index") {
+  // -1 is "the position could not be found" — the old index is the best
+  // remaining guess, and the clamp still applies to it.
+  CHECK(remap_after_relayout(st(5, 20), 30, -1).page == 5);
+  CHECK(remap_after_relayout(st(15, 20), 8, -1).page == 7);
+}
+
+TEST_CASE("remap_after_relayout_drops_scroll_and_keeps_the_settings") {
+  ViewState s = st(4, 20, /*rtl=*/true, Fit::Width);
+  s.scroll_x = 120;
+  s.scroll_y = 900;
+  s.zoom = 150;
+  s.hud = false;
+  s.fullscreen = true;
+  const ViewState r = remap_after_relayout(s, 25, 6);
+  CHECK(r.scroll_x == 0);  // the offsets addressed the old layout.
+  CHECK(r.scroll_y == 0);
+  CHECK(r.zoom == 150);    // the reader's own settings survive a relayout.
+  CHECK(r.fit == Fit::Width);
+  CHECK(r.rtl);
+  CHECK_FALSE(r.hud);
+  CHECK(r.fullscreen);
+}
+
+TEST_CASE("relayout_and_remap_marks_before_the_relayout_and_looks_up_after") {
+  FakeDoc doc;
+  doc.count = 10;
+  doc.count_after_relayout = 30;
+  doc.lookup_answer = 17;
+  ViewState s = st(3, 10);
+  s.scroll_y = 400;
+
+  const ViewState r = relayout_and_remap(doc, s, 900, 1200);
+
+  CHECK(doc.calls == std::vector<std::string>{"mark", "relayout", "lookup"});
+  CHECK(doc.marked_page == 3);
+  CHECK(doc.count_seen_at_mark == 10);    // marked against the OLD layout…
+  CHECK(doc.count_seen_at_lookup == 30);  // …looked up against the new one.
+  CHECK(doc.layout_w == 900);
+  CHECK(doc.layout_h == 1200);
+  CHECK(r.page == 17);
+  CHECK(r.page_count == 30);
+  CHECK(r.scroll_y == 0);
+}
+
+TEST_CASE("relayout_and_remap_leaves_a_fixed_layout_alone") {
+  // A PDF's pages belong to the file, not the window: nothing to mark, and
+  // the scroll offsets stay valid because the page did not move.
+  FakeDoc doc;
+  doc.reflow = false;
+  doc.count = 2;
+  ViewState s = st(1, 2);
+  s.scroll_y = 250;
+  const ViewState r = relayout_and_remap(doc, s, 400, 600);
+  CHECK(r == s);
+  CHECK(doc.calls.empty());
+}
+
+TEST_CASE("relayout_and_remap_keeps_the_place_when_the_lookup_fails") {
+  FakeDoc doc;
+  doc.count = 30;
+  doc.count_after_relayout = 5;
+  doc.lookup_answer = -1;
+  const ViewState r = relayout_and_remap(doc, st(8, 30), 300, 400);
+  CHECK(r.page == 4);  // old index 8, clamped into the smaller book.
+  CHECK(r.page_count == 5);
 }
