@@ -1258,6 +1258,23 @@ if(SHIGOKU_HAVE_MUPDF)
     add_test(NAME mupdf_selftest
       COMMAND mupdf_selftest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/docs/two_pages.pdf")
   endif()
+
+  # mupdf_tests: MupdfSource against the committed document fixtures — page
+  # geometry, flat-fill pixels, the reflow relayout and the bookmark remap,
+  # and the error taxonomy. Links the pure core too (pager + docsrc), so the
+  # resize flow is exercised through the real seam rather than a fake. Only
+  # this test binary and the selftest touch libmupdf; a -DWITH_MUPDF=OFF
+  # build simply has neither.
+  if(SHIGOKU_BUILD_TESTS)
+    add_executable(mupdf_tests tests/mupdf_tests.cpp src/view/mupdf_source.cpp
+      src/view/docsrc.cpp src/view/pager.cpp)
+    target_include_directories(mupdf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(mupdf_tests PRIVATE
+      SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    target_link_libraries(mupdf_tests PRIVATE
+      shigoku::mupdf shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
+    add_test(NAME mupdf_tests COMMAND mupdf_tests)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
