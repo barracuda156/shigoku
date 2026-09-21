@@ -1073,6 +1073,193 @@ elseif(WITH_VIEWER)
 endif()
 
 # ---------------------------------------------------------------------------
+# libmupdf for shigoku-view: PDF/EPUB/FB2/XPS documents. Optional, the
+# WITH_WEBP posture (default ON, auto-off with a STATUS line when the library
+# is not found, -DWITH_MUPDF=OFF forces it off). Today the selftest below is
+# the sole consumer; the viewer's document path arrives with the DocSource
+# seam and links shigoku::mupdf the same way.
+#
+# Detection is a ladder, not a lookup, because mupdf's packaging varies more
+# than its API: Debian ships a static libmupdf.a whose pkg-config file
+# understates the libraries it needs (and names a freetype2.pc that need not
+# exist), MacPorts ships one shared dylib and no .pc at all, upstream builds
+# either. So: locate the headers and the library (pkg-config first, then
+# find_path/find_library), collect whatever companion libraries exist, and try
+# candidate link sets in order until one links a program that registers all
+# document handlers — the strongest link test there is, since the handlers
+# pull in the JavaScript, HTML and codec dependencies.
+# ---------------------------------------------------------------------------
+option(WITH_MUPDF "Read PDF/EPUB/FB2/XPS in shigoku-view via libmupdf (auto-off if not found)" ON)
+
+# shigoku_find_mupdf(): sets SHIGOKU_HAVE_MUPDF (and SHIGOKU_MUPDF_RUNG, the
+# candidate that linked) in the caller's scope; when found, defines the
+# shigoku::mupdf interface target carrying the include dir (SYSTEM, so the
+# library's headers are not held to our warning set), the winning link set and
+# the HAVE_MUPDF definition. Probe results are cached per candidate
+# (SHIGOKU_MUPDF_LINK_*): after moving mupdf, reconfigure in a fresh build dir
+# or pass -U 'SHIGOKU_MUPDF_*'.
+function(shigoku_find_mupdf)
+  set(SHIGOKU_HAVE_MUPDF OFF PARENT_SCOPE)
+  set(_inc "")
+  set(_lib "")
+  set(_pc_static "")
+  set(_hints "")
+  if(PkgConfig_FOUND)
+    pkg_check_modules(MUPDF QUIET mupdf)
+  endif()
+  if(MUPDF_FOUND)
+    set(_inc ${MUPDF_INCLUDE_DIRS})
+    set(_lib ${MUPDF_LINK_LIBRARIES})
+    set(_hints ${MUPDF_LIBRARY_DIRS} ${MUPDF_STATIC_LIBRARY_DIRS})
+    # The static variant carries Libs.private — needed when libmupdf is a .a,
+    # harmless extra names when it is shared. CMake resolves only the
+    # non-static -l names to paths, so resolve the static ones here: a path
+    # gives the linked binary a build rpath into a staged prefix, which a bare
+    # -l cannot; names nothing locates pass through for the linker's own
+    # search.
+    set(_pc_static "")
+    foreach(_flag IN LISTS MUPDF_STATIC_LDFLAGS)
+      if(_flag MATCHES "^-l(.+)$")
+        set(_name "${CMAKE_MATCH_1}")
+        find_library(SHIGOKU_MUPDF_PC_${_name} NAMES ${_name} HINTS ${_hints})
+        if(SHIGOKU_MUPDF_PC_${_name})
+          list(APPEND _pc_static ${SHIGOKU_MUPDF_PC_${_name}})
+        else()
+          list(APPEND _pc_static ${_flag})
+        endif()
+      else()
+        list(APPEND _pc_static ${_flag})
+      endif()
+    endforeach()
+    list(APPEND _pc_static ${MUPDF_STATIC_LDFLAGS_OTHER})
+  else()
+    find_path(MUPDF_INCLUDE_DIR mupdf/fitz.h)
+    find_library(MUPDF_LIBRARY NAMES mupdf)
+    if(NOT MUPDF_INCLUDE_DIR OR NOT MUPDF_LIBRARY)
+      message(STATUS "shigoku-view: libmupdf not found — PDF/EPUB support off "
+                     "(install libmupdf-dev / the mupdf port, or -DWITH_MUPDF=OFF "
+                     "to silence this).")
+      return()
+    endif()
+    set(_inc ${MUPDF_INCLUDE_DIR})
+    set(_lib ${MUPDF_LIBRARY})
+    get_filename_component(_hints "${MUPDF_LIBRARY}" DIRECTORY)
+  endif()
+  if(CMAKE_LIBRARY_ARCHITECTURE)
+    set(_arch_hints "")
+    foreach(_d IN LISTS _hints)
+      list(APPEND _arch_hints "${_d}/${CMAKE_LIBRARY_ARCHITECTURE}")
+    endforeach()
+    list(APPEND _hints ${_arch_hints})
+  endif()
+
+  # Companion libraries a static libmupdf may need, by the names distros use.
+  # Absent ones are simply not candidates: the list is the data, there is no
+  # branch per distro. mupdf-third is upstream's own bundle and gets its own
+  # rungs.
+  set(_third "")
+  find_library(SHIGOKU_MUPDF_DEP_third NAMES mupdf-third HINTS ${_hints})
+  if(SHIGOKU_MUPDF_DEP_third)
+    set(_third ${SHIGOKU_MUPDF_DEP_third})
+  endif()
+  set(_companions "")
+  foreach(_name mujs gumbo openjp2 jbig2dec jpeg freetype harfbuzz lcms2 z)
+    find_library(SHIGOKU_MUPDF_DEP_${_name} NAMES ${_name} HINTS ${_hints})
+    if(SHIGOKU_MUPDF_DEP_${_name})
+      list(APPEND _companions ${SHIGOKU_MUPDF_DEP_${_name}})
+    endif()
+  endforeach()
+  list(APPEND _companions m)
+
+  # The rungs, in order. pc / pc_plus exist only when a .pc was found; third /
+  # third_sys only when libmupdf-third exists; bare is the shared-library
+  # case (one dylib that links alone); sys is a static lib plus the system
+  # companions.
+  set(_rungs "")
+  if(_pc_static)
+    list(APPEND _rungs pc pc_plus)
+  endif()
+  list(APPEND _rungs bare)
+  if(_third)
+    list(APPEND _rungs third third_sys)
+  endif()
+  list(APPEND _rungs sys)
+
+  include(CheckCXXSourceCompiles)
+  set(_probe_src "
+#include <mupdf/fitz.h>
+int main() {
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
+  if (ctx == nullptr) return 1;
+  fz_register_document_handlers(ctx);
+  fz_drop_context(ctx);
+  return 0;
+}
+")
+  set(_winner "")
+  set(_winner_libs "")
+  foreach(_r IN LISTS _rungs)
+    if(_r STREQUAL "pc")
+      set(_libs ${_pc_static})
+    elseif(_r STREQUAL "pc_plus")
+      set(_libs ${_pc_static} ${_third} ${_companions})
+    elseif(_r STREQUAL "bare")
+      set(_libs ${_lib})
+    elseif(_r STREQUAL "third")
+      set(_libs ${_lib} ${_third})
+    elseif(_r STREQUAL "third_sys")
+      set(_libs ${_lib} ${_third} ${_companions})
+    else()
+      set(_libs ${_lib} ${_companions})
+    endif()
+    set(CMAKE_REQUIRED_INCLUDES ${_inc})
+    set(CMAKE_REQUIRED_LIBRARIES ${_libs})
+    set(CMAKE_REQUIRED_QUIET ON)
+    check_cxx_source_compiles("${_probe_src}" SHIGOKU_MUPDF_LINK_${_r})
+    if(SHIGOKU_MUPDF_LINK_${_r})
+      set(_winner ${_r})
+      set(_winner_libs ${_libs})
+      break()
+    endif()
+  endforeach()
+  if(NOT _winner)
+    message(STATUS "shigoku-view: libmupdf found (${_lib}) but no candidate link "
+                   "set links a program against it — PDF/EPUB support off. The "
+                   "failing link lines are in CMakeFiles/CMakeConfigureLog.yaml; "
+                   "-DWITH_MUPDF=OFF silences this.")
+    return()
+  endif()
+
+  add_library(shigoku_mupdf INTERFACE)
+  target_include_directories(shigoku_mupdf SYSTEM INTERFACE ${_inc})
+  target_link_libraries(shigoku_mupdf INTERFACE ${_winner_libs})
+  target_compile_definitions(shigoku_mupdf INTERFACE HAVE_MUPDF)
+  add_library(shigoku::mupdf ALIAS shigoku_mupdf)
+  set(SHIGOKU_HAVE_MUPDF ON PARENT_SCOPE)
+  set(SHIGOKU_MUPDF_RUNG ${_winner} PARENT_SCOPE)
+  message(STATUS "shigoku-view: libmupdf found, link set '${_winner}' (${_inc})")
+endfunction()
+
+set(SHIGOKU_HAVE_MUPDF OFF)
+if(WITH_VIEWER AND WITH_MUPDF)
+  shigoku_find_mupdf()
+endif()
+
+# mupdf_selftest: the run-time half of the probe above. Configure proved that
+# a link set links; this proves the linked library loads and works — opens a
+# document, counts its pages, renders the first one. Registered with ctest on
+# the committed two-page PDF fixture.
+if(SHIGOKU_HAVE_MUPDF)
+  add_executable(mupdf_selftest src/view/mupdf_selftest.cpp)
+  target_link_libraries(mupdf_selftest PRIVATE
+    shigoku::mupdf shigoku_flags Threads::Threads shigoku_atomic)
+  if(SHIGOKU_BUILD_TESTS)
+    add_test(NAME mupdf_selftest
+      COMMAND mupdf_selftest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/docs/two_pages.pdf")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # smoke: minimal binary proving raw mode + truecolor + terminal restore.
 # This is the P0 deliverable; real modules land in later phases.
 # ---------------------------------------------------------------------------
