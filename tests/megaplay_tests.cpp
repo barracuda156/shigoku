@@ -1,7 +1,9 @@
 // megaplay_tests.cpp — P13 golden tests, ported 1:1 from
-// src/providers/megaplay.rs's `mod tests`. Pure parsers + guards run offline;
-// the transport cases (episodes probe, private-host sub drop) run over a
-// loopback fixture server, same SequenceServer shape as anibd_tests.cpp.
+// src/providers/megaplay.rs's `mod tests`, plus P51 (the `enc` envelope,
+// shigoku-only — PROVIDER_INTEL.md §7). Pure parsers + guards run offline;
+// the transport cases (episodes probe, private-host sub drop, the two/three-
+// hop resolve, the envelope cache) run over a loopback fixture server, same
+// SequenceServer shape as anibd_tests.cpp.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -12,16 +14,33 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "../src/crypto.hpp"
 #include "../src/megaplay.hpp"
 
 using namespace shigoku;
 using namespace shigoku::megaplay;
 using namespace shigoku::megaplay::detail;
+
+namespace {
+
+std::string read_fixture(const char* name) {
+  const std::string path = std::string(SHIGOKU_TEST_FIXTURES_DIR) + "/" + name;
+  std::ifstream f(path, std::ios::binary);
+  REQUIRE_MESSAGE(f.good(), "missing fixture: " << path);
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+}  // namespace
 
 // ===========================================================================
 // parse_data_id
@@ -78,7 +97,7 @@ TEST_CASE("map_sources_maps_a_live_shaped_body") {
         {"file":"https://1oe.lostproject.club/thumbs.vtt","kind":"thumbnails"},
         {"label":"ghost-no-file","kind":"captions"}],
       "intro":{"start":100,"end":190},"server":2})";
-  auto s = map_sources(raw, Translation::Sub);
+  auto s = map_sources(raw, Translation::Sub, baked_envelope());
   REQUIRE(s.has_value());
   CHECK(s->link.url == "https://cdn.mewstream.buzz/x/master.m3u8");
   CHECK(s->link.referer == std::string(kStreamReferer));
@@ -89,22 +108,29 @@ TEST_CASE("map_sources_maps_a_live_shaped_body") {
   // but never the sub pick.
   CHECK(s->tracks.size() == 2);
   CHECK(s->link.sub_url == "https://1oe.lostproject.club/eng.vtt");
+  // The legacy shape still carries intro/outro; only outro is absent here.
+  REQUIRE(s->skip.op.has_value());
+  CHECK(s->skip.op->first == doctest::Approx(100));
+  CHECK(s->skip.op->second == doctest::Approx(190));
+  CHECK_FALSE(s->skip.ed.has_value());
   // A dub resolve never loads a softsub.
-  auto d = map_sources(raw, Translation::Dub);
+  auto d = map_sources(raw, Translation::Dub, baked_envelope());
   REQUIRE(d.has_value());
   CHECK_FALSE(d->link.sub_url.has_value());
 }
 
 TEST_CASE("map_sources_missing_or_unsafe_stream_url_is_a_clean_error") {
-  CHECK_FALSE(map_sources("{}", Translation::Sub).has_value());
-  CHECK_FALSE(map_sources(R"({"sources":{}})", Translation::Sub).has_value());
-  CHECK_FALSE(map_sources(R"({"sources":{"file":"/x/master.m3u8"}})", Translation::Sub).has_value());
-  CHECK_FALSE(
-      map_sources(R"({"sources":{"file":"https://cdn/x master.m3u8"}})", Translation::Sub).has_value());
+  CHECK_FALSE(map_sources("{}", Translation::Sub, baked_envelope()).has_value());
+  CHECK_FALSE(map_sources(R"({"sources":{}})", Translation::Sub, baked_envelope()).has_value());
+  CHECK_FALSE(map_sources(R"({"sources":{"file":"/x/master.m3u8"}})", Translation::Sub, baked_envelope())
+                  .has_value());
+  CHECK_FALSE(map_sources(R"({"sources":{"file":"https://cdn/x master.m3u8"}})", Translation::Sub,
+                          baked_envelope())
+                  .has_value());
   // An unsafe track is dropped, not fatal, and cannot become the sub pick.
   auto s = map_sources(
       R"({"sources":{"file":"https://cdn/ok.m3u8"},"tracks":[{"file":"/relative.vtt","kind":"captions"}]})",
-      Translation::Sub);
+      Translation::Sub, baked_envelope());
   REQUIRE(s.has_value());
   CHECK(s->tracks.empty());
   CHECK_FALSE(s->link.sub_url.has_value());
@@ -118,7 +144,7 @@ TEST_CASE("map_sources_drops_a_sub_url_aimed_at_a_private_host") {
     const std::string raw =
         std::string(R"({"sources":{"file":"https://cdn/ok.m3u8"},"tracks":[{"file":")") + host +
         R"(","label":"English","kind":"captions","default":true}]})";
-    auto s = map_sources(raw, Translation::Sub);
+    auto s = map_sources(raw, Translation::Sub, baked_envelope());
     REQUIRE(s.has_value());
     CHECK_FALSE(s->link.sub_url.has_value());
     CHECK(s->link.url == "https://cdn/ok.m3u8");
@@ -144,16 +170,130 @@ TEST_CASE("map_sources_rejects_type_mismatched_fields_like_serde") {
       R"({"sources":{"file":"https://cdn/ok.m3u8"},"tracks":[{"file":"https://c/e.vtt","label":true}]})",
   };
   for (const char* raw : bad) {
-    CHECK_FALSE(map_sources(raw, Translation::Sub).has_value());
+    CHECK_FALSE(map_sources(raw, Translation::Sub, baked_envelope()).has_value());
   }
   // But absent/null optionals still degrade cleanly (serde default), not error:
   // null sources.file -> "no stream source"; a null default -> false.
-  CHECK_FALSE(map_sources(R"({"sources":{"file":null}})", Translation::Sub).has_value());
+  CHECK_FALSE(map_sources(R"({"sources":{"file":null}})", Translation::Sub, baked_envelope()).has_value());
   auto ok = map_sources(
       R"({"sources":{"file":"https://cdn/ok.m3u8"},"tracks":[{"file":"https://c/e.vtt","kind":null,"default":null}]})",
-      Translation::Sub);
+      Translation::Sub, baked_envelope());
   REQUIRE(ok.has_value());
   CHECK(ok->tracks.size() == 1);
+}
+
+// ===========================================================================
+// P51: the getSources `enc` envelope — baked_envelope / scrape_envelope /
+// newclient_path / map_sources' enc branch.
+// ===========================================================================
+
+TEST_CASE("baked_envelope_is_the_site_literals_zero_padded_and_as_is") {
+  const auto e = baked_envelope();
+  REQUIRE(e.key.size() == 32);
+  REQUIRE(e.iv.size() == 16);
+  const std::string_view key_lit = "i?LMTAx0Q6,:}50U";
+  const std::string_view iv_lit = "W0;27ToaUpl_P%'c";
+  CHECK(std::equal(key_lit.begin(), key_lit.end(), e.key.begin()));
+  CHECK(std::all_of(e.key.begin() + static_cast<long>(key_lit.size()), e.key.end(),
+                    [](std::uint8_t b) { return b == 0; }));
+  CHECK(std::equal(iv_lit.begin(), iv_lit.end(), e.iv.begin()));
+}
+
+TEST_CASE("scrape_envelope_reads_the_captured_newclient_slice_and_misses_cleanly") {
+  const std::string js = read_fixture("megaplay_newclient.js");
+  auto scraped = scrape_envelope(js);
+  REQUIRE(scraped.has_value());
+  // The live literals haven't rotated: the scrape lands on the same pair as
+  // the baked fallback.
+  CHECK(*scraped == baked_envelope());
+
+  CHECK_FALSE(scrape_envelope("no anchors here at all").has_value());
+  CHECK_FALSE(scrape_envelope(R"(..["trustAesKey","TRUST_AES_KEY"],"only-the-key")..)").has_value());
+  // An over-long key literal (> 32 bytes) is a miss, not a silent truncation.
+  const std::string oversize =
+      std::string(R"(["trustAesKey","TRUST_AES_KEY"],")") + std::string(40, 'x') + R"(")";
+  CHECK_FALSE(scrape_envelope(oversize).has_value());
+  // A backslash inside the literal is refused outright.
+  CHECK_FALSE(scrape_envelope(R"(["trustAesKey","TRUST_AES_KEY"],"a\"b"))").has_value());
+}
+
+TEST_CASE("newclient_path_reads_the_first_matching_script_tag") {
+  // The captured embed page's actual head (PROVIDER_INTEL.md §7).
+  const char* html =
+      R"(<script src="https://megaplay.buzz/lib/newclient.min.js?v=4.17"></script><script>const x=1;</script>)";
+  CHECK(newclient_path(html) == "/lib/newclient.min.js?v=4.17");
+  // A relative src works the same way, untouched.
+  CHECK(newclient_path(R"(<script src="/lib/newclient.min.js?v=1"></script>)") ==
+        "/lib/newclient.min.js?v=1");
+  // A different script, or no script at all, is a clean miss.
+  CHECK_FALSE(newclient_path(R"(<script src="https://megaplay.buzz/lib/other.js"></script>)").has_value());
+  CHECK_FALSE(newclient_path("<html>no scripts</html>").has_value());
+}
+
+TEST_CASE("map_sources_opens_the_enc_envelope_under_the_baked_pair") {
+  // Live-captured `enc` (One Piece 21, ep1 sub — PROVIDER_INTEL.md §7),
+  // decrypting under the baked pair to a real captured master URL.
+  const std::string raw =
+      R"({"tracks":[{"file":"https://1oe.club/eng.vtt","label":"English","kind":"captions","default":true}],)"
+      R"("t":1,"intro":{"start":31,"end":111},"outro":{"start":1376,"end":1447},"server":4,)"
+      R"("enc":"wdeBruh3qqn_i5wUNnyaPcXqidp1UWP84FfPHzGyKXA2hDZBfMCmZ4FLvs7_pQuH549Eptax8UOjAJyRIZfrRhUGUKy9O)"
+      R"(BeGh2yB_-m_JLAlLnWTLzYZC3_C5I4ltveYoiaU66Do9RgI9bCetmk_o87-sd66brXnWV1MbjhLnjw="})";
+  auto s = map_sources(raw, Translation::Sub, baked_envelope());
+  REQUIRE(s.has_value());
+  CHECK(s->link.url == "https://fetch.nexabloom.top/anime/f899139df5e1059396431415e770c6dd/"
+                       "61b87186ab260d05003427e16ccf5657/master.m3u8");
+  CHECK(s->link.cloaked_segments);
+  CHECK(s->link.decloak_segments);
+  CHECK(s->link.sub_url == "https://1oe.club/eng.vtt");
+  REQUIRE(s->skip.op.has_value());
+  CHECK(s->skip.op->first == doctest::Approx(31));
+  CHECK(s->skip.op->second == doctest::Approx(111));
+  REQUIRE(s->skip.ed.has_value());
+  CHECK(s->skip.ed->first == doctest::Approx(1376));
+  CHECK(s->skip.ed->second == doctest::Approx(1447));
+}
+
+namespace {
+
+// base64 -> base64url, so aes256cbc_seal + base64_encode (crypto_tests'
+// vocabulary) can build a fresh `enc` value in-test without a second fixture.
+std::string to_b64url(std::string b64) {
+  for (char& c : b64) {
+    if (c == '+') c = '-';
+    if (c == '/') c = '_';
+  }
+  return b64;
+}
+
+}  // namespace
+
+TEST_CASE("map_sources_enc_rejections_never_fall_through_to_a_playable_link") {
+  const auto env = baked_envelope();
+  // A non-string enc is the same hard type error as every other known field.
+  CHECK_FALSE(map_sources(R"({"enc":123})", Translation::Sub, env).has_value());
+  // A present-but-unopenable enc (garbage, wrong key, truncated) is a distinct
+  // "bad envelope" — never silently "no stream source".
+  auto garbage = map_sources(R"({"enc":"not-valid-base64url!!"})", Translation::Sub, env);
+  REQUIRE_FALSE(garbage.has_value());
+  CHECK(garbage.error().kind == ProviderError::Kind::Decode);
+  CHECK_FALSE(map_sources(R"({"enc":""})", Translation::Sub, env).has_value());
+
+  // Opens fine under the pair but decrypts to something that isn't
+  // `{"file":"..."}`: still "bad envelope", not a crash or a bogus link.
+  const std::string wrong_shape = R"({"nope":true})";
+  auto sealed = crypto::aes256cbc_seal(env.key, env.iv,
+                                       reinterpret_cast<const std::uint8_t*>(wrong_shape.data()),
+                                       wrong_shape.size());
+  REQUIRE(sealed.has_value());
+  const std::string enc = to_b64url(crypto::base64_encode(sealed->data(), sealed->size()));
+  const std::string raw = R"({"enc":")" + enc + R"("})";
+  auto bad_shape = map_sources(raw, Translation::Sub, env);
+  REQUIRE_FALSE(bad_shape.has_value());
+  CHECK(bad_shape.error().kind == ProviderError::Kind::Decode);
+
+  // Neither `sources` nor `enc` -> the existing "no stream source" verdict.
+  CHECK_FALSE(map_sources("{}", Translation::Sub, env).has_value());
+  CHECK_FALSE(map_sources(R"({"enc":null})", Translation::Sub, env).has_value());
 }
 
 // ===========================================================================
@@ -389,4 +529,69 @@ TEST_CASE("resolve_two_hop_embed_then_get_sources") {
   CHECK(link->cloaked_segments);
   CHECK(link->decloak_segments);
   CHECK(link->sub_url == "https://1oe.club/eng.vtt");
+}
+
+TEST_CASE("resolve_scrapes_the_envelope_on_the_first_enc_body_then_reuses_the_cache") {
+  // Fresh key/iv (NOT the baked pair) so success can only come from the
+  // scrape, not a baked-fallback coincidence. Sealed offline (see the P51
+  // memory note / crypto_tests) under key "ShigokuTestKey12" (zero-padded to
+  // 32) and iv "ShigokuTestIV123".
+  const char* embed1 =
+      R"(<div id="megaplay-player" data-id="500"><script src="/lib/newclient.min.js?v=9"></script>)";
+  const char* sources1 =
+      R"({"tracks":[],"enc":"jA6ZrULA2dedir8n_H0iOupouKH9ZpqwuUp-tYPKUi3fNARJE_s9m60voM1ZJPzcJwIgR7zTguJ4M)"
+      R"(0xjiyGU2Q=="})";
+  const char* script =
+      R"(var a=String(e.pick(["trustAesKey","TRUST_AES_KEY"],"ShigokuTestKey12")),)"
+      R"(c=String(e.pick(["trustAesIv","TRUST_AES_IV"],"ShigokuTestIV123"));)";
+  const char* embed2 =
+      R"(<div id="megaplay-player" data-id="501"><script src="/lib/newclient.min.js?v=9"></script>)";
+  // Same fresh key (cached from resolve #1); a different plaintext proves this
+  // body was actually opened, not just a stale link reused.
+  const char* sources2 =
+      R"({"tracks":[],"enc":"jA6ZrULA2dedir8n_H0iOupouKH9ZpqwuUp-tYPKUi0fLHUbd_jowcwS3tCU_IM56PDYV9JRpza)"
+      R"(QOWIoOrRkmQ=="})";
+
+  std::vector<std::vector<std::uint8_t>> responses;
+  responses.push_back(response_with_body("200 OK", embed1));
+  responses.push_back(response_with_body("200 OK", sources1));
+  responses.push_back(response_with_body("200 OK", script));
+  responses.push_back(response_with_body("200 OK", embed2));
+  responses.push_back(response_with_body("200 OK", sources2));
+  // Exactly 5 responses queued: a regression that re-fetches the script on
+  // resolve #2 finds no 6th response waiting and times out, failing the
+  // REQUIRE below instead of silently passing.
+  SequenceServer srv(std::move(responses));
+  auto p = MegaPlay::with_host(srv.url());
+  REQUIRE(p.has_value());
+
+  auto link1 = p->resolve("52991", "1", Translation::Sub, Quality::Best);
+  REQUIRE(link1.has_value());
+  CHECK(link1->url == "https://cdn.scraped-test.example/x/master.m3u8");
+
+  auto link2 = p->resolve("52991", "2", Translation::Sub, Quality::Best);
+  REQUIRE(link2.has_value());
+  CHECK(link2->url == "https://cdn.scraped-test.example/y/master2.m3u8");
+}
+
+TEST_CASE("resolve_falls_back_to_the_baked_pair_when_the_script_404s") {
+  const char* embed =
+      R"(<div id="megaplay-player" data-id="500"><script src="/lib/newclient.min.js?v=9"></script>)";
+  // The real captured `enc` (One Piece 21 ep1 sub), sealed under the BAKED
+  // pair — this only opens if the 404'd script GET correctly falls back.
+  const char* sources =
+      R"({"tracks":[],"enc":"wdeBruh3qqn_i5wUNnyaPcXqidp1UWP84FfPHzGyKXA2hDZBfMCmZ4FLvs7_pQuH549Eptax8UOjA)"
+      R"(JyRIZfrRhUGUKy9OBeGh2yB_-m_JLAlLnWTLzYZC3_C5I4ltveYoiaU66Do9RgI9bCetmk_o87-sd66brXnWV1MbjhLnjw="})";
+  std::vector<std::vector<std::uint8_t>> responses;
+  responses.push_back(response_with_body("200 OK", embed));
+  responses.push_back(response_with_body("200 OK", sources));
+  responses.push_back(response_with_body("404 Not Found", ""));
+  SequenceServer srv(std::move(responses));
+  auto p = MegaPlay::with_host(srv.url());
+  REQUIRE(p.has_value());
+
+  auto link = p->resolve("52991", "1", Translation::Sub, Quality::Best);
+  REQUIRE(link.has_value());
+  CHECK(link->url == "https://fetch.nexabloom.top/anime/f899139df5e1059396431415e770c6dd/"
+                     "61b87186ab260d05003427e16ccf5657/master.m3u8");
 }

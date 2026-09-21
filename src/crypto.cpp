@@ -20,6 +20,10 @@ struct CtxGuard {
 // A GCM payload beyond this is not a playlist; keeps every length an int.
 constexpr std::size_t kMaxGcmPayload = std::size_t{1} << 30;
 
+// A CBC envelope is one URL (megaplay's `enc`), never a playlist; keeps every
+// length an int and bounds the worst case well below the GCM payload cap.
+constexpr std::size_t kMaxCbcPayload = std::size_t{1} << 20;
+
 }  // namespace
 
 std::optional<std::vector<std::uint8_t>> aes256gcm_open(const std::vector<std::uint8_t>& key,
@@ -170,6 +174,106 @@ std::optional<std::vector<std::uint8_t>> open_b64_gcm(std::string_view b64,
   if (!blob.has_value() || blob->size() < kAesGcmIvLen + kAesGcmTagLen) return std::nullopt;
   const std::vector<std::uint8_t> iv(blob->begin(), blob->begin() + kAesGcmIvLen);
   return aes256gcm_open(key, iv, blob->data() + kAesGcmIvLen, blob->size() - kAesGcmIvLen);
+}
+
+std::optional<std::vector<std::uint8_t>> aes256cbc_open(const std::vector<std::uint8_t>& key,
+                                                        const std::vector<std::uint8_t>& iv,
+                                                        const std::uint8_t* ct,
+                                                        std::size_t ct_len) {
+  if (key.size() != kAesCbcKeyLen || iv.size() != kAesCbcIvLen || ct_len == 0 ||
+      ct_len % 16 != 0 || ct_len > kMaxCbcPayload) {
+    return std::nullopt;
+  }
+  CtxGuard g;
+  if (g.ctx == nullptr) return std::nullopt;
+  if (EVP_DecryptInit_ex(g.ctx, EVP_aes_256_cbc(), nullptr, key.data(), iv.data()) != 1) {
+    return std::nullopt;
+  }
+  std::vector<std::uint8_t> out(ct_len + 16);
+  int len = 0;
+  if (EVP_DecryptUpdate(g.ctx, out.data(), &len, ct, static_cast<int>(ct_len)) != 1) {
+    return std::nullopt;
+  }
+  int total = len;
+  if (EVP_DecryptFinal_ex(g.ctx, out.data() + total, &len) != 1) return std::nullopt;  // bad pad.
+  total += len;
+  out.resize(static_cast<std::size_t>(total));
+  return out;
+}
+
+std::optional<std::vector<std::uint8_t>> aes256cbc_seal(const std::vector<std::uint8_t>& key,
+                                                        const std::vector<std::uint8_t>& iv,
+                                                        const std::uint8_t* plain,
+                                                        std::size_t plain_len) {
+  if (key.size() != kAesCbcKeyLen || iv.size() != kAesCbcIvLen || plain_len > kMaxCbcPayload) {
+    return std::nullopt;
+  }
+  CtxGuard g;
+  if (g.ctx == nullptr) return std::nullopt;
+  if (EVP_EncryptInit_ex(g.ctx, EVP_aes_256_cbc(), nullptr, key.data(), iv.data()) != 1) {
+    return std::nullopt;
+  }
+  std::vector<std::uint8_t> out(plain_len + 16);
+  int len = 0;
+  int total = 0;
+  if (plain_len > 0) {
+    if (EVP_EncryptUpdate(g.ctx, out.data(), &len, plain, static_cast<int>(plain_len)) != 1) {
+      return std::nullopt;
+    }
+    total = len;
+  }
+  if (EVP_EncryptFinal_ex(g.ctx, out.data() + total, &len) != 1) return std::nullopt;
+  total += len;
+  out.resize(static_cast<std::size_t>(total));
+  return out;
+}
+
+namespace {
+
+int b64url_value(unsigned char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '-') return 62;
+  if (c == '_') return 63;
+  return -1;
+}
+
+}  // namespace
+
+std::optional<std::vector<std::uint8_t>> base64url_decode(std::string_view s) {
+  std::vector<std::uint8_t> out;
+  out.reserve(s.size() / 4 * 3 + 3);
+  std::uint32_t acc = 0;
+  int bits = 0;
+  bool padded = false;
+  for (const char ch : s) {
+    const auto c = static_cast<unsigned char>(ch);
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+    if (c == '=') {
+      padded = true;
+      continue;
+    }
+    if (padded) return std::nullopt;  // data after padding.
+    const int v = b64url_value(c);
+    if (v < 0) return std::nullopt;
+    acc = (acc << 6) | static_cast<std::uint32_t>(v);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<std::uint8_t>((acc >> bits) & 0xFFu));
+    }
+  }
+  if (bits == 6) return std::nullopt;  // a lone sextet cannot encode a byte.
+  return out;
+}
+
+std::optional<std::vector<std::uint8_t>> open_b64url_cbc(std::string_view b64url,
+                                                          const std::vector<std::uint8_t>& key,
+                                                          const std::vector<std::uint8_t>& iv) {
+  auto blob = base64url_decode(b64url);
+  if (!blob.has_value() || blob->empty()) return std::nullopt;
+  return aes256cbc_open(key, iv, blob->data(), blob->size());
 }
 
 }  // namespace shigoku::crypto

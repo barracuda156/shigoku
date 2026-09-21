@@ -1,0 +1,1 @@
+ick(["trustEncKey","TRUST_ENC_KEY"],"MegaPlayTrustKey1")),a=String(e.pick(["trustAesKey","TRUST_AES_KEY"],"i?LMTAx0Q6,:}50U")),c=String(e.pick(["trustAesIv","TRUST_AES_IV"],"W0;27ToaUpl_P%'c")),u=null,s=!1,l=!0,f={},p="",d=/\/anime\//i,h={full_7d_min:50,full_3d_min:25,soft_today_min:10,soft_session_

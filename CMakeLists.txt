@@ -534,17 +534,19 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_megaplay (P13): megaplay.buzz StreamProvider — MAL-keyed (senshi-
-# shaped, no resolve changes), no search, no listing (mints a grid from a
-# count hint). Two GETs (embed -> getSources), no crypto. Its links carry
+# shigoku_megaplay (P13 + P51): megaplay.buzz StreamProvider — MAL-keyed
+# (senshi-shaped, no resolve changes), no search, no listing (mints a grid
+# from a count hint). Two GETs (embed -> getSources), plus one more (the
+# newclient.min.js script) the first time a process sees the getSources `enc`
+# envelope (P51: AES-256-CBC opened via shigoku_crypto). Its links carry
 # decloak_segments=true, so playback routes through the P12 proxy (wired in
-# player.cpp). Needs only http + domain (JSON via the header-only thirdparty).
+# player.cpp).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_megaplay STATIC src/megaplay.cpp)
   target_include_directories(shigoku_megaplay PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_megaplay
-    PUBLIC shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_http shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1509,14 +1511,17 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# megaplay_tests (P13): every megaplay #[test] ported 1:1 — pure parsers/guards
-# offline (data-id scrape, getSources map, softsub pick, cue-cap) plus transport
-# cases (episodes probe, two-hop resolve, private-host sub drop) over a loopback
-# fixture server. No fixture files (JSON is inline).
+# megaplay_tests (P13 + P51): every megaplay #[test] ported 1:1 — pure
+# parsers/guards offline (data-id scrape, getSources map, softsub pick,
+# cue-cap, the P51 envelope scrape/bake) plus transport cases (episodes probe,
+# two/three-hop resolve, private-host sub drop, the envelope cache) over a
+# loopback fixture server. One fixture file: tests/fixtures/megaplay_newclient.js.
 if(SHIGOKU_HAVE_CURL)
   add_executable(megaplay_tests tests/megaplay_tests.cpp)
+  target_compile_definitions(megaplay_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   target_link_libraries(megaplay_tests PRIVATE
-    shigoku_megaplay shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
+    shigoku_megaplay shigoku_http shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty
     shigoku::curl Threads::Threads shigoku_atomic)
   add_test(NAME megaplay_tests COMMAND megaplay_tests)
 endif()

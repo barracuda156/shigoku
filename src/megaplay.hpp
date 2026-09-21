@@ -1,5 +1,7 @@
-// megaplay.hpp — megaplay.buzz StreamProvider (P13, ROD-445). Ported from
-// sabigoku src/providers/megaplay.rs. Tier-A, MAL-keyed:
+// megaplay.hpp — megaplay.buzz StreamProvider (P13, ROD-445; P51 for the
+// `enc` envelope). Ported from sabigoku src/providers/megaplay.rs (P51 is a
+// shigoku-only follow-up: the site re-encrypted getSources after the Rust
+// reference was frozen, PROVIDER_INTEL.md §7). Tier-A, MAL-keyed:
 // `/stream/mal/{mal}/{ep}/{lang}` — the show handle is the stringified MAL id,
 // episode labels are true MAL numbers (senshi-shaped key, zero resolve changes).
 //
@@ -8,15 +10,21 @@
 // a stale negative). No listing endpoint either: `episodes` probes ep 1 for
 // existence, then mints "1".."N" from `count_hint`.
 //
-// Two-step resolve, no decryption:
+// Two-step resolve:
 //   1. GET embed  -> scrape `data-id` (the only sub/dub fork). 200 with no
 //      data-id = not stocked.
-//   2. GET /stream/getSources?id=... -> cleartext JSON (master m3u8 + softsubs).
+//   2. GET /stream/getSources?id=... -> JSON: either the legacy cleartext
+//      `sources.file` (master m3u8 + softsubs), or (since 2026-09) an `enc`
+//      string — base64url(AES-256-CBC-PKCS7({"file":…})) under a key/iv the
+//      site's `lib/newclient.min.js` carries as string literals. A present
+//      `enc` triggers ONE extra GET (the script, scraped for a live key/iv
+//      pair; a miss falls back to the baked copy), cached for the process.
 //
-// Segments are BOTH fake-extension cloaked (.jpg) and PNG-header cloaked, so the
-// link sets cloaked_segments=true AND decloak_segments=true: playback routes
-// through the P12 de-cloak proxy (unlike senshi/anibd which set decloak false).
-// The whole CDN chain 403s without the megaplay referer + browser UA.
+// Segments start on the TS sync now (the decoy PNG header is gone) but are
+// still fake-extension cloaked (.jpg) and the CDN chain still 403s without the
+// megaplay referer + browser UA, so the link keeps cloaked_segments=true AND
+// decloak_segments=true (a no-op strip on a sync-first body, self-detecting;
+// the decoy may return).
 //
 // Like anibd.hpp/senshi.hpp, the pure helpers are free functions in `detail`
 // over string_view/bytes so the golden contract runs offline; the .cpp keeps
@@ -26,9 +34,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "domain.hpp"
@@ -50,6 +60,9 @@ inline constexpr const char* kUserAgent =
 inline constexpr std::size_t kMaxDataIdLen = 20;
 // Cap English subtitle probes per resolve (hostile getSources flood guard).
 inline constexpr std::size_t kMaxSubtitleProbes = 6;
+// Bound on a getSources `enc` string before base64url+CBC touches it — an
+// envelope is one URL, live ones run ~170 chars (P51).
+inline constexpr std::size_t kMaxEncLen = 4096;
 
 // --- Pure helpers (megaplay.rs file-private fns), exposed for golden tests ---
 namespace detail {
@@ -64,18 +77,56 @@ struct Track {
   friend bool operator==(const Track&, const Track&) = default;
 };
 
+// intro/outro `{start,end}` stamps riding the same getSources body — shaped
+// like aniskip::SkipTimes (op/ed, each an optional [start,end) pair) so a
+// later slice can hand this straight to aniskip::prepare_all without another
+// round trip. Not wired into StreamLink yet (P51 slice 4, optional).
+struct Skip {
+  std::optional<std::pair<double, double>> op;
+  std::optional<std::pair<double, double>> ed;
+  friend bool operator==(const Skip&, const Skip&) = default;
+};
+
 // The mapped stream: the mpv-ready link plus the vetted tracks the softsub pick
-// draws from (megaplay.rs Sources).
+// draws from (megaplay.rs Sources), plus P51's site-provided skip stamps.
 struct Sources {
   StreamLink link;
   std::vector<Track> tracks;
+  Skip skip;
 };
+
+// The AES-256-CBC key/iv pair that opens a getSources `enc` envelope (P51).
+struct Envelope {
+  std::vector<std::uint8_t> key;  // 32 bytes, zero-padded from the site's literal.
+  std::vector<std::uint8_t> iv;   // 16 bytes.
+  friend bool operator==(const Envelope&, const Envelope&) = default;
+};
+
+// The pair baked at port time from `lib/newclient.min.js`'s literals
+// (PROVIDER_INTEL.md §7): the fallback when a live scrape misses.
+[[nodiscard]] Envelope baked_envelope();
+
+// Scrape the two labelled defaults out of a `newclient.min.js` slice:
+// `"TRUST_AES_KEY"],"<key>")` and `"TRUST_AES_IV"],"<iv>")` — a quoted
+// literal with no backslash, the key 1..32 bytes (zero-padded to 32), the iv
+// padded/truncated to 16 as the page's own JS does. A miss on either (anchor
+// absent, empty, a backslash, or an over-long key) -> nullopt.
+[[nodiscard]] std::optional<Envelope> scrape_envelope(std::string_view newclient_js);
+
+// The path+query of the first `<script src="…/lib/newclient.min.js?v=…">` on
+// the embed page (absolute or relative; the host is stripped so the fixture
+// server can serve it under its own origin). nullopt when no such tag.
+[[nodiscard]] std::optional<std::string> newclient_path(std::string_view embed_html);
 
 // Pure over getSources response bytes (03 §8.4). Softsub only rides a `sub`
 // resolve. Err(Decode) on a missing/unsafe stream url; unsafe tracks are
 // dropped, never fatal. The picked sub_url is SSRF-guarded here (it reaches mpv
-// --sub-file unproxied) (megaplay.rs map_sources).
-[[nodiscard]] Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt);
+// --sub-file unproxied) (megaplay.rs map_sources). A present `sources` object
+// keeps the legacy cleartext path; else a string `enc` opens under `envelope`
+// (P51) — a non-string `enc` is a type error like every other known field, an
+// unopenable one is Decode "bad envelope", neither field is "no stream source".
+[[nodiscard]] Result<Sources, ProviderError> map_sources(std::string_view raw, Translation tt,
+                                                          const Envelope& envelope);
 
 // Host `default` wins, else an english-labeled track, else the first
 // subtitle-shaped track (ROD-354). Tracks are already argv-vetted. Returns an
@@ -141,14 +192,21 @@ class MegaPlay final : public StreamProvider {
   [[nodiscard]] static Result<MegaPlay, ProviderError> with_host(std::string host);
 
  private:
-  explicit MegaPlay(http::Client client, std::string host)
-      : http_(std::move(client)), host_(std::move(host)) {}
+  // The scraped/baked envelope key, cached once per process (senshi's
+  // BundleCache shape); shared_ptr so the provider stays movable.
+  struct EnvelopeCache;
+
+  explicit MegaPlay(http::Client client, std::string host);
 
   // GET the embed page (existence + sub/dub fork). Referer only; any 2xx.
   [[nodiscard]] Result<std::vector<std::uint8_t>, ProviderError> embed_get(
       const std::string& url) const;
   // GET getSources as XHR (the host gates the JSON on these headers).
   [[nodiscard]] Result<std::vector<std::uint8_t>, ProviderError> xhr_get(
+      const std::string& url) const;
+  // GET the newclient.min.js script (referer only; any 2xx), for the P51
+  // envelope scrape.
+  [[nodiscard]] Result<std::vector<std::uint8_t>, ProviderError> script_get(
       const std::string& url) const;
 
   // Count " --> " cue markers in one vtt. SSRF-guarded, body counted only.
@@ -160,8 +218,15 @@ class MegaPlay final : public StreamProvider {
   [[nodiscard]] std::optional<std::string> refine_subtitle_by_cues(
       const std::vector<std::string_view>& candidates, const std::string& baseline) const;
 
+  // The envelope key/iv for the FIRST `enc`-shaped getSources body only: scrape
+  // `newclient_path` out of `embed_html` -> GET it -> detail::scrape_envelope,
+  // falling back to detail::baked_envelope() on any miss. Cached for the
+  // process either way (a legacy body never reaches this).
+  [[nodiscard]] const detail::Envelope& envelope(const std::string& embed_html) const;
+
   http::Client http_;
   std::string host_;
+  std::shared_ptr<EnvelopeCache> envelope_;
 };
 
 }  // namespace shigoku::megaplay
