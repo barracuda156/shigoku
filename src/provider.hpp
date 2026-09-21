@@ -125,6 +125,12 @@ class StreamProvider {
   // search MUST override, or the CLI binds it and dies at runtime (03 §3.2).
   [[nodiscard]] virtual bool supports_search() const { return true; }
 
+  // Search hits titled in a language other than English or romaji (AniLibria
+  // names shows in Russian). The command-line search walk tries every other
+  // searchable source first, so a query lands such titles only when nothing
+  // else has the show — unless this is the preferred source, which leads.
+  [[nodiscard]] virtual bool localized_titles() const { return false; }
+
   // Sorted labels. Ok(empty) = authoritative NOT STOCKED (mark absence);
   // cannot-answer MUST be an error (03 §4.3). count_hint mints a 1..N grid on
   // listing-less providers; real listings ignore it.
@@ -198,29 +204,38 @@ class ProviderRegistry {
     return out;
   }
 
-  // First entry of ordered(pref) that can search, nullptr if none can (03 §3.2,
-  // ROD-491 deviation from zigoku's hard-fail). The CLI play path binds this:
-  // an explicit preferred_provider is honoured when it can search, and when it
+  // searchable(pref)'s head, nullptr if nothing can search (03 §3.2, ROD-491
+  // deviation from zigoku's hard-fail). The CLI play path binds this: an
+  // explicit preferred_provider is honoured when it can search, and when it
   // cannot the run notes the substitution and proceeds. Search-only — every
   // other CLI path still binds exactly one provider (a provider id is
   // meaningless on another).
   [[nodiscard]] const StreamProvider* preferred_searchable(
       std::optional<std::string_view> pref) const {
-    for (const StreamProvider* p : ordered(pref)) {
-      if (p->supports_search()) return p;
-    }
-    return nullptr;
+    const auto sources = searchable(pref);
+    return sources.empty() ? nullptr : sources.front();
   }
 
-  // Every provider that can search, in ordered(pref) order: the preferred one
-  // first when it can, then the rest by registry position. The CLI search
-  // walk binds the first that answers; preferred_searchable is this list's
-  // head.
+  // Every provider that can search, in the order the CLI search walk tries
+  // them: the preferred one first when it can search, then the rest by
+  // registry position with the localized-title sources (localized_titles)
+  // after every other — a query never lands Russian titles while an
+  // English-titled source is still to be asked. The walk binds the first
+  // that answers.
   [[nodiscard]] std::vector<const StreamProvider*> searchable(
       std::optional<std::string_view> pref) const {
+    const StreamProvider* lead =
+        (pref.has_value() && !pref->empty()) ? by_name(*pref) : nullptr;
+    if (lead != nullptr && !lead->supports_search()) lead = nullptr;
     std::vector<const StreamProvider*> out;
-    for (const StreamProvider* p : ordered(pref)) {
-      if (p->supports_search()) out.push_back(p);
+    if (lead != nullptr) out.push_back(lead);
+    for (const bool localized : {false, true}) {
+      for (const auto& p : providers_) {
+        if (p.get() == lead || !p->supports_search() || p->localized_titles() != localized) {
+          continue;
+        }
+        out.push_back(p.get());
+      }
     }
     return out;
   }

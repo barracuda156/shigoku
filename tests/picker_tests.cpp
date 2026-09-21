@@ -75,30 +75,83 @@ TEST_CASE("find_binary: an explicit path is checked as given, a name walks PATH"
   ::rmdir(dir);
 }
 
+TEST_CASE("choose: mode, binary and terminal decide the picker, and the prompt names its reason") {
+  {
+    // `prompt` never looks for a binary.
+    const Choice c = choose(Mode::Prompt, kStub, true);
+    CHECK(!c.binary.has_value());
+    CHECK(!c.binary_missing);
+    CHECK(c.why == "cli_picker = prompt");
+  }
+  CHECK(choose(Mode::Auto, kStub, true).binary == kStub);
+  {
+    // `auto` keeps the prompt for a piped run; a forced `fzf` spawns anyway.
+    const Choice c = choose(Mode::Auto, kStub, false);
+    CHECK(!c.binary.has_value());
+    CHECK(!c.binary_missing);
+    CHECK(c.why == "stdin/stdout not a terminal");
+    CHECK(choose(Mode::Fzf, kStub, false).binary == kStub);
+  }
+  {
+    const Choice c = choose(Mode::Fzf, "/nonexistent/fzf", true);
+    CHECK(!c.binary.has_value());
+    CHECK(c.binary_missing);
+    CHECK(c.why == "/nonexistent/fzf isn't there or isn't executable");
+  }
+  {
+    EnvVar path("PATH", "/nonexistent");
+    Choice c = choose(Mode::Auto, "", true);
+    CHECK(c.binary_missing);
+    CHECK(c.why == "no fzf on PATH");
+    c = choose(Mode::Auto, "fzfpp", true);
+    CHECK(c.binary_missing);
+    CHECK(c.why == "no fzfpp on PATH");
+  }
+}
+
 TEST_CASE("fzf_pick: the stub's selection comes back as an index") {
   {
     EnvVar line("STUB_FZF_LINE", "2");
-    CHECK(fzf_pick(kStub, "pick a show", kRows) == 1);
+    const Pick p = fzf_pick(kStub, "pick a show", kRows);
+    CHECK(p.kind == Pick::Kind::Picked);
+    CHECK(p.index == 1);
   }
   {
     EnvVar line("STUB_FZF_LINE", "3");
-    CHECK(fzf_pick(kStub, "pick a show", kRows) == 2);
+    const Pick p = fzf_pick(kStub, "pick a show", kRows);
+    CHECK(p.kind == Pick::Kind::Picked);
+    CHECK(p.index == 2);
   }
-  CHECK(!fzf_pick(kStub, "pick a show", {}).has_value());  // nothing to pick from.
+  // Nothing to pick from: a decline, not a failure.
+  CHECK(fzf_pick(kStub, "pick a show", {}).kind == Pick::Kind::Declined);
 }
 
-TEST_CASE("fzf_pick: abort, no match, error and a missing binary are all nullopt") {
-  for (const char* code : {"130", "1", "2"}) {
+TEST_CASE("fzf_pick: abort and no match decline; an error exit or a missing binary is a failure") {
+  for (const char* code : {"130", "1"}) {
     EnvVar e("STUB_FZF_EXIT", code);
     CAPTURE(code);
-    CHECK(!fzf_pick(kStub, "pick a show", kRows).has_value());
+    const Pick p = fzf_pick(kStub, "pick a show", kRows);
+    CHECK(p.kind == Pick::Kind::Declined);
+    CHECK(p.detail.empty());
   }
-  CHECK(!fzf_pick("/nonexistent/fzf", "pick a show", kRows).has_value());
+  {
+    EnvVar e("STUB_FZF_EXIT", "2");
+    const Pick p = fzf_pick(kStub, "pick a show", kRows);
+    CHECK(p.kind == Pick::Kind::Failed);
+    CHECK(p.detail == kStub + " failed (exit 2)");
+  }
+  {
+    const Pick p = fzf_pick("/nonexistent/fzf", "pick a show", kRows);
+    CHECK(p.kind == Pick::Kind::Failed);
+    CHECK(p.detail.rfind("couldn't start /nonexistent/fzf: ", 0) == 0);
+  }
 }
 
 TEST_CASE("fzf_pick: the prompt and the inline-height flags ride the argv") {
   EnvVar e("STUB_FZF_ECHO_ARGS", "1");
-  // The stub prints its argv one per line; parse_selection sees "--prompt=…"
-  // first and answers nullopt — the flags themselves are what this pins.
-  CHECK(!fzf_pick(kStub, "pick an episode", kRows).has_value());
+  // The stub prints its argv one per line; "--prompt=…" is no numbered row,
+  // so the verdict is an unreadable answer — a failure, never a "bye".
+  const Pick p = fzf_pick(kStub, "pick an episode", kRows);
+  CHECK(p.kind == Pick::Kind::Failed);
+  CHECK(p.detail == "couldn't read " + kStub + "'s answer");
 }

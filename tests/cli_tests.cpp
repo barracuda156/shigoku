@@ -559,10 +559,12 @@ class Fake final : public StreamProvider {
   std::string_view name_ = "fake";
   std::string_view display_ = "Fake";
   bool searchable_ = true;
+  bool localized_ = false;
 
   [[nodiscard]] std::string_view name() const override { return name_; }
   [[nodiscard]] std::string_view display_name() const override { return display_; }
   [[nodiscard]] bool supports_search() const override { return searchable_; }
+  [[nodiscard]] bool localized_titles() const override { return localized_; }
   [[nodiscard]] std::optional<std::string> canonical_key(const Enrichment&) const override {
     return std::nullopt;
   }
@@ -793,6 +795,39 @@ TEST_CASE("registry_searchable_lists_search_capable_sources_preferred_first") {
   CHECK(names(reg.searchable("nope")) == std::vector<std::string>{"a", "c"});
   REQUIRE(reg.preferred_searchable("b") != nullptr);
   CHECK(reg.preferred_searchable("b")->name() == "a");
+}
+
+TEST_CASE("registry_searchable_walks_localized_title_sources_last") {
+  // The anilibria shape: it can search, but its titles are Russian — every
+  // English-titled source is asked first, wherever it sits in the registry.
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  {
+    auto ru = std::make_unique<Fake>(source_up("ru"));
+    ru->localized_ = true;
+    ps.push_back(std::move(ru));
+  }
+  ps.push_back(std::make_unique<Fake>(source_up("a")));
+  {
+    auto b = std::make_unique<Fake>(source_up("b"));
+    b->searchable_ = false;
+    ps.push_back(std::move(b));
+  }
+  ps.push_back(std::make_unique<Fake>(source_up("c")));
+  const ProviderRegistry reg(std::move(ps));
+  auto names = [](const std::vector<const StreamProvider*>& v) {
+    std::vector<std::string> out;
+    for (const StreamProvider* p : v) out.emplace_back(p->name());
+    return out;
+  };
+  CHECK(names(reg.searchable(std::nullopt)) == std::vector<std::string>{"a", "c", "ru"});
+  CHECK(names(reg.searchable("c")) == std::vector<std::string>{"c", "a", "ru"});
+  CHECK(names(reg.searchable("b")) == std::vector<std::string>{"a", "c", "ru"});
+  // Asked for by name, the localized source leads like any other preference.
+  CHECK(names(reg.searchable("ru")) == std::vector<std::string>{"ru", "a", "c"});
+  REQUIRE(reg.preferred_searchable("ru") != nullptr);
+  CHECK(reg.preferred_searchable("ru")->name() == "ru");
+  REQUIRE(reg.preferred_searchable(std::nullopt) != nullptr);
+  CHECK(reg.preferred_searchable(std::nullopt)->name() == "a");
 }
 
 // ── play-prefers-local (P35 slice 4) ─────────────────────────────────────────

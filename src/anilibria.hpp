@@ -110,6 +110,9 @@ class AniLibria final : public StreamProvider {
 
   [[nodiscard]] std::string_view name() const override { return "anilibria"; }
   [[nodiscard]] std::string_view display_name() const override { return "AniLibria"; }
+  // Titles come back in Russian: the CLI search walk asks every English-
+  // titled source before this one.
+  [[nodiscard]] bool localized_titles() const override { return true; }
 
   // The API carries no MAL/AniList ids: nullopt sends the walk to tier C, and
   // the match stays C-confidence (title/year scoring only).

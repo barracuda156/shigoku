@@ -31,6 +31,7 @@
 #include "auth.hpp"
 #include "cli.hpp"
 #include "config.hpp"
+#include "debug_log.hpp"
 #include "domain.hpp"
 #include "http.hpp"
 #include "login.hpp"
@@ -405,28 +406,51 @@ std::optional<std::size_t> prompt_pick(std::string_view prompt,
   return std::nullopt;
 }
 
+// Whether a pick from this process would land at a terminal: stdin for the
+// prompt's answer, stdout for its rows. A piped stdin keeps the prompt under
+// `auto`, so scripts keep working.
+bool pick_at_terminal() {
+  return ::isatty(STDIN_FILENO) != 0 && ::isatty(STDOUT_FILENO) != 0;
+}
+
 // The pick seam for both flows: the numbered prompt, or an fzf-compatible
-// picker (fzf / fzf++) when config asks for it or, under `auto`, when one is
-// on PATH and we are at a terminal (a piped stdin keeps the prompt, so
-// scripts keep working). `fzf` without a binary says so once and prompts.
+// picker (fzf / fzf++) as picker::choose decides from the config and the
+// terminal. A picker the config asked for by mode or by path and that isn't
+// there is said once; `auto` with plainly no fzf around stays quiet, the
+// prompt being the default rather than a degradation. A picker that fails
+// mid-run (no spawn, an error exit, a crash) hands that pick and the rest
+// of the run to the prompt with the reason, never a silent "bye".
 cli_play::PickFn make_picker(const Config& config) {
   const picker::Mode mode = picker::parse_mode(config.cli_picker);
   const auto prompt = [](std::string_view p, const std::vector<std::string>& rows) {
     return prompt_pick(p, rows);
   };
-  if (mode == picker::Mode::Prompt) return prompt;
-  auto binary = picker::find_binary(config.picker_path);
-  if (!binary.has_value()) {
-    if (mode == picker::Mode::Fzf) {
-      std::printf("  (note: no fzf-compatible picker found%s; using the numbered prompt.)\n",
-                  config.picker_path.empty() ? " on PATH" : "");
+  const picker::Choice choice = picker::choose(mode, config.picker_path, pick_at_terminal());
+  if (!choice.binary.has_value()) {
+    debug_log("picker: numbered prompt (" + choice.why + ")");
+    if (choice.binary_missing && (mode == picker::Mode::Fzf || !config.picker_path.empty())) {
+      std::printf("  (note: %s; using the numbered prompt.)\n", choice.why.c_str());
     }
     return prompt;
   }
-  const bool at_terminal = ::isatty(STDIN_FILENO) != 0 && ::isatty(STDOUT_FILENO) != 0;
-  if (mode == picker::Mode::Auto && !at_terminal) return prompt;
-  return [binary = *binary](std::string_view p, const std::vector<std::string>& rows) {
-    return picker::fzf_pick(binary, p, rows);
+  debug_log("picker: " + *choice.binary);
+  auto fallen = std::make_shared<bool>(false);
+  return [binary = *choice.binary, fallen, prompt](
+             std::string_view p, const std::vector<std::string>& rows) -> std::optional<std::size_t> {
+    if (!*fallen) {
+      const picker::Pick r = picker::fzf_pick(binary, p, rows);
+      switch (r.kind) {
+        case picker::Pick::Kind::Picked:
+          return r.index;
+        case picker::Pick::Kind::Declined:
+          return std::nullopt;
+        case picker::Pick::Kind::Failed:
+          break;
+      }
+      *fallen = true;
+      std::printf("  (note: %s; using the numbered prompt.)\n", r.detail.c_str());
+    }
+    return prompt(p, rows);
   };
 }
 
@@ -569,6 +593,16 @@ int print_paths() {
   std::printf("  runtime  %s\n", tilde_path(paths->runtime).c_str());
   std::printf("  mpv      %s\n", config.mpv_path.c_str());
   std::printf("  palette  %s\n", config.palette.c_str());
+  // The command line's pick, as this very invocation would resolve it — the
+  // same choose() the play flow acts on, so a surprising prompt on some box
+  // names its reason here.
+  const picker::Choice choice = picker::choose(picker::parse_mode(config.cli_picker),
+                                               config.picker_path, pick_at_terminal());
+  if (choice.binary.has_value()) {
+    std::printf("  picker   %s\n", choice.binary->c_str());
+  } else {
+    std::printf("  picker   numbered prompt (%s)\n", choice.why.c_str());
+  }
   return 0;
 }
 
