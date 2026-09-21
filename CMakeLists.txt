@@ -1076,9 +1076,8 @@ endif()
 # ---------------------------------------------------------------------------
 # libmupdf for shigoku-view: PDF/EPUB/FB2/XPS documents. Optional, the
 # WITH_WEBP posture (default ON, auto-off with a STATUS line when the library
-# is not found, -DWITH_MUPDF=OFF forces it off). Today the selftest below is
-# the sole consumer; the viewer's document path arrives with the DocSource
-# seam and links shigoku::mupdf the same way.
+# is not found, -DWITH_MUPDF=OFF forces it off). Three consumers, all below:
+# the selftest, mupdf_tests and the viewer's own document arm.
 #
 # Detection is a ladder, not a lookup, because mupdf's packaging varies more
 # than its API: Debian ships a static libmupdf.a whose pkg-config file
@@ -1257,6 +1256,15 @@ if(SHIGOKU_HAVE_MUPDF)
   if(SHIGOKU_BUILD_TESTS)
     add_test(NAME mupdf_selftest
       COMMAND mupdf_selftest "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/docs/two_pages.pdf")
+  endif()
+
+  # The viewer itself: MupdfSource behind main.cpp's document arm. HAVE_MUPDF
+  # travels with the interface target, so main.cpp's #ifdef is true exactly
+  # when the source is compiled in. No target when SDL was not found — the
+  # document path is the viewer's, and there is no viewer.
+  if(TARGET shigoku_view_bin)
+    target_sources(shigoku_view_bin PRIVATE src/view/mupdf_source.cpp)
+    target_link_libraries(shigoku_view_bin PRIVATE shigoku::mupdf)
   endif()
 
   # mupdf_tests: MupdfSource against the committed document fixtures — page
