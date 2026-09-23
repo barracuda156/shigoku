@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.2.0 LANGUAGES CXX C)
+project(shigoku VERSION 0.2.1 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)
@@ -10,25 +10,17 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-# --- Locked warning set (PORT_CPP.md §5, A2). The exhaustiveness fence lives here:
-#     a new enum arm without a matching switch case is a HARD build error. ---
-#
-# SHIGOKU_WERROR (default ON) turns *all* warnings into errors — our normal dev
-# contract. It is a separate knob from the two -Werror=switch* below because
-# those are LOAD-BEARING (the A2 fence + its compile-fail tests depend on them)
-# and must stay on regardless. A first build on an untested toolchain (older GCC
-# or clang on the PPC target, debt #1) may surface a benign warning we have never
-# seen; -DSHIGOKU_WERROR=OFF lets that build finish instead of hard-failing,
-# without weakening the exhaustiveness guarantee.
 option(SHIGOKU_WERROR "Treat all warnings as errors (fence -Werror=switch* stay on regardless)" ON)
 # WITH_TUI=OFF is the command-line-only build: no terminal interface, no
 # shigoku-manga, no cover backends — `shigoku <query>` and the headless
 # subcommands are all there is. For dumb terminals and slow boxes (the TUI
 # tree is ~40% of the sources). The `shigoku` binary is built either way.
+
 option(WITH_TUI "Build the terminal interface (the TUI, shigoku-manga, drive_tui); OFF = command-line-only shigoku" ON)
 # SHIGOKU_BUILD_TESTS=OFF skips every test binary (doctest suites, live
 # smokes, compile-fail fences) and their ctest registration: a package build
 # on a slow box has no use for them.
+
 option(SHIGOKU_BUILD_TESTS "Build the test binaries and register them with ctest" ON)
 add_library(shigoku_flags INTERFACE)
 target_compile_options(shigoku_flags INTERFACE
@@ -37,19 +29,7 @@ target_compile_options(shigoku_flags INTERFACE
   $<$<BOOL:${SHIGOKU_WERROR}>:-Werror>
 )
 
-# libstdc++ dual-ABI (§3). _GLIBCXX_USE_CXX11_ABI is a GCC/libstdc++-ONLY macro
-# (clang/libc++ has no such thing). This is a TESTING knob, NOT an end-user
-# option: it only matters when linking our code against a prebuilt libstdc++
-# built with the pre-C++11 string/list ABI (=0), which we exercise on this dev
-# box to keep the port ABI-agnostic. By DEFAULT we emit NOTHING and let the
-# toolchain use its own default (the modern =1 for GCC). We must never emit it
-# unasked: it is meaningless-to-harmful under clang and an unwanted end-user
-# knob. Only when SHIGOKU_GLIBCXX_USE_CXX11_ABI is set to a non-empty value do
-# we force _GLIBCXX_USE_CXX11_ABI to match, once here on shigoku_flags so EVERY
-# TU — our code, the vendored SYSTEM headers, the tests — shares it (a mixed
-# build silently mismatches std::string across a libstdc++ boundary). The code
-# itself is ABI-agnostic (public std API only, no SSO/COW assumptions); this
-# switch exists purely to align with a GCC target's prebuilt libstdc++.
+# Testing-only, not supposed to be used otherwise:
 set(SHIGOKU_GLIBCXX_USE_CXX11_ABI "" CACHE STRING
   "libstdc++ _GLIBCXX_USE_CXX11_ABI override (empty = toolchain default; 0 = legacy ABI, 1 = modern). Testing-only; do not set for normal builds.")
 set_property(CACHE SHIGOKU_GLIBCXX_USE_CXX11_ABI PROPERTY STRINGS "" "0" "1")
@@ -168,7 +148,6 @@ else()
   endif()
 endif()
 
-# sqlite3 (A7). Required for the store; optional at scaffold time.
 if(PkgConfig_FOUND)
   pkg_check_modules(SQLITE3 IMPORTED_TARGET sqlite3)
 endif()
@@ -190,9 +169,9 @@ else()
   endif()
 endif()
 
-# libwebp (MANGA_PLAN MG-6c): WeebCentral/Dynasty/nhentai serve WebP pages
-# and covers that stb_image cannot decode. Auto-off like WITH_VIEWER — never
-# a hard configure error, since this is a manga-only decode path and not
+# WeebCentral/Dynasty/nhentai serve WebP pages and covers  that
+# stb_image cannot decode. Auto-off like WITH_VIEWER — never a hard
+# configure error, since this is a manga-only decode path and not
 # load-bearing for the anime side. SHIGOKU_HAVE_WEBP gates the
 # shigoku_webp_decode target below.
 option(WITH_WEBP "Decode WebP manga pages/covers via libwebp (auto-off if not found)" ON)
@@ -221,19 +200,10 @@ else()
   set(SHIGOKU_HAVE_WEBP OFF)
 endif()
 
-# --- Threads (A1: std::thread + condvar) and libatomic (PPC32 64-bit atomics, §3). ---
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-# 8-byte atomics — fetch_add/compare_exchange/load/store on std::atomic<uint64_t>,
-# as player.cpp's play-id counter, tui/covers.cpp's temp-file nonce and
-# tui/workers.hpp's Generation counter all do — are native on x86_64/aarch64
-# (the compiler emits an inline lock cmpxchg, no library needed) but on a
-# target with no native 8-byte atomic instruction (PPC32, some 32-bit ARM) it
-# emits calls to __atomic_*_8, resolved only by libatomic. Probe the native
-# case FIRST (a plain link, nothing on the line); only fall back to -latomic
-# when that probe actually fails to link, and only link it when doing so is
-# what fixes the link — never add a library the target doesn't need.
+# Check for 8-byte atomics
 include(CheckCXXSourceCompiles)
 set(_atomic64_probe "
 #include <atomic>
@@ -266,14 +236,6 @@ if(NOT SHIGOKU_HAVE_NATIVE_ATOMIC64)
 endif()
 unset(CMAKE_REQUIRED_QUIET)
 
-# ---------------------------------------------------------------------------
-# shigoku_webp_decode (MANGA_PLAN MG-6c): the RIFF….WEBP magic sniff + thin
-# libwebp wrapper, a leaf module like shigoku_paths/shigoku_semver. HAVE_WEBP
-# is PUBLIC so every linker (shigoku_tui's covers.cpp, shigoku_view_bin's
-# main.cpp) sees the same #ifdef — WITH_WEBP=OFF or libwebp-not-found means
-# WebP bytes decode-fail cleanly rather than the two TUs disagreeing about
-# whether decode_webp() exists.
-# ---------------------------------------------------------------------------
 add_library(shigoku_webp_decode STATIC src/webp_decode.cpp)
 target_include_directories(shigoku_webp_decode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_webp_decode PUBLIC shigoku_flags shigoku_thirdparty)
@@ -283,8 +245,8 @@ if(SHIGOKU_HAVE_WEBP)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_domain (P1): the type vocabulary + pure helpers. Header-heavy; the
-# .cpp files carry the non-inline helper bodies. No I/O, no deps beyond libc++.
+# shigoku_domain: the type vocabulary + pure helpers. Header-heavy;
+# the .cpp files carry the non-inline helper bodies. No I/O, no deps beyond C++ runtime.
 # ---------------------------------------------------------------------------
 add_library(shigoku_domain STATIC
   src/domain.cpp
@@ -294,8 +256,8 @@ target_include_directories(shigoku_domain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(shigoku_domain PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_paths (P7 bootstrap): XDG dir resolution (paths.rs, 06 §1). A leaf
-# module (imports nothing from the crate) — kept separate from shigoku_domain
+# shigoku_paths: XDG dir resolution.
+# A leaf module (imports nothing from the crate) — kept separate from shigoku_domain
 # since it does real filesystem I/O (mkdir/chmod), unlike domain's pure fns.
 # ---------------------------------------------------------------------------
 add_library(shigoku_paths STATIC src/paths.cpp)
@@ -303,8 +265,8 @@ target_include_directories(shigoku_paths PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_paths PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_config (P18): the config.json load/save (config.rs, 06 §2). A leaf
-# module like shigoku_paths — real filesystem I/O, JSON via the vendored
+# shigoku_config: the config.json load/save.
+# A leaf module like shigoku_paths — real filesystem I/O, JSON via the vendored
 # nlohmann header (no TOML lib is vendored; sabigoku's own doc left the
 # format open). No domain dependency: keys stay strings, degrading to safe
 # defaults at each call site the way config.rs's comment specifies.
@@ -314,8 +276,8 @@ target_include_directories(shigoku_config PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(shigoku_config PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_auth (P19): the AniList auth token store (auth.rs, 06 §3). A leaf
-# module like shigoku_config — real filesystem I/O, JSON via nlohmann — but
+# shigoku_auth: the AniList auth token store.
+# A leaf module like shigoku_config — real filesystem I/O, JSON via nlohmann — but
 # deliberately its own target: the bearer must never ride a Settings
 # round-trip, so nothing in this link ever pulls in shigoku_config's save
 # path. The only new primitive over config.cpp is the 0600-atomic write
@@ -327,8 +289,8 @@ target_include_directories(shigoku_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_auth PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_semver (P28): version comparison for the update check (semver.rs,
-# 06 §6.1). A pure leaf module — no I/O, no dependencies beyond flags/
+# shigoku_semver: version comparison for the update check.
+# A pure leaf module — no I/O, no dependencies beyond flags/
 # thirdparty (the compile-flags/warnings interface every target picks up).
 # ---------------------------------------------------------------------------
 add_library(shigoku_semver STATIC src/semver.cpp)
@@ -336,9 +298,9 @@ target_include_directories(shigoku_semver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(shigoku_semver PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_http (P2, A5): the one libcurl wrapper + the SSRF fetch guard. The
-# guard is pure (byte-wise host classification, endian-neutral); the client
-# needs libcurl (nghttp2, §3). Depends on domain for strip_controls parity.
+# shigoku_http: the one libcurl wrapper + the SSRF fetch guard.
+# The guard is pure (byte-wise host classification, endian-neutral);
+# the client needs libcurl. Depends on domain for strip_controls parity.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   # impersonate.cpp does NOT link libcurl-impersonate — it dlopen's the STOCK
@@ -353,12 +315,9 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_updatecheck (P28): the boot-time GitHub release check (updatecheck.rs,
-# 06 §6.1) — cache read/write/parse + the semver-gated `check()`. No self-update
-# machinery (update.rs's install-method detection/install.sh spawn): the legacy
-# target's binary is package-owned (MacPorts), and there is no standalone-
-# install path to self-update into (user ruling, 2026-08-03) — shigoku only
-# ever reports what it finds. Needs shigoku_http for the GET, gated the same.
+# shigoku_updatecheck: the boot-time GitHub release check — cache read/write/parse +
+# the semver-gated `check()`. No self-update machinery. Needs shigoku_http
+# for the GET, gated the same.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_updatecheck STATIC src/updatecheck.cpp)
@@ -368,13 +327,12 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_download (P35 slices 1+2): the headless episode-download core —
+# shigoku_download: the headless episode-download core —
 # curl-to-file through the A5 wrapper's streaming fetch (.part temp + atomic
 # rename + Range resume) plus the HLS arm: external `ffmpeg -c copy` spawned
 # like mpv (argv vetting, posix_spawnp, cancel-poll wait), master→variant via
-# shigoku_hls, decloak links through the P12 proxy. shigoku-only (§9;
-# sabigoku has no downloads). download_link owns the SSRF guard; the
-# lower-level cores are mechanism (see download.hpp). Surfaces = slice 3.
+# shigoku_hls, decloak links through the proxy. download_link owns the SSRF guard;
+# the lower-level cores are mechanism (see download.hpp).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_download STATIC src/download.cpp)
@@ -385,8 +343,8 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_anilist (P3, +P20 sync/GraphQL list ops): public GraphQL search plus
-# the AniList list pull/push (06 §5). JSON via the vendored nlohmann header;
+# shigoku_anilist (+ sync/GraphQL list ops): public GraphQL search plus
+# the AniList list pull/push. JSON via the vendored nlohmann header;
 # depends on http for the POST and, since P20, on store for the RemoteEntry
 # wire-shape it builds (store.hpp is sqlite-only/curl-free, so this is the one
 # new link edge rather than a third shared header — RemoteEntry lives where
@@ -401,11 +359,11 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_login (P19): the OAuth login core (login.rs, 06 §4.2) — token
-# extract/floor-check/verify/build/save. I/O-free relative to the UI: the
-# Verifier seam (anilist::viewer, injected) lets tests fake the network.
+# shigoku_login: the OAuth login core — token
+# extract/floor-check/verify/build/save. I/O-free relative to the UI:
+# the Verifier seam (anilist::viewer, injected) lets tests fake the network.
 # Needs anilist for the real verifier + Viewer type, auth for the token
-# store. Gated on both curl and sqlite3 because shigoku_anilist is (P20: it
+# store. Gated on both curl and sqlite3 because shigoku_anilist is (it
 # now links shigoku_store for RemoteEntry) — the core itself does no direct
 # network or database I/O beyond calling the injected verifier.
 # ---------------------------------------------------------------------------
@@ -416,14 +374,12 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_mal_login (P31 §9.1 slice 2): MAL's OAuth login core — Authorization
-# Code + PKCE (mal_login.rs has no sabigoku reference; MAL never existed
-# there). No shigoku_anilist dependency (unlike shigoku_login): MAL's REST
-# client is its own module (slice 3), not GraphQL. Needs shigoku_http for the
-# token-exchange POST, shigoku_auth for the .mal block, shigoku_nonce for the
-# PKCE verifier. Gated the same as shigoku_login for consistency even though
-# it does not itself need sqlite3 — kept in lockstep so the two providers'
-# build gating never silently diverges.
+# shigoku_mal_login: MAL's OAuth login core — Authorization Code + PKCE.
+# No shigoku_anilist dependency (unlike shigoku_login): MAL's REST client
+# is its own module, not GraphQL. Needs shigoku_http for the token-exchange
+# POST, shigoku_auth for the .mal block, shigoku_nonce for the PKCE verifier.
+# Gated the same as shigoku_login for consistency even though it does not itself need
+# sqlite3 — kept in lockstep so the two providers' build gating never silently diverges.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_mal_login STATIC src/mal_login.cpp)
@@ -434,15 +390,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_mal (P31 §9.1 slice 3): MAL API v2 REST client — get/put list entry
-# + the status-map branch table (mal.hpp). No sabigoku reference (same reason
-# as shigoku_mal_login). Deliberately no link edge to shigoku_mal_login or
-# shigoku_anilist: this is the transport+mapping layer slice 4's mirror push
-# will call through (mirrors anilist.hpp predating sync.cpp, P3 before P20);
-# it needs only shigoku_http for the GET/PUT and shigoku_domain for
-# ListStatus, not store.hpp (no RemoteEntry/sqlite dependency — that arrives
-# with slice 4's dirty-row walk). Gated the same as the other MAL modules for
-# consistency even though it needs neither auth.hpp nor sqlite3 directly.
+# shigoku_mal: MAL API v2 REST client — get/put list entry + the status-map branch table.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_mal STATIC src/mal.cpp)
@@ -452,8 +400,8 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_sync (P20): AniList sync orchestration (sync.rs, 06 §5) — dirty-
-# tracking push, pull reconcile funnel, 429 backoff ladder. I/O-free relative
+# shigoku_sync: AniList sync orchestration — dirty- tracking push,
+# pull reconcile funnel, 429 backoff ladder. I/O-free relative
 # to the UI: the AniListSync ABC (HttpAniListSync, the real one; a scripted
 # fake in tests) and Sleeper seam let tests assert the 2s/60s schedule without
 # a socket or a real wait. Needs anilist for the transport calls + RemoteEntry,
@@ -467,13 +415,10 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_mal_mirror (P31 §9.1 slice 4): MAL mirror push orchestration
-# (mal_mirror.hpp) — dirty-row walk over mal_id-keyed rows, NULL-mal_id skip
-# (the store query), MAL-deleted-entry handling, own snapshot
-# (mal_synced_status/progress, store v3). Deliberately its OWN module, not
-# folded into shigoku_sync: "not a generalization of the 06 §5 sync law...
-# the mirror is separate, simpler machinery behind its own client trait"
-# (PORT_PARITY.md P31). Needs shigoku_mal for the transport calls,
+# shigoku_mal_mirror: MAL mirror push orchestration — dirty-row walk over mal_id-keyed
+# rows, NULL-mal_id skip (the store query), MAL-deleted-entry handling, own snapshot
+# (mal_synced_status/progress). Deliberately its OWN module, not
+# folded into shigoku_sync. Needs shigoku_mal for the transport calls,
 # shigoku_auth for MalAuth, shigoku_store for the dirty work-list / mark_mal_synced.
 # Gated the same as the other MAL modules.
 # ---------------------------------------------------------------------------
@@ -486,7 +431,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_loopback (P19): the OAuth callback listener (loopback.rs, 06 §4.4).
+# shigoku_loopback: the OAuth callback listener.
 # Raw BSD sockets (same shape as shigoku_proxy: bind 127.0.0.1, accept loop,
 # self-dial to wake a blocked accept), std-only beyond shigoku_login (the
 # request handler) and shigoku_nonce (the CSRF token). No curl — this module
@@ -502,7 +447,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_mal_loopback (P31 §9.1 slice 2): the MAL OAuth callback listener.
+# shigoku_mal_loopback: the MAL OAuth callback listener.
 # Deliberately its own translation unit, not a second route grafted onto
 # shigoku_loopback — see mal_loopback.hpp's header comment for why the two
 # grant types don't share a handler. Links shigoku_login only for its
@@ -518,11 +463,11 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_cli (P27): CLI dispatch (cli.rs, 06 §7) — cli.cpp is the pure parse
+# shigoku_cli: CLI dispatch — cli.cpp is the pure parse
 # over argv plus the sync/connect/search/pick renderers (pure data -> text);
 # play_cli.cpp is the testable search->pick->play flow (main.rs play_flow),
-# split out so the exit table (06 §7.4) unit-tests with a fake provider and a
-# scripted picker (no mpv spawn). No process exit / arg parsing; main.cpp owns
+# split out so the exit table unit-tests with a fake provider and
+# a scripted picker (no mpv spawn). No process exit / arg parsing; main.cpp owns
 # those. cli.cpp needs only header TYPES (login::ConnectResult, sync::
 # SyncSummary, SearchHit, the *Error kinds); play_cli.cpp calls player/aniskip/
 # store for real, hence those link edges. Gated the same as shigoku_login/sync.
@@ -540,7 +485,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_senshi (P4 + P23): senshi.live StreamProvider ABC implementation.
+# shigoku_senshi: senshi.live StreamProvider ABC implementation.
 # cap_variant (HLS quality capping) rides shigoku_hls (parse_master_playlist +
 # select_variant).
 # ---------------------------------------------------------------------------
@@ -552,7 +497,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_anibd (P12a): epeng.animeapps.top StreamProvider — AniList-keyed,
+# shigoku_anibd: epeng.animeapps.top StreamProvider — AniList-keyed,
 # no search, catalog + apilink hop + player-page scrape. No crypto/proxy. The
 # one new primitive is the URL origin/join helper via libcurl's CURLU API, so
 # it links curl directly (not just transitively via http).
@@ -566,11 +511,11 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_megaplay (P13 + P51): megaplay.buzz StreamProvider — MAL-keyed
+# shigoku_megaplay: megaplay.buzz StreamProvider — MAL-keyed
 # (senshi-shaped, no resolve changes), no search, no listing (mints a grid
 # from a count hint). Two GETs (embed -> getSources), plus one more (the
 # newclient.min.js script) the first time a process sees the getSources `enc`
-# envelope (P51: AES-256-CBC opened via shigoku_crypto). Its links carry
+# envelope (AES-256-CBC opened via shigoku_crypto). Its links carry
 # decloak_segments=true, so playback routes through the P12 proxy (wired in
 # player.cpp).
 # ---------------------------------------------------------------------------
@@ -582,10 +527,10 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_anidbapp (P25): anidb.app StreamProvider — no canonical key (tier-C
+# shigoku_anidbapp: anidb.app StreamProvider — no canonical key (tier-C
 # search binds it, detail-page ids give tier-A confidence), 5-stage HTML/JSON
 # hop chain, no crypto. Its edge fingerprints the TLS ClientHello, so every
-# fetch sets Request::fingerprint = Chrome (the P25 impersonate seam in http).
+# fetch sets Request::fingerprint = Chrome (impersonate seam in http).
 # Links hls for cap_variant (this provider caps its own quality).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
@@ -596,11 +541,10 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_hianime (P47): hianime.at StreamProvider — no canonical key (tier-C
+# shigoku_hianime: hianime.at StreamProvider — no canonical key (tier-C
 # search binds it), a 4-hop HTML/JSON scrape chain ending in a base64+XOR
 # embed payload (shigoku_crypto for the base64; the XOR itself is a few lines,
-# no libcrypto). No TLS fingerprinting: plain requests pass as of the P47
-# walk, unlike anidbapp.
+# no libcrypto). No TLS fingerprinting, unlike anidbapp.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_hianime STATIC src/hianime.cpp)
@@ -662,11 +606,10 @@ endif()
 # and its tests only; a command-line-only build without tests skips them.
 if(WITH_TUI OR SHIGOKU_BUILD_TESTS)
 # ---------------------------------------------------------------------------
-# shigoku_mangadex (MANGA_PLAN MG-1): the manga app's MangaDex source — pure
-# parsers + URL builders in detail:: (offline golden tests over committed
-# fixtures) + a small blocking transport. Greenfield (no sabigoku
-# reference); shape follows the anime provider pattern. JSON via the
-# header-only thirdparty; needs only http.
+# shigoku_mangadex: the manga app's MangaDex source — pure parsers +
+# URL builders in detail:: (offline golden tests over committed fixtures) +
+# a small blocking transport. Shape follows the anime provider pattern.
+# JSON via the header-only thirdparty; needs only http.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_mangadex STATIC src/manga/mangadex.cpp)
@@ -676,7 +619,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_weebcentral (MANGA_PLAN MG-6b): the WeebCentral source — string-scan
+# shigoku_weebcentral: the WeebCentral source — string-scan
 # parsers over the site's HTMX fragments (offline golden tests over committed
 # fixtures) + a small blocking transport with CF-challenge detection. Links
 # shigoku_mangadex for the shared detail helpers (url_encode, filename_safe,
@@ -690,7 +633,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_dynasty (MANGA_PLAN MG-6d): the Dynasty Reader source — two JSON
+# shigoku_dynasty: the Dynasty Reader source — two JSON
 # parsers over the site's Rails .json endpoints plus one string-scan HTML
 # parser (search has no JSON twin) + a small blocking transport. Links
 # shigoku_weebcentral for wc::html_unescape (and through it shigoku_mangadex
@@ -706,7 +649,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_nhentai (MANGA_PLAN MG-6e): the nhentai source — three JSON parsers
+# shigoku_nhentai: the nhentai source — three JSON parsers
 # over the v2 FastAPI (search/cdn/gallery) + a blocking transport with the
 # adaptive TLS-fingerprint posture (plain first, sticky Chrome escalation on
 # 403 through the P25 impersonate seam). nsfw() true: the `nsfw_sources`
@@ -722,7 +665,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_manga_flow (MANGA_PLAN MG-3): the read flow's mechanism half —
+# shigoku_manga_flow: the read flow's mechanism half —
 # chapter fetch-to-cache (pages.cpp: fetch_to_sink + .part/.complete + node
 # rotation), the ViewerBackend seam (viewer.cpp: argv table + spawn/wait),
 # and config-lite (mconfig.cpp). No TUI dependency: testable headless.
@@ -736,8 +679,8 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_mstore (MANGA_PLAN MG-4): manga.db — the library, persistent read
-# progress, and the chapter cache the offline-first read flow leans on. Own
+# shigoku_mstore: manga.db — the library, persistent read progress,
+# and the chapter cache the offline-first read flow leans on. Own
 # schema, own ladder, own error type; it shares nothing with the anime store
 # but the discipline (atomic ladder, no silent-NULL binds). A leaf on
 # model.hpp + sqlite3 — no curl, no tui, no http.
@@ -751,7 +694,7 @@ if(SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_manga_sync (MANGA_PLAN MG-5): the AniList progress push — the pure
+# shigoku_manga_sync: the AniList progress push — the pure
 # floor/guard rules plus the two list calls behind them. Not a reuse of
 # shigoku_sync: that module drains the ANIME store's dirty set, this one moves
 # one entry on a mark-read (msync.hpp's header comment has the full why).
@@ -791,7 +734,7 @@ target_include_directories(shigoku_picker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(shigoku_picker PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_nonce (P12): 128-bit hex nonce from /dev/urandom (nonce.rs). A leaf
+# shigoku_nonce: 128-bit hex nonce from /dev/urandom (nonce.rs). A leaf
 # (std-only). Used for the de-cloak proxy's per-playback token (ROD-447).
 # ---------------------------------------------------------------------------
 add_library(shigoku_nonce STATIC src/nonce.cpp)
@@ -799,7 +742,7 @@ target_include_directories(shigoku_nonce PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_nonce PUBLIC shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_hls (P12 seed + P23): join_url, parse_master_playlist,
+# shigoku_hls: join_url, parse_master_playlist,
 # select_variant (providers/hls.rs). String-based join (NOT CURLU — it must
 # not normalize ./ and ../), so it needs no curl; depends on domain for
 # is_absolute_url/Quality/StreamLink.
@@ -809,10 +752,10 @@ target_include_directories(shigoku_hls PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_hls PUBLIC shigoku_domain shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_proxy (P12, ROD-443): localhost HLS de-cloaking reverse proxy. Binds
+# shigoku_proxy: localhost HLS de-cloaking reverse proxy. Binds
 # 127.0.0.1:0, rewrites playlists to tokened loopback refs, byte-strips segment
 # decoy prefixes to the first TS sync. fetch_upstream follows redirects by hand
-# so every hop re-passes the P2 SSRF guard (hence http); it links curl directly
+# so every hop re-passes the SSRF guard (hence http); it links curl directly
 # for the 32 MiB / identity / manual-redirect fetch the provider client lacks.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
@@ -824,11 +767,10 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_player (P5, A6): mpv posix_spawnp + push-based JSON IPC + retry law.
-# Pure argv builder + resume rule; the play() path spawns mpv and guards the
-# stream url via the P2 fetch guard (hence the http dep). Engages the P12
-# de-cloak proxy for a flagged StreamLink (else a pass-through). JSON via the
-# vendored nlohmann header (IPC line parsing).
+# shigoku_player: mpv posix_spawnp + push-based JSON IPC + retry law.
+# Pure argv builder + resume rule; the play() path spawns mpv and guards the stream url
+# via the fetch guard (hence the http dep). Engages the de-cloak proxy for a flagged
+# StreamLink (else a pass-through). JSON via the nlohmann header (IPC line parsing).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_player STATIC src/player.cpp)
@@ -839,7 +781,7 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_aniskip (P22, 03 §9): AniSkip OP/ED fetch -> skip.lua + mpv
+# shigoku_aniskip: AniSkip OP/ED fetch -> skip.lua + mpv
 # --script-opts, keyed on MAL id + numeric episode. Best-effort throughout: any
 # failure collapses to plain play, never a hard error. Falls back to a Jikan
 # title lookup when enrichment carries no MAL id (shigoku addition, no 1:1
@@ -855,12 +797,11 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_store (P9, A7): SQLite persistence on the 02 §3.3 key shapes. Resume
+# shigoku_store: SQLite persistence on the key shapes. Resume
 # rule + progress ratchet + watched marks; migration v1 = show + episode_
 # progress. Links domain (for the thresholds/ListStatus/label sort) + sqlite3
 # ONLY — never http/provider/tui — so the store stays a leaf the render core
-# provably cannot reach (the shigoku_tui_render link graph excludes it). Gated
-# on sqlite like the network modules are on curl.
+# provably cannot reach (the shigoku_tui_render link graph excludes it).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_store STATIC src/store.cpp)
@@ -871,14 +812,7 @@ if(SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku_resolve (P15): the pure headless resolve engine + Tier-B/C scorer.
-# resolve.cpp is the resolve.rs port — classify_open / open_history /
-# route_preferred / the Walk state machine + K-2 exhaust — pure over a
-# ResolveWorld read-ABC (no store, no threads, no network). resolver.cpp is the
-# resolver.rs scorer (title_score/best_id_match/best_provider_match), also pure.
-# Depends ONLY on shigoku_domain (provider.hpp lives there), so the whole engine
-# unit-tests offline against a FakeWorld (§8) and the transport (app.cpp) owns
-# every store write + staleness guard.
+# shigoku_resolve: the pure headless resolve engine + Tier-B/C scorer.
 # ---------------------------------------------------------------------------
 add_library(shigoku_resolve STATIC
   src/resolve.cpp
@@ -888,8 +822,8 @@ target_include_directories(shigoku_resolve PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(shigoku_resolve PUBLIC shigoku_domain shigoku_flags shigoku_thirdparty)
 
 # ---------------------------------------------------------------------------
-# shigoku_tui_render (P6/P7, A2/A3 purity core): cells/term/input/toast/theme/
-# queue/workers + views.cpp (the pure browse/detail/grid render). Depends
+# shigoku_tui_render: cells/term/input/toast/theme/queue/workers +
+# views.cpp (the pure browse/detail/grid render). Depends
 # ONLY on domain + threads — NEVER http/provider/sqlite — so `draw`/`views`
 # provably have no network/store reachable from the render path (enforced by
 # THIS target's link graph; app.cpp, which spawns real workers, is deliberately
@@ -902,7 +836,7 @@ add_library(shigoku_tui_render STATIC
   src/tui/input.cpp
   src/tui/toast.cpp
   src/tui/views.cpp
-  # P8 cover render-side: the pure Kitty + OSC 1337 emitters, cover geometry,
+  # Render-side: the pure Kitty + OSC 1337 emitters, cover geometry,
   # and the startup terminal probe. All terminal/pure — NO curl — so they stay
   # in the purity core (covers.cpp, which fetches, is in the curl-gated
   # shigoku_tui).
@@ -914,20 +848,20 @@ add_library(shigoku_tui_render STATIC
   src/tui/memstream_compat.cpp
   src/tui/cover_geom.cpp
   src/tui/cover_probe.cpp
-  # P17: Discover card-grid pure state + geometry + glyphs (no store/curl — the
+  # Discover card-grid pure state + geometry + glyphs (no store/curl — the
   # store-touching on_feed lives in discover_feed.cpp in shigoku_tui below).
   src/tui/discover.cpp
-  # P17b: the reusable url-keyed multi-cover pool (coordinator + render
+  # Reusable url-keyed multi-cover pool (coordinator + render
   # store) — pure, no curl/store, so it lives in the render core too.
   src/tui/cover_pool.cpp
-  # P18: the Settings view state (row model, cycling, edit mode) — pure, no
+  # Settings view state (row model, cycling, edit mode) — pure, no
   # curl/store, mutates only a Config (shigoku_config) passed by reference.
   src/tui/settings.cpp
-  # P19: the AniList connect modal render (DESIGN 5.5a) — pure, no curl; the
+  # AniList connect modal render — pure, no curl; the
   # live OAuth flow (loopback worker, complete_login) is curl-gated in
   # shigoku_tui below, same split as covers.cpp/kitty.cpp.
   src/tui/connect.cpp
-  # P38: the Discover filter overlay (state + render) — pure, no curl; the
+  # Discover filter overlay (state + render) — pure, no curl; the
   # GenreCollection fetch worker spawn lives in app.cpp (shigoku_tui below),
   # same split as connect.cpp/settings.cpp.
   src/tui/discover_filters.cpp
@@ -939,8 +873,8 @@ target_link_libraries(shigoku_tui_render
 endif()  # WITH_TUI
 
 # ---------------------------------------------------------------------------
-# shigoku_tui (P6/P7, A1): app.cpp — tick()/on_key()/run(), the event loop and
-# the P7 worker spawns (search/episodes/play). Needs anilist+senshi+player+http
+# shigoku_tui: app.cpp — tick()/on_key()/run(), the event loop and
+# the worker spawns (search/episodes/play). Needs anilist+senshi+player+http
 # (curl) to actually fetch, so this target — unlike shigoku_tui_render above —
 # is gated on SHIGOKU_HAVE_CURL like every other network-touching module.
 # ---------------------------------------------------------------------------
