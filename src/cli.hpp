@@ -27,26 +27,63 @@
 
 namespace shigoku::cli {
 
+// An inclusive span of episodes for `-r`: each end is an episode label, or a
+// 1-based position in the list (map_episode_index's two readings); `last`
+// nullopt = through the end of the list (`-r 4-`).
+struct EpisodeRange {
+  std::string first;
+  std::optional<std::string> last;
+  friend bool operator==(const EpisodeRange&, const EpisodeRange&) = default;
+};
+
 // The dispatch verdict over argv (without argv0). `parse` is pure; main owns
 // the process exit (06 §7.4).
 struct PlayArgs {
   std::string query;
   bool dub = false;
-  // Raw value, parity-inert: default_quality drives playback (06 §7). Parsed
-  // so the flag never silently swallows its argument, but never wired to
-  // resolve — a heads-up fires on a non-default value (quality_note_needed).
+  // `-q`: the stream quality for this run, over the config's default_quality
+  // (parse_quality reads either; a spelling it does not know plays best,
+  // with quality_note's heads-up).
   std::optional<std::string> quality;
+  // `-e`: play this episode with no episode prompt (exact label first, then
+  // 1-based position). `-r`: play a span in list order, no prompt and no
+  // post-play menu. Never both — the parser makes that usage.
+  std::optional<std::string> episode;
+  std::optional<EpisodeRange> range;
+  // `-S N`: take the Nth search result (1-based) with no show prompt.
+  std::optional<std::uint32_t> show;
+  // `-p <name>`: the source asked first this run (its stable name: senshi,
+  // hianime, …), over the config's preferred_provider.
+  std::optional<std::string> provider;
   friend bool operator==(const PlayArgs&, const PlayArgs&) = default;
 };
 
 // `shigoku download <query> [<ep>]` (P35 slice 3, shigoku-only §9). The last
-// positional is the episode when two or more are given; a lone positional is
-// the query and the episode is picked interactively (the play flow's prompt).
+// positional is the episode when two or more are given (or `-e` names it);
+// a lone positional is the query and the episode is picked interactively
+// (the play flow's prompt). `-q` / `-S` / `-p` read as for play.
 struct DownloadArgs {
   std::string query;
   std::optional<std::string> episode;
   bool dub = false;
+  std::optional<std::string> quality;
+  std::optional<std::uint32_t> show;
+  std::optional<std::string> provider;
   friend bool operator==(const DownloadArgs&, const DownloadArgs&) = default;
+};
+
+// `shigoku continue [<query>]`: pick a library show back up where it was
+// left. No query = the whole history to choose from, most recently watched
+// first; a query narrows it by title, and a single match needs no prompt.
+// `-S` takes the Nth row of that list. The episode is never a flag here —
+// the library says which one comes next.
+struct ContinueArgs {
+  std::optional<std::string> query;
+  bool dub = false;
+  std::optional<std::string> quality;
+  std::optional<std::uint32_t> show;
+  std::optional<std::string> provider;
+  friend bool operator==(const ContinueArgs&, const ContinueArgs&) = default;
 };
 
 struct Command {
@@ -60,30 +97,62 @@ struct Command {
     Update,
     Play,
     Download,
+    Continue,
   };
   Kind kind = Kind::Tui;
   bool paste = false;  // Login only.
   PlayArgs play_args;  // Play only.
   DownloadArgs download_args;  // Download only.
+  ContinueArgs continue_args;  // Continue only.
 
   friend bool operator==(const Command&, const Command&) = default;
 
-  static Command tui() { return {Kind::Tui, false, {}, {}}; }
-  static Command version() { return {Kind::Version, false, {}, {}}; }
-  static Command paths() { return {Kind::Paths, false, {}, {}}; }
-  static Command usage() { return {Kind::Usage, false, {}, {}}; }
-  static Command login(bool paste) { return {Kind::Login, paste, {}, {}}; }
-  static Command sync() { return {Kind::Sync, false, {}, {}}; }
-  static Command update() { return {Kind::Update, false, {}, {}}; }
-  static Command play(PlayArgs a) { return {Kind::Play, false, std::move(a), {}}; }
+  static Command tui() { return {Kind::Tui, false, {}, {}, {}}; }
+  static Command version() { return {Kind::Version, false, {}, {}, {}}; }
+  static Command paths() { return {Kind::Paths, false, {}, {}, {}}; }
+  static Command usage() { return {Kind::Usage, false, {}, {}, {}}; }
+  static Command login(bool paste) { return {Kind::Login, paste, {}, {}, {}}; }
+  static Command sync() { return {Kind::Sync, false, {}, {}, {}}; }
+  static Command update() { return {Kind::Update, false, {}, {}, {}}; }
+  static Command play(PlayArgs a) { return {Kind::Play, false, std::move(a), {}, {}}; }
   static Command download(DownloadArgs a) {
-    return {Kind::Download, false, {}, std::move(a)};
+    return {Kind::Download, false, {}, std::move(a), {}};
+  }
+  static Command continue_show(ContinueArgs a) {
+    return {Kind::Continue, false, {}, {}, std::move(a)};
   }
 };
 
 // `--debug` is global and consumed by every path (06 §7.2); read it before
 // dispatch so the debug sink is armed for every command.
 [[nodiscard]] bool debug_flag(const std::vector<std::string>& args);
+
+// `--ascii` is global like `--debug`: every glyph the command line prints
+// becomes its plain-ASCII stand-in, whatever the locale says.
+[[nodiscard]] bool ascii_flag(const std::vector<std::string>& args);
+
+// The glyphs the command line prints. UTF-8 by default; set_ascii_glyphs(true)
+// swaps each for an ASCII stand-in — for a locale that is not UTF-8, or
+// `--ascii`. One process-wide setting, read by every renderer here and by
+// the flows' own lines; main sets it once before dispatch.
+struct Glyphs {
+  std::string_view fail;      // ✗   x
+  std::string_view ok;        // ✓   +
+  std::string_view play;      // ▶   >
+  std::string_view resume;    // ↺   <
+  std::string_view warn;      // ⚠   !
+  std::string_view fetch;     // ⇣   v
+  std::string_view dot;       // ·   -
+  std::string_view ellipsis;  // …   ...
+};
+void set_ascii_glyphs(bool ascii);
+[[nodiscard]] bool ascii_glyphs();
+[[nodiscard]] const Glyphs& glyphs();
+
+// Whether a locale name or codeset says UTF-8 — "en_US.UTF-8", "C.utf8",
+// "UTF-8" do; "C", "POSIX", "" and "ANSI_X3.4-1968" do not. The platform
+// lookup (setlocale / nl_langinfo / the LC_* variables) is main's.
+[[nodiscard]] bool utf8_locale_name(std::string_view name);
 
 // Dispatch over argv (without argv0), pure (06 §7).
 [[nodiscard]] Command parse(const std::vector<std::string>& args);
@@ -136,7 +205,9 @@ enum class FetchStage {
 };
 
 // One unnumbered row per hit ("Frieren  ·  28 sub eps": per-track count when
-// the chosen track is stocked, else the catalog total, else bare) and per
+// the chosen track is stocked, else the catalog total, else bare; a source
+// whose hits carry a second, English or romaji title that differs from the
+// first — AniLibria's Russian titles — shows it in parentheses) and per
 // episode ("ep 7"): the picker seam's input. Titles and labels are provider
 // claims — terminal-hostile bytes are stripped here.
 [[nodiscard]] std::vector<std::string> search_hit_rows(const std::vector<SearchHit>& hits,
@@ -181,9 +252,57 @@ struct PickResult {
 [[nodiscard]] std::string fetch_error_line(FetchStage stage, ProviderError::Kind kind,
                                           std::string_view provider);
 
-// Whether the inert `--quality` heads-up fires (06 §7 parity): only when a
-// non-default value was passed. No flag, or an explicit `best`, stays silent.
-[[nodiscard]] bool quality_note_needed(std::optional<std::string_view> quality);
+// The heads-up for a `-q` spelling parse_quality does not know ("(note: no
+// quality called "x"; using best.)"); nullopt for a known one, or no flag.
+[[nodiscard]] std::optional<std::string> quality_note(std::optional<std::string_view> quality);
+
+// `-p` named a source the registry has not got: one line naming the ones a
+// run can search, in walk order.
+[[nodiscard]] std::string unknown_source_note(std::string_view asked,
+                                              const std::vector<std::string_view>& names);
+
+// `-r` text -> span: "3-7", or "3-" for "through the end". Anything else (a
+// bare number — that is `-e` —, an empty start, a second dash) is nullopt,
+// which the parser reads as usage.
+[[nodiscard]] std::optional<EpisodeRange> parse_range(std::string_view text);
+
+// `-e` / `-S` text as a 1-based ordinal: all digits -> the number (0 for an
+// empty string or an overflow); any other byte -> 0, map_episode_index's
+// "no ordinal reading".
+[[nodiscard]] std::uint32_t ordinal_of(std::string_view text);
+
+// The span as 0-based [first, last] over a real episode list, each end read
+// exact-label-first then as a 1-based position (map_episode_index); nullopt
+// when an end is not in the list or the two cross.
+[[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> range_indices(
+    const std::vector<std::string>& episodes, const EpisodeRange& range);
+
+// What to do once an episode has played, offered through the pick seam like
+// any other list: next and previous only when such an episode exists, replay
+// and quit always; `actions` is parallel to `rows`.
+enum class PostPlay {
+  Next,
+  Replay,
+  Previous,
+  Quit,
+};
+struct PostPlayMenu {
+  std::vector<std::string> rows;  // "next  ·  ep 8", …, "quit"
+  std::vector<PostPlay> actions;
+};
+[[nodiscard]] PostPlayMenu post_play_menu(std::size_t index,
+                                          const std::vector<std::string>& episodes);
+
+// `shigoku continue`'s list: one row per library show — the title (English
+// one in parentheses when it differs), then how far it got ("ep 7 of 28",
+// "ep 7", or "not started").
+[[nodiscard]] std::vector<std::string> history_rows(const std::vector<Show>& shows);
+
+// The rows of `shows` whose romaji, English or native title contains `query`,
+// ASCII case-folded (a non-ASCII query matches on its exact bytes). Empty
+// query = every row.
+[[nodiscard]] std::vector<std::size_t> history_matches(const std::vector<Show>& shows,
+                                                       std::string_view query);
 
 // Heads-up when the configured source was walked past because it cannot search
 // (ROD-491). nullopt when nothing was overridden: no preference set, or the

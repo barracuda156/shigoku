@@ -22,6 +22,11 @@ namespace shigoku::idmap {
 // AniList id -> MAL id, nullopt when the table has no entry.
 [[nodiscard]] std::optional<std::int64_t> to_mal(std::int64_t anilist_id);
 
+// The anilist_id a show known only by its MAL id is stored under: the
+// table's real id, else -mal_id — synthetic, unique, and recognisable by its
+// sign everywhere AniList would otherwise be asked (catalog.hpp's id law).
+[[nodiscard]] std::int64_t anilist_or_synthetic(std::int64_t mal_id);
+
 // Number of pairs in the table.
 [[nodiscard]] std::size_t size();
 

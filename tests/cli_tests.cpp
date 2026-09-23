@@ -24,6 +24,7 @@
 #include "../src/config.hpp"
 #include "../src/domain.hpp"
 #include "../src/download.hpp"
+#include "../src/idmap.hpp"
 #include "../src/login.hpp"
 #include "../src/play_cli.hpp"
 #include "../src/provider.hpp"
@@ -39,12 +40,20 @@ namespace {
 Command parse_of(std::vector<std::string> args) { return cli::parse(args); }
 
 PlayArgs play(std::string q, bool dub = false, std::optional<std::string> quality = std::nullopt) {
-  return PlayArgs{std::move(q), dub, std::move(quality)};
+  PlayArgs a;
+  a.query = std::move(q);
+  a.dub = dub;
+  a.quality = std::move(quality);
+  return a;
 }
 
 cli::DownloadArgs dl(std::string q, std::optional<std::string> ep = std::nullopt,
                      bool dub = false) {
-  return cli::DownloadArgs{std::move(q), std::move(ep), dub};
+  cli::DownloadArgs a;
+  a.query = std::move(q);
+  a.episode = std::move(ep);
+  a.dub = dub;
+  return a;
 }
 
 bool contains(std::string_view hay, std::string_view needle) {
@@ -184,6 +193,255 @@ TEST_CASE("debug_flag_is_consumed_globally_and_detected") {
   CHECK_FALSE(cli::debug_flag({"frieren"}));
 }
 
+TEST_CASE("ascii_flag_is_global_and_consumed_like_debug") {
+  const std::vector<std::string> args{"frieren", "--ascii"};
+  CHECK(cli::ascii_flag(args));
+  CHECK(cli::parse(args) == Command::play(play("frieren")));
+  CHECK(cli::parse({"--ascii", "login"}) == Command::login(false));
+  CHECK(cli::parse({"--ascii"}) == Command::tui());
+  CHECK_FALSE(cli::ascii_flag({"frieren"}));
+}
+
+namespace {
+PlayArgs play_with(std::string q, std::optional<std::string> episode,
+                   std::optional<cli::EpisodeRange> range, std::optional<std::uint32_t> show,
+                   std::optional<std::string> provider,
+                   std::optional<std::string> quality = std::nullopt, bool dub = false) {
+  PlayArgs a = play(std::move(q), dub, std::move(quality));
+  a.episode = std::move(episode);
+  a.range = std::move(range);
+  a.show = show;
+  a.provider = std::move(provider);
+  return a;
+}
+}  // namespace
+
+TEST_CASE("play_flags_take_short_long_and_equals_forms_anywhere") {
+  const Command want = Command::play(
+      play_with("x", std::string("7"), std::nullopt, 1, std::string("senshi"), std::string("720")));
+  CHECK(parse_of({"x", "-e", "7", "-S", "1", "-p", "senshi", "-q", "720"}) == want);
+  CHECK(parse_of({"x", "--episode", "7", "--show", "1", "--provider", "senshi", "--quality",
+                  "720"}) == want);
+  CHECK(parse_of({"x", "--episode=7", "--show=1", "--provider=senshi", "--quality=720"}) == want);
+  CHECK(parse_of({"-e", "7", "-S", "1", "-p", "senshi", "-q", "720", "x"}) == want);
+  // A span, closed and open; the words around the flags still join.
+  CHECK(parse_of({"cowboy", "-r", "1-5", "bebop"}) ==
+        Command::play(play_with("cowboy bebop", std::nullopt,
+                                cli::EpisodeRange{"1", std::string("5")}, std::nullopt,
+                                std::nullopt)));
+  CHECK(parse_of({"x", "--range=4-"}) ==
+        Command::play(play_with("x", std::nullopt, cli::EpisodeRange{"4", std::nullopt},
+                                std::nullopt, std::nullopt)));
+  // Other single-dash words are still query text.
+  CHECK(parse_of({"-x", "-e", "2"}) ==
+        Command::play(play_with("-x", std::string("2"), std::nullopt, std::nullopt, std::nullopt)));
+}
+
+TEST_CASE("play_flags_without_a_value_or_with_a_bad_one_are_usage") {
+  CHECK(parse_of({"x", "-e"}) == Command::usage());
+  CHECK(parse_of({"x", "--episode="}) == Command::usage());
+  CHECK(parse_of({"x", "-S"}) == Command::usage());
+  CHECK(parse_of({"x", "-S", "0"}) == Command::usage());
+  CHECK(parse_of({"x", "-S", "two"}) == Command::usage());
+  CHECK(parse_of({"x", "-p"}) == Command::usage());
+  CHECK(parse_of({"x", "-r", "5"}) == Command::usage());      // a bare number is -e's job
+  CHECK(parse_of({"x", "-r", "-3"}) == Command::usage());     // no start
+  CHECK(parse_of({"x", "-r", "1-2-3"}) == Command::usage());  // a second dash
+  CHECK(parse_of({"x", "-r"}) == Command::usage());
+  // One episode or a span, never both.
+  CHECK(parse_of({"x", "-e", "3", "-r", "1-2"}) == Command::usage());
+  // The play flags with no query open nothing: usage, not the interface.
+  CHECK(parse_of({"-e", "3"}) == Command::usage());
+  CHECK(parse_of({"-S", "1"}) == Command::usage());
+  CHECK(parse_of({"-p", "senshi"}) == Command::usage());
+  CHECK(parse_of({"--quality", "720"}) == Command::usage());
+  CHECK(parse_of({"--dub"}) == Command::tui());
+}
+
+TEST_CASE("download_takes_the_new_flags_and_refuses_two_episodes_or_a_span") {
+  cli::DownloadArgs want = dl("frieren", std::string("7"));
+  want.quality = "480";
+  want.show = 2;
+  want.provider = "hianime";
+  CHECK(parse_of({"download", "frieren", "-e", "7", "-q", "480", "-S", "2", "-p", "hianime"}) ==
+        Command::download(want));
+  CHECK(parse_of({"download", "frieren", "7", "-q", "480", "-S", "2", "-p", "hianime"}) ==
+        Command::download(want));
+  CHECK(parse_of({"download", "frieren", "7", "-e", "8"}) == Command::usage());
+  CHECK(parse_of({"download", "frieren", "-r", "1-3"}) == Command::usage());
+}
+
+TEST_CASE("continue_parses_with_and_without_a_query") {
+  cli::ContinueArgs bare;
+  CHECK(parse_of({"continue"}) == Command::continue_show(bare));
+  CHECK(parse_of({"--debug", "continue"}) == Command::continue_show(bare));
+  cli::ContinueArgs narrowed;
+  narrowed.query = "cowboy bebop";
+  narrowed.dub = true;
+  CHECK(parse_of({"continue", "cowboy", "bebop", "--dub"}) == Command::continue_show(narrowed));
+  cli::ContinueArgs nth;
+  nth.show = 2;
+  nth.provider = "senshi";
+  nth.quality = "720";
+  CHECK(parse_of({"continue", "-S", "2", "-p", "senshi", "-q", "720"}) ==
+        Command::continue_show(nth));
+  // The library says which episode: -e / -r are usage here.
+  CHECK(parse_of({"continue", "-e", "3"}) == Command::usage());
+  CHECK(parse_of({"continue", "-r", "1-3"}) == Command::usage());
+  // After a query word the name is search text, as for every subcommand.
+  CHECK(parse_of({"frieren", "continue"}) == Command::play(play("frieren continue")));
+}
+
+TEST_CASE("range_parses_closed_and_open_spans_only") {
+  CHECK(cli::parse_range("1-5") == cli::EpisodeRange{"1", std::string("5")});
+  CHECK(cli::parse_range("4-") == cli::EpisodeRange{"4", std::nullopt});
+  CHECK(cli::parse_range("SP1-SP3") == cli::EpisodeRange{"SP1", std::string("SP3")});
+  CHECK_FALSE(cli::parse_range("5").has_value());
+  CHECK_FALSE(cli::parse_range("-5").has_value());
+  CHECK_FALSE(cli::parse_range("1-2-3").has_value());
+  CHECK_FALSE(cli::parse_range("").has_value());
+}
+
+TEST_CASE("ordinal_reads_digits_only") {
+  CHECK(cli::ordinal_of("7") == 7);
+  CHECK(cli::ordinal_of("07") == 7);
+  CHECK(cli::ordinal_of("") == 0);
+  CHECK(cli::ordinal_of("7a") == 0);
+  CHECK(cli::ordinal_of("SP1") == 0);
+  CHECK(cli::ordinal_of("99999999999") == 0);  // past uint32: no ordinal reading
+}
+
+TEST_CASE("range_indices_map_labels_and_positions_and_refuse_missing_or_crossed_ends") {
+  const std::vector<std::string> eps = {"1", "2", "3", "SP1"};
+  using P = std::pair<std::size_t, std::size_t>;
+  CHECK(cli::range_indices(eps, {"2", std::string("3")}) == P{1, 2});
+  CHECK(cli::range_indices(eps, {"2", std::nullopt}) == P{1, 3});
+  CHECK(cli::range_indices(eps, {"SP1", std::nullopt}) == P{3, 3});
+  CHECK(cli::range_indices(eps, {"2", std::string("SP1")}) == P{1, 3});
+  CHECK(cli::range_indices(eps, {"4", std::string("4")}) == P{3, 3});  // position 4 = SP1
+  CHECK_FALSE(cli::range_indices(eps, {"3", std::string("2")}).has_value());
+  CHECK_FALSE(cli::range_indices(eps, {"9", std::nullopt}).has_value());
+  CHECK_FALSE(cli::range_indices(eps, {"1", std::string("9")}).has_value());
+  CHECK_FALSE(cli::range_indices({}, {"1", std::nullopt}).has_value());
+}
+
+TEST_CASE("post_play_menu_offers_next_and_previous_only_when_they_exist") {
+  using A = cli::PostPlay;
+  const std::vector<std::string> eps = {"1", "2", "3"};
+  const auto first = cli::post_play_menu(0, eps);
+  CHECK(first.rows == std::vector<std::string>{"next  \xC2\xB7  ep 2", "replay  \xC2\xB7  ep 1", "quit"});
+  CHECK(first.actions == std::vector<A>{A::Next, A::Replay, A::Quit});
+  const auto middle = cli::post_play_menu(1, eps);
+  CHECK(middle.rows == std::vector<std::string>{"next  \xC2\xB7  ep 3", "replay  \xC2\xB7  ep 2",
+                                                "previous  \xC2\xB7  ep 1", "quit"});
+  CHECK(middle.actions == std::vector<A>{A::Next, A::Replay, A::Previous, A::Quit});
+  const auto last = cli::post_play_menu(2, eps);
+  CHECK(last.rows == std::vector<std::string>{"replay  \xC2\xB7  ep 3", "previous  \xC2\xB7  ep 2", "quit"});
+  CHECK(last.actions == std::vector<A>{A::Replay, A::Previous, A::Quit});
+  const auto lone = cli::post_play_menu(0, {"1"});
+  CHECK(lone.actions == std::vector<A>{A::Replay, A::Quit});
+}
+
+namespace {
+Show library_show(std::int64_t id, std::string romaji, std::optional<std::string> english,
+                  std::uint32_t progress, std::optional<std::uint32_t> total) {
+  Show s;
+  s.enrichment.anilist_id = id;
+  s.enrichment.title_romaji = std::move(romaji);
+  s.enrichment.title_english = std::move(english);
+  s.enrichment.total_episodes = total;
+  s.progress = progress;
+  return s;
+}
+}  // namespace
+
+TEST_CASE("history_rows_say_the_title_and_how_far_and_matches_fold_case_over_every_title") {
+  const std::vector<Show> shows = {
+      library_show(1, "Sousou no Frieren", std::string("Frieren: Beyond Journey's End"), 7, 28),
+      library_show(2, "Cowboy Bebop", std::nullopt, 0, 26),
+      library_show(3, "Mystery", std::string("mystery"), 3, std::nullopt),
+  };
+  const auto rows = cli::history_rows(shows);
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0] == "Sousou no Frieren (Frieren: Beyond Journey's End)  \xC2\xB7  ep 7 of 28");
+  CHECK(rows[1] == "Cowboy Bebop  \xC2\xB7  not started");
+  CHECK(rows[2] == "Mystery  \xC2\xB7  ep 3");  // the same name again is not repeated
+  using V = std::vector<std::size_t>;
+  CHECK(cli::history_matches(shows, "frieren") == V{0});
+  CHECK(cli::history_matches(shows, "BEBOP") == V{1});
+  CHECK(cli::history_matches(shows, "journey") == V{0});  // the English title counts
+  CHECK(cli::history_matches(shows, "") == V{0, 1, 2});
+  CHECK(cli::history_matches(shows, "zzz") == V{});
+}
+
+namespace {
+bool all_ascii(std::string_view s) {
+  for (unsigned char c : s) {
+    if (c >= 0x80) return false;
+  }
+  return true;
+}
+// Flip the glyph table to ASCII for one scope; every other test sees UTF-8.
+struct AsciiGuard {
+  AsciiGuard() { cli::set_ascii_glyphs(true); }
+  ~AsciiGuard() { cli::set_ascii_glyphs(false); }
+};
+}  // namespace
+
+TEST_CASE("ascii_glyphs_swap_every_mark_in_the_renderers_for_a_plain_one") {
+  CHECK_FALSE(cli::ascii_glyphs());
+  const std::string utf = cli::fetch_error_line(cli::FetchStage::Search, ProviderError::Kind::Network, "senshi");
+  CHECK_FALSE(all_ascii(utf));
+  {
+    AsciiGuard ascii;
+    CHECK(cli::ascii_glyphs());
+    const std::string line = cli::fetch_error_line(cli::FetchStage::Search, ProviderError::Kind::Network, "senshi");
+    CHECK_MESSAGE(line.rfind("  x can't reach senshi", 0) == 0, line);
+    CHECK(cli::search_walk_note("A", std::nullopt, "B") == "  (no results on A; trying B...)\n");
+    std::vector<SearchHit> hits;
+    SearchHit h;
+    h.title = "Frieren";
+    h.eps_sub = 28;
+    hits.push_back(h);
+    CHECK(cli::search_hit_rows(hits, Translation::Sub) == std::vector<std::string>{"Frieren  -  28 sub eps"});
+    CHECK(cli::post_play_menu(0, {"1", "2"}).rows[0] == "next  -  ep 2");
+    const std::string ok = cli::render_connect_result(login::ConnectResult::ok("rod"), "/tmp/a", false);
+    CHECK_MESSAGE(ok.rfind("  + signed in as rod", 0) == 0, ok);
+    sync::SyncSummary s;
+    s.outcome = sync::SyncOutcome::Completed;
+    for (std::int64_t i = 1; i <= 14; ++i) s.pulled.unmatched.push_back(i);
+    const std::string sync_text = cli::render_sync_summary(s);
+    CHECK_MESSAGE(contains(sync_text, "      - anilist.co/anime/1\n"), sync_text);
+    CHECK_MESSAGE(contains(sync_text, "      ... and 2 more"), sync_text);
+    // Every line the renderers can produce is plain bytes in this mode.
+    for (auto kind : {PlayError::Kind::MpvNotFound, PlayError::Kind::Exit, PlayError::Kind::OpenFailed,
+                      PlayError::Kind::Resolve, PlayError::Kind::UnsafeUrl}) {
+      CHECK(all_ascii(cli::player_failure_line(kind, "senshi", std::nullopt)));
+    }
+    for (auto kind : {ProviderError::Kind::Network, ProviderError::Kind::Forbidden, ProviderError::Kind::Server,
+                      ProviderError::Kind::RateLimited, ProviderError::Kind::Http, ProviderError::Kind::Decode,
+                      ProviderError::Kind::Unsupported}) {
+      for (auto stage : {cli::FetchStage::Search, cli::FetchStage::Episodes, cli::FetchStage::Resolve}) {
+        CHECK(all_ascii(cli::fetch_error_line(stage, kind, "senshi")));
+      }
+      CHECK(all_ascii(cli::search_walk_note("A", kind, "B")));
+    }
+    CHECK(all_ascii(sync_text));
+    CHECK(all_ascii(cli::kUsage));
+  }
+  CHECK_FALSE(cli::ascii_glyphs());
+  CHECK(cli::search_walk_note("A", std::nullopt, "B") == "  (no results on A; trying B\xE2\x80\xA6)\n");
+}
+
+TEST_CASE("utf8_locale_names_are_read_from_the_codeset_or_the_name") {
+  for (const char* yes : {"en_US.UTF-8", "C.utf8", "UTF-8", "ru_RU.utf8", "de_DE.UTF-8@euro"}) {
+    CHECK_MESSAGE(cli::utf8_locale_name(yes), yes);
+  }
+  for (const char* no : {"C", "POSIX", "", "ANSI_X3.4-1968", "US-ASCII", "en_US.ISO8859-1", "ja_JP.eucJP"}) {
+    CHECK_MESSAGE(!cli::utf8_locale_name(no), no);
+  }
+}
+
 // ── render_sync_summary (cli.rs sync tests) ──────────────────────────────────
 
 namespace {
@@ -243,6 +501,26 @@ TEST_CASE("rows_feed_the_picker_and_the_renderers_number_them") {
   CHECK(rows[1] == "Bare[31m");
   CHECK(cli::episode_rows({"1", "OVA"}) == std::vector<std::string>{"ep 1", "ep OVA"});
   CHECK(cli::numbered_rows({"x", "y"}, 2) == "   1. x\n   2. y\n");
+}
+
+TEST_CASE("search_rows_show_a_differing_english_title_in_parentheses") {
+  // The AniLibria shape: a Russian title with the romaji/English alongside.
+  SearchHit ru;
+  ru.title = "\xD0\xA4\xD1\x80\xD0\xB8\xD1\x80\xD0\xB5\xD0\xBD";  // Фрирен
+  ru.title_english = "Sousou no Frieren";
+  ru.total_episodes = 28;
+  // The same name again (case aside) is not repeated; an empty one is nothing.
+  SearchHit same;
+  same.title = "Cowboy Bebop";
+  same.title_english = "cowboy bebop";
+  SearchHit blank;
+  blank.title = "Mystery";
+  blank.title_english = std::string();
+  const auto rows = cli::search_hit_rows({ru, same, blank}, Translation::Sub);
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0] == std::string(ru.title) + " (Sousou no Frieren)  \xC2\xB7  28 eps");
+  CHECK(rows[1] == "Cowboy Bebop");
+  CHECK(rows[2] == "Mystery");
 }
 
 TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilist_account") {
@@ -491,11 +769,24 @@ TEST_CASE("fetch_error_rows_name_the_provider_and_render_one_block") {
   CHECK_MESSAGE(contains(r, "stream payload"), r);
 }
 
-TEST_CASE("quality_note_only_for_a_non_default_value") {
-  CHECK_FALSE(cli::quality_note_needed(std::nullopt));
-  CHECK_FALSE(cli::quality_note_needed(std::optional<std::string_view>("best")));
-  CHECK_FALSE(cli::quality_note_needed(std::optional<std::string_view>("Best")));
-  CHECK(cli::quality_note_needed(std::optional<std::string_view>("1080")));
+TEST_CASE("quality_note_fires_only_for_a_spelling_parse_quality_does_not_know") {
+  CHECK_FALSE(cli::quality_note(std::nullopt).has_value());
+  for (const char* q : {"best", "1080", "720", "480", "worst"}) {
+    CHECK_FALSE(cli::quality_note(std::optional<std::string_view>(q)).has_value());
+  }
+  // parse_quality's spellings are exact: "Best" would play best by fallthrough,
+  // so it is said rather than silently honoured.
+  auto note = cli::quality_note(std::optional<std::string_view>("Best"));
+  REQUIRE(note.has_value());
+  CHECK_MESSAGE(contains(*note, "no quality called \"Best\""), *note);
+  CHECK_MESSAGE(contains(*note, "using best"), *note);
+  CHECK(cli::quality_note(std::optional<std::string_view>("4k")).has_value());
+}
+
+TEST_CASE("unknown_source_note_names_the_walk") {
+  const std::string note = cli::unknown_source_note("nope", {"senshi", "hianime"});
+  CHECK_MESSAGE(contains(note, "no source called \"nope\""), note);
+  CHECK_MESSAGE(contains(note, "senshi, hianime"), note);
 }
 
 TEST_CASE("override_note_fires_only_when_a_preference_was_walked_past") {
@@ -603,8 +894,7 @@ int run_all(const shigoku::cli_play::Sources& sources, shigoku::cli_play::PickFn
   const Config config;
   return shigoku::cli_play::play_flow(sources, pick, Translation::Sub, config,
                                       /*cache_dir=*/"", /*runtime_dir=*/"/tmp",
-                                      /*download_dir=*/"", /*store=*/nullptr,
-                                      cli::PlayArgs{"frieren", false, std::nullopt});
+                                      /*download_dir=*/"", /*store=*/nullptr, play("frieren"));
 }
 
 int run(const Fake& p, shigoku::cli_play::PickFn pick) { return run_all({&p}, std::move(pick)); }
@@ -875,8 +1165,12 @@ TEST_CASE("play_prefers_a_completed_local_download_over_resolving (P35 slice 4)"
   plant_download(dl + "/700/sub/1.mp4");
   Config config;
   config.mpv_path = write_stub_mpv();
-  const auto pick = [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); };
-  const cli::PlayArgs args{"frieren", false, std::nullopt};
+  // The first row for the show and the episode; the post-play menu's first
+  // row would be "replay" (one episode, no next), so quit there instead.
+  const auto pick = [](std::string_view prompt, const std::vector<std::string>&) {
+    return prompt == "what next" ? std::optional<std::size_t>{} : std::optional<std::size_t>(0);
+  };
+  const cli::PlayArgs args = play("frieren");
   CHECK(shigoku::cli_play::play_flow({&p}, pick, Translation::Sub, config, /*cache_dir=*/"",
                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,
                                      args) == 0);
@@ -886,4 +1180,395 @@ TEST_CASE("play_prefers_a_completed_local_download_over_resolving (P35 slice 4)"
   CHECK(shigoku::cli_play::play_flow({&p}, pick, Translation::Dub, config, /*cache_dir=*/"",
                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,
                                      args) == 1);
+}
+
+// ── -S / -e / -r, the post-play menu, and `continue` ─────────────────────────
+
+namespace {
+
+// A pick that answers from a script, in order (exhausted = nullopt, the
+// user's EOF), and remembers every prompt and its rows.
+struct ScriptedPick {
+  std::vector<std::optional<std::size_t>> answers;
+  std::vector<std::string> prompts;
+  std::vector<std::vector<std::string>> rows_seen;
+  shigoku::cli_play::PickFn fn() {
+    return [this](std::string_view prompt, const std::vector<std::string>& rows) {
+      prompts.emplace_back(prompt);
+      rows_seen.push_back(rows);
+      if (answers.empty()) return std::optional<std::size_t>{};
+      auto a = answers.front();
+      answers.erase(answers.begin());
+      return a;
+    };
+  }
+  [[nodiscard]] std::size_t asked(std::string_view prompt) const {
+    std::size_t n = 0;
+    for (const auto& p : prompts) {
+      if (p == prompt) ++n;
+    }
+    return n;
+  }
+};
+
+Fake::EpR three_episodes() { return std::vector<std::string>{"1", "2", "3"}; }
+
+// One hit under a real anilist_id (700): the store and local-download gates
+// open, so a planted file under <dl>/700/sub/<ep>.mp4 plays through the stub
+// mpv (exit 0) and an unplanted episode falls to the scripted resolve failure
+// (exit 1) — which episode a run reached is readable from its exit alone.
+Fake::SearchR hit_700(std::string_view) {
+  auto h = one_hit();
+  h.anilist_id = 700;
+  h.total_episodes = 3;
+  return std::vector<SearchHit>{h};
+}
+
+Fake show_700() {
+  auto f = make(hit_700, three_episodes,
+                []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  return f;
+}
+
+std::string fresh_download_dir(const char* tag) {
+  return "/tmp/shigoku-cli-test-dl-" + std::to_string(static_cast<long>(::getpid())) + "-" + tag;
+}
+
+cli::PlayArgs play_args() {
+  cli::PlayArgs a;
+  a.query = "frieren";
+  return a;
+}
+
+int run_play(const Fake& p, const Config& config, const std::string& dl, const cli::PlayArgs& args,
+             shigoku::cli_play::PickFn pick) {
+  return shigoku::cli_play::play_flow({&p}, std::move(pick), Translation::Sub, config,
+                                      /*cache_dir=*/"", /*runtime_dir=*/"/tmp", dl,
+                                      /*store=*/nullptr, args);
+}
+
+}  // namespace
+
+TEST_CASE("show_flag_takes_the_nth_result_without_a_prompt_and_past_the_list_is_a_clean_zero") {
+  const Fake up = source_up("up");  // two hits, episodes fail: exit 1 = the show was taken.
+  ScriptedPick pick;
+  cli::PlayArgs args = play_args();
+  args.show = 2;
+  CHECK(run_all({&up}, pick.fn()) == 0);  // sanity: the prompt path quits on EOF
+  CHECK(pick.asked("pick a show") == 1);
+  ScriptedPick nth;
+  CHECK(shigoku::cli_play::play_flow({&up}, nth.fn(), Translation::Sub, Config{}, "", "/tmp", "",
+                                     nullptr, args) == 1);
+  CHECK(nth.prompts.empty());
+  args.show = 3;
+  ScriptedPick past;
+  CHECK(shigoku::cli_play::play_flow({&up}, past.fn(), Translation::Sub, Config{}, "", "/tmp", "",
+                                     nullptr, args) == 0);
+  CHECK(past.prompts.empty());
+}
+
+TEST_CASE("episode_flag_skips_the_episode_prompt_and_an_unknown_one_is_a_clean_zero") {
+  const Fake p = show_700();
+  ScriptedPick pick;
+  pick.answers = {0};  // the show
+  cli::PlayArgs args = play_args();
+  args.episode = "2";
+  CHECK(run_play(p, Config{}, "", args, pick.fn()) == 1);  // resolve reached: the episode was taken
+  CHECK(pick.asked("pick an episode") == 0);
+  args.episode = "9";
+  ScriptedPick miss;
+  miss.answers = {0};
+  CHECK(run_play(p, Config{}, "", args, miss.fn()) == 0);
+  args.episode = "SP1";
+  ScriptedPick miss2;
+  miss2.answers = {0};
+  CHECK(run_play(p, Config{}, "", args, miss2.fn()) == 0);
+}
+
+TEST_CASE("range_plays_the_span_in_order_with_no_menu_and_stops_on_a_failed_episode") {
+  const Fake p = show_700();
+  const std::string dl = fresh_download_dir("range");
+  plant_download(dl + "/700/sub/1.mp4");
+  plant_download(dl + "/700/sub/2.mp4");
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  cli::PlayArgs args = play_args();
+  args.show = 1;
+  args.range = cli::EpisodeRange{"1", std::string("2")};
+  ScriptedPick none;
+  CHECK(run_play(p, config, dl, args, none.fn()) == 0);
+  CHECK(none.prompts.empty());  // no show prompt, no episode prompt, no menu
+  // Episode 3 has no local copy: the span reaches it, resolve fails, exit 1.
+  args.range = cli::EpisodeRange{"1", std::nullopt};
+  ScriptedPick none2;
+  CHECK(run_play(p, config, dl, args, none2.fn()) == 1);
+  CHECK(none2.prompts.empty());
+  // A span past the list is a clean 0 before anything plays.
+  args.range = cli::EpisodeRange{"1", std::string("9")};
+  ScriptedPick none3;
+  CHECK(run_play(p, config, dl, args, none3.fn()) == 0);
+}
+
+TEST_CASE("post_play_menu_walks_next_and_previous_until_quit") {
+  const Fake p = show_700();
+  const std::string dl = fresh_download_dir("menu");
+  for (const char* ep : {"1", "2", "3"}) plant_download(dl + "/700/sub/" + ep + ".mp4");
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  ScriptedPick pick;
+  // show, episode 1, then: next (ep 2), next (ep 3), previous (ep 2), quit.
+  pick.answers = {0, 0, 0, 0, 1, 3};
+  CHECK(run_play(p, config, dl, play_args(), pick.fn()) == 0);
+  CHECK(pick.asked("what next") == 4);
+  REQUIRE(pick.rows_seen.size() == 6);
+  CHECK(pick.rows_seen[2][0] == "next  \xC2\xB7  ep 2");      // after ep 1
+  CHECK(pick.rows_seen[3][0] == "next  \xC2\xB7  ep 3");      // after ep 2
+  CHECK(pick.rows_seen[4][0] == "replay  \xC2\xB7  ep 3");    // after ep 3: no next
+  CHECK(pick.rows_seen[4][2] == "quit");
+  CHECK(pick.rows_seen[5][3] == "quit");                       // after ep 2 again
+  // EOF at the menu is the "bye" exit, a clean 0.
+  ScriptedPick eof;
+  eof.answers = {0, 0};
+  CHECK(run_play(p, config, dl, play_args(), eof.fn()) == 0);
+  CHECK(eof.asked("what next") == 1);
+  // `-e` starts at the episode and then asks like a prompted pick would.
+  cli::PlayArgs from_two = play_args();
+  from_two.episode = "2";
+  ScriptedPick e;
+  e.answers = {0, 0};  // show; then "next" = ep 3; then EOF
+  CHECK(run_play(p, config, dl, from_two, e.fn()) == 0);
+  CHECK(e.asked("pick an episode") == 0);
+  CHECK(e.asked("what next") == 2);
+  CHECK(e.rows_seen[1][0] == "next  \xC2\xB7  ep 3");
+}
+
+namespace {
+
+// A fresh library at a temp path, holding show 700 ("Frieren", 3 episodes)
+// bound to `provider` with episode 1 finished (progress 1).
+std::string fresh_db(const char* tag) {
+  const std::string base = "/tmp/shigoku-cli-test-" + std::to_string(static_cast<long>(::getpid())) +
+                           "-" + tag + ".db";
+  for (const char* suffix : {"", "-wal", "-shm"}) std::remove((base + suffix).c_str());
+  return base;
+}
+
+constexpr std::int64_t kNow = 1'700'000'000;
+
+void seed_frieren(Store& store, std::string_view provider, std::uint32_t finished) {
+  Enrichment e;
+  e.anilist_id = 700;
+  e.title_romaji = "Frieren";
+  e.total_episodes = 3;
+  REQUIRE(store.add_to_library(e, kNow).has_value());
+  REQUIRE(store.bind_provider(e, provider, "id", kNow).has_value());
+  for (std::uint32_t i = 1; i <= finished; ++i) {
+    // Past the watched ratio: the play counts and progress ratchets to i.
+    REQUIRE(store.record_finish(700, Translation::Sub, std::to_string(i), i, 1180.0, 1200.0,
+                                provider, kNow + i)
+                .has_value());
+  }
+}
+
+int run_continue(const ProviderRegistry& registry, const shigoku::cli_play::Sources& sources,
+                 const Config& config, const std::string& dl, Store& store,
+                 const cli::ContinueArgs& args, shigoku::cli_play::PickFn pick) {
+  return shigoku::cli_play::continue_flow(registry, sources, std::move(pick), Translation::Sub,
+                                          config, /*cache_dir=*/"", /*runtime_dir=*/"/tmp", dl,
+                                          store, args);
+}
+
+}  // namespace
+
+TEST_CASE("continue_plays_the_episode_after_the_last_finished_from_the_bound_source") {
+  auto opened = Store::open(fresh_db("continue-next"));
+  REQUIRE(opened.has_value());
+  Store& store = *opened;
+  seed_frieren(store, "fake", /*finished=*/1);
+  // A search that must never run: the binding answers.
+  auto f = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::server(500)); },
+                three_episodes, []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  ps.push_back(std::make_unique<Fake>(f));
+  const ProviderRegistry registry(std::move(ps));
+  const shigoku::cli_play::Sources sources = {registry.at(0)};
+  const std::string dl = fresh_download_dir("continue-next");
+  plant_download(dl + "/700/sub/2.mp4");  // only ep 2: exit 0 = ep 2 was the one played
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  ScriptedPick pick;
+  pick.answers = {std::nullopt};  // the menu: quit
+  CHECK(run_continue(registry, sources, config, dl, store, cli::ContinueArgs{}, pick.fn()) == 0);
+  CHECK(pick.asked("continue which show") == 0);  // one row needs no prompt
+  CHECK(pick.asked("what next") == 1);
+}
+
+TEST_CASE("continue_prefers_the_freshest_partial_watch_over_progress") {
+  auto opened = Store::open(fresh_db("continue-partial"));
+  REQUIRE(opened.has_value());
+  Store& store = *opened;
+  seed_frieren(store, "fake", /*finished=*/1);
+  // A quarter of ep 3, later than the finish: the resume row alone (under
+  // half, the play does not count), and it is where the show is picked up.
+  REQUIRE(store.record_finish(700, Translation::Sub, "3", 3, 300.0, 1200.0, "fake", kNow + 10)
+              .has_value());
+  auto f = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::server(500)); },
+                three_episodes, []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  ps.push_back(std::make_unique<Fake>(f));
+  const ProviderRegistry registry(std::move(ps));
+  const std::string dl = fresh_download_dir("continue-partial");
+  plant_download(dl + "/700/sub/3.mp4");
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  ScriptedPick pick;
+  CHECK(run_continue(registry, {registry.at(0)}, config, dl, store, cli::ContinueArgs{},
+                     pick.fn()) == 0);
+}
+
+TEST_CASE("continue_with_a_dead_binding_searches_again_and_takes_the_hit_with_its_id") {
+  auto opened = Store::open(fresh_db("continue-dead"));
+  REQUIRE(opened.has_value());
+  Store& store = *opened;
+  seed_frieren(store, "dead", /*finished=*/1);
+  auto dead = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::server(500)); },
+                   no_episodes, no_resolve);
+  dead.name_ = "dead";
+  dead.display_ = "dead";
+  // Two hits; the second carries the library row's id and is taken unasked.
+  auto up = make(
+      [](std::string_view) -> Fake::SearchR {
+        auto other = one_hit();
+        other.anilist_id = 1;
+        other.title = "Frieren Movie";
+        auto ours = one_hit();
+        ours.anilist_id = 700;
+        return std::vector<SearchHit>{other, ours};
+      },
+      three_episodes, []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  up.name_ = "up";
+  up.display_ = "up";
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  ps.push_back(std::make_unique<Fake>(dead));
+  ps.push_back(std::make_unique<Fake>(up));
+  const ProviderRegistry registry(std::move(ps));
+  const std::string dl = fresh_download_dir("continue-dead");
+  plant_download(dl + "/700/sub/2.mp4");
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  ScriptedPick pick;
+  CHECK(run_continue(registry, {registry.at(1)}, config, dl, store, cli::ContinueArgs{},
+                     pick.fn()) == 0);
+  CHECK(pick.asked("pick a show") == 0);
+  // The re-found source is now bound too, so the next continue asks it first.
+  auto bindings = store.bindings_for(700);
+  REQUIRE(bindings.has_value());
+  bool bound_up = false;
+  for (const Binding& b : *bindings) bound_up = bound_up || b.provider == "up";
+  CHECK(bound_up);
+}
+
+TEST_CASE("continue_says_caught_up_filters_by_query_and_honours_the_show_flag") {
+  auto opened = Store::open(fresh_db("continue-caught"));
+  REQUIRE(opened.has_value());
+  Store& store = *opened;
+  auto f = make([](std::string_view) -> Fake::SearchR { return err(ProviderError::server(500)); },
+                three_episodes, []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  std::vector<std::unique_ptr<StreamProvider>> ps;
+  ps.push_back(std::make_unique<Fake>(f));
+  const ProviderRegistry registry(std::move(ps));
+  const shigoku::cli_play::Sources sources = {registry.at(0)};
+  const Config config;  // no stub mpv: any play attempt fails (resolve) with 1
+  ScriptedPick pick;
+  // An empty library is a clean 0.
+  CHECK(run_continue(registry, sources, config, "", store, cli::ContinueArgs{}, pick.fn()) == 0);
+  seed_frieren(store, "fake", /*finished=*/3);
+  // All three watched: caught up, nothing played.
+  CHECK(run_continue(registry, sources, config, "", store, cli::ContinueArgs{}, pick.fn()) == 0);
+  // A query nothing matches, and a -S past the list.
+  cli::ContinueArgs miss;
+  miss.query = "zzz";
+  CHECK(run_continue(registry, sources, config, "", store, miss, pick.fn()) == 0);
+  cli::ContinueArgs past;
+  past.show = 2;
+  CHECK(run_continue(registry, sources, config, "", store, past, pick.fn()) == 0);
+  CHECK(pick.prompts.empty());
+  // A second show makes it a list; -S 2 takes it unasked and its ep 1 (nothing
+  // finished) is attempted: resolve fails, the play-path 1.
+  Enrichment e;
+  e.anilist_id = 701;
+  e.title_romaji = "Cowboy Bebop";
+  REQUIRE(store.add_to_library(e, kNow).has_value());
+  REQUIRE(store.bind_provider(e, "fake", "id2", kNow).has_value());
+  cli::ContinueArgs second;
+  second.show = 2;
+  CHECK(run_continue(registry, sources, config, "", store, second, pick.fn()) == 1);
+  CHECK(pick.prompts.empty());
+  // Without -S the list is offered, most recently watched first.
+  ScriptedPick ask;
+  CHECK(run_continue(registry, sources, config, "", store, cli::ContinueArgs{}, ask.fn()) == 0);
+  CHECK(ask.asked("continue which show") == 1);
+  REQUIRE(ask.rows_seen.size() == 1);
+  CHECK(ask.rows_seen[0][0] == "Frieren  \xC2\xB7  ep 3 of 3");
+  CHECK(ask.rows_seen[0][1] == "Cowboy Bebop  \xC2\xB7  not started");
+}
+
+TEST_CASE("a_hit_with_only_a_mal_id_is_filed_under_the_bridged_anilist_id") {
+  auto opened = Store::open(fresh_db("mal-only"));
+  REQUIRE(opened.has_value());
+  Store& store = *opened;
+  // A hit shaped like senshi's: a MAL id, no AniList id. The table knows
+  // Frieren (52991); 2000000000 it does not.
+  static const std::int64_t kFrieren = 52991;
+  static const std::int64_t kUnknown = 2000000000;
+  REQUIRE(idmap::to_anilist(kFrieren).has_value());
+  REQUIRE_FALSE(idmap::to_anilist(kUnknown).has_value());
+  auto known = make(
+      [](std::string_view) -> Fake::SearchR {
+        auto h = one_hit();
+        h.mal_id = kFrieren;
+        return std::vector<SearchHit>{h};
+      },
+      []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
+      []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  known.name_ = "known";
+  auto unknown = make(
+      [](std::string_view) -> Fake::SearchR {
+        auto h = one_hit();
+        h.mal_id = kUnknown;
+        return std::vector<SearchHit>{h};
+      },
+      []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
+      []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  unknown.name_ = "unknown";
+  ScriptedPick pick;
+  pick.answers = {0, 0, 0, 0, 0, 0};  // show + episode, three runs
+  cli::PlayArgs args = play_args();
+  // Resolve fails after the bind, so each run is the play-path 1 with the
+  // library touched on the way.
+  CHECK(shigoku::cli_play::play_flow({&known}, pick.fn(), Translation::Sub, Config{}, "", "/tmp",
+                                     "", &store, args) == 1);
+  CHECK(shigoku::cli_play::play_flow({&unknown}, pick.fn(), Translation::Sub, Config{}, "", "/tmp",
+                                     "", &store, args) == 1);
+  auto real = store.bindings_for(*idmap::to_anilist(kFrieren));
+  REQUIRE(real.has_value());
+  REQUIRE(real->size() == 1);
+  CHECK((*real)[0].provider == "known");
+  auto synthetic = store.bindings_for(-kUnknown);
+  REQUIRE(synthetic.has_value());
+  REQUIRE(synthetic->size() == 1);
+  CHECK((*synthetic)[0].provider == "unknown");
+  // A hit with neither id binds nothing: play-only, as ever.
+  auto neither = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                      []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
+                      []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  neither.name_ = "neither";
+  CHECK(shigoku::cli_play::play_flow({&neither}, pick.fn(), Translation::Sub, Config{}, "", "/tmp",
+                                     "", &store, args) == 1);
+  auto rows = store.list_history();
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());  // bindings mint identity rows, not library rows
+  auto none = store.show_id_for_binding("neither", "id");
+  REQUIRE(none.has_value());
+  CHECK_FALSE(none->has_value());
 }

@@ -61,4 +61,9 @@ std::size_t size() { return data::kCount; }
 
 const char* release() { return data::kRelease; }
 
+std::int64_t anilist_or_synthetic(std::int64_t mal_id) {
+  if (const auto real = to_anilist(mal_id); real.has_value()) return *real;
+  return -mal_id;
+}
+
 }  // namespace shigoku::idmap

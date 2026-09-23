@@ -531,9 +531,11 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_cli STATIC src/cli.cpp src/play_cli.cpp)
   target_include_directories(shigoku_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   # P35 slice 3: play_cli.cpp's download_flow calls the download core.
+  # shigoku_idmap: a hit that carries only a MAL id is filed under the
+  # bridged AniList id (play_cli.cpp bind_hit).
   target_link_libraries(shigoku_cli
     PUBLIC shigoku_login shigoku_sync shigoku_player shigoku_aniskip shigoku_store
-           shigoku_config shigoku_domain shigoku_flags shigoku_thirdparty
+           shigoku_config shigoku_domain shigoku_flags shigoku_thirdparty shigoku_idmap
     PRIVATE shigoku_download)
 endif()
 

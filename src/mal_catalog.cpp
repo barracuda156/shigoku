@@ -188,10 +188,7 @@ std::string effective_client_id(std::string_view config_override) {
   return kClientId;
 }
 
-std::int64_t default_bridge(std::int64_t mal_id) {
-  if (const auto real = idmap::to_anilist(mal_id); real.has_value()) return *real;
-  return -mal_id;
-}
+std::int64_t default_bridge(std::int64_t mal_id) { return idmap::anilist_or_synthetic(mal_id); }
 
 std::vector<std::string> genre_vocabulary() {
   return std::vector<std::string>(std::begin(kGenres), std::end(kGenres));

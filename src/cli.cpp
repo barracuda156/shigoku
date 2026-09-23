@@ -5,10 +5,22 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <limits>
 
 namespace shigoku::cli {
 
 namespace {
+
+constexpr Glyphs kUtf8Glyphs{"✗", "✓", "▶", "↺", "⚠", "⇣", "·", "…"};
+constexpr Glyphs kAsciiGlyphs{"x", "+", ">", "<", "!", "v", "-", "..."};
+bool g_ascii_glyphs = false;
+
+// The usual line openers: two spaces, the glyph, one space.
+std::string fail_lead() { return "  " + std::string(glyphs().fail) + " "; }
+std::string ok_lead() { return "  " + std::string(glyphs().ok) + " "; }
+// The "  ·  " between a title and its counts.
+std::string sep() { return "  " + std::string(glyphs().dot) + "  "; }
+std::string ellipsis() { return std::string(glyphs().ellipsis); }
 
 // ASCII case-insensitive equality (the flag/quality compares are ASCII).
 bool iequals(std::string_view a, std::string_view b) {
@@ -41,88 +53,170 @@ bool is_subcommand(const std::vector<std::string>& args, std::string_view name) 
   return false;
 }
 
-Command parse_query(const std::vector<std::string>& args) {
+// The flags the play-shaped commands share, scanned off argv; `words` are the
+// positionals in order (the subcommand word itself, when `subcommand` names
+// one, is not a word). `usage` = a flag without its value, a value that does
+// not read, or a `--flag` nobody knows. Single-dash words other than the
+// known short flags stay query text (only `--` prefixes are flags here).
+struct Scan {
   std::vector<std::string_view> words;
   bool dub = false;
   std::optional<std::string> quality;
+  std::optional<std::string> episode;
+  std::optional<EpisodeRange> range;
+  std::optional<std::uint32_t> show;
+  std::optional<std::string> provider;
+  bool usage = false;
+};
 
-  for (std::size_t i = 0; i < args.size(); ++i) {
-    std::string_view a = args[i];
-    if (a == "--dub") {
-      dub = true;
-    } else if (a == "--sub") {
-      dub = false;
-    } else if (a == "--quality") {
-      if (i + 1 >= args.size()) return Command::usage();
-      quality = args[++i];
-    } else if (starts_with(a, "--quality=")) {
-      quality = std::string(a.substr(std::string_view("--quality=").size()));
-    } else if (a == "--debug") {
-      // Global, consumed: not a query word, not an unknown flag.
-    } else if (starts_with(a, "--")) {
-      return Command::usage();
-    } else {
-      // Single-dash words fall through to the query (only `--` prefixes are
-      // flags here).
-      words.push_back(a);
-    }
-  }
-
-  if (words.empty()) return Command::tui();
-  std::string joined;
-  for (std::size_t i = 0; i < words.size(); ++i) {
-    if (i > 0) joined += ' ';
-    joined += std::string(words[i]);
-  }
-  return Command::play(PlayArgs{std::move(joined), dub, std::move(quality)});
+bool is_flag(std::string_view a, std::string_view short_name, std::string_view long_name) {
+  return a == short_name || a == long_name || starts_with(a, std::string(long_name) + "=");
 }
 
-// `download <query…> [<ep>]` (P35 slice 3): flags as the query path; the LAST
-// positional is the episode label when 2+ positionals follow the subcommand
-// word, else the lone word is the query (interactive episode pick). No
-// positionals at all is usage.
-Command parse_download(const std::vector<std::string>& args) {
-  std::vector<std::string_view> words;
-  bool dub = false;
-  bool seen_subcommand = false;
+// A flag's value: the `--flag=value` tail, or the next argv word (consumed).
+// nullopt = there is none.
+std::optional<std::string> take_value(const std::vector<std::string>& args, std::size_t& i,
+                                      std::string_view a, std::string_view long_name) {
+  const std::string eq = std::string(long_name) + "=";
+  if (starts_with(a, eq)) return std::string(a.substr(eq.size()));
+  if (i + 1 >= args.size()) return std::nullopt;
+  return args[++i];
+}
 
+Scan scan_flags(const std::vector<std::string>& args, std::string_view subcommand) {
+  Scan s;
+  bool seen_subcommand = subcommand.empty();
   for (std::size_t i = 0; i < args.size(); ++i) {
     std::string_view a = args[i];
-    if (!seen_subcommand && a == "download") {
+    if (!seen_subcommand && a == subcommand) {
       seen_subcommand = true;  // the subcommand word itself.
     } else if (a == "--dub") {
-      dub = true;
+      s.dub = true;
     } else if (a == "--sub") {
-      dub = false;
-    } else if (a == "--debug") {
-      // Global, consumed.
+      s.dub = false;
+    } else if (a == "--debug" || a == "--ascii") {
+      // Global, consumed: not a query word, not an unknown flag.
+    } else if (is_flag(a, "-q", "--quality")) {
+      auto v = take_value(args, i, a, "--quality");
+      if (!v.has_value()) return Scan{{}, false, {}, {}, {}, {}, {}, true};
+      s.quality = std::move(*v);
+    } else if (is_flag(a, "-e", "--episode")) {
+      auto v = take_value(args, i, a, "--episode");
+      if (!v.has_value() || v->empty()) return Scan{{}, false, {}, {}, {}, {}, {}, true};
+      s.episode = std::move(*v);
+    } else if (is_flag(a, "-r", "--range")) {
+      auto v = take_value(args, i, a, "--range");
+      auto r = v.has_value() ? parse_range(*v) : std::nullopt;
+      if (!r.has_value()) return Scan{{}, false, {}, {}, {}, {}, {}, true};
+      s.range = std::move(*r);
+    } else if (is_flag(a, "-S", "--show")) {
+      auto v = take_value(args, i, a, "--show");
+      const std::uint32_t n = v.has_value() ? ordinal_of(*v) : 0;
+      if (n == 0) return Scan{{}, false, {}, {}, {}, {}, {}, true};
+      s.show = n;
+    } else if (is_flag(a, "-p", "--provider")) {
+      auto v = take_value(args, i, a, "--provider");
+      if (!v.has_value() || v->empty()) return Scan{{}, false, {}, {}, {}, {}, {}, true};
+      s.provider = std::move(*v);
     } else if (starts_with(a, "--")) {
-      return Command::usage();
+      return Scan{{}, false, {}, {}, {}, {}, {}, true};
     } else {
-      // is_subcommand guaranteed only flags precede the subcommand word, so
-      // every positional here follows it.
-      words.push_back(a);
+      s.words.push_back(a);
     }
   }
+  // One episode or a span, never both.
+  if (s.episode.has_value() && s.range.has_value()) s.usage = true;
+  return s;
+}
 
-  if (words.empty()) return Command::usage();
-  std::optional<std::string> episode;
-  if (words.size() >= 2) {
-    episode = std::string(words.back());
-    words.pop_back();
-  }
+std::string join_words(const std::vector<std::string_view>& words) {
   std::string joined;
   for (std::size_t i = 0; i < words.size(); ++i) {
     if (i > 0) joined += ' ';
     joined += std::string(words[i]);
   }
-  return Command::download(DownloadArgs{std::move(joined), std::move(episode), dub});
+  return joined;
+}
+
+Command parse_query(const std::vector<std::string>& args) {
+  Scan s = scan_flags(args, "");
+  if (s.usage) return Command::usage();
+  if (s.words.empty()) {
+    // Flags alone open the interface, as ever — except the play flags, which
+    // mean nothing there.
+    if (s.quality.has_value() || s.episode.has_value() || s.range.has_value() ||
+        s.show.has_value() || s.provider.has_value()) {
+      return Command::usage();
+    }
+    return Command::tui();
+  }
+  PlayArgs a;
+  a.query = join_words(s.words);
+  a.dub = s.dub;
+  a.quality = std::move(s.quality);
+  a.episode = std::move(s.episode);
+  a.range = std::move(s.range);
+  a.show = s.show;
+  a.provider = std::move(s.provider);
+  return Command::play(std::move(a));
+}
+
+// `download <query…> [<ep>]`: the LAST positional is the
+// episode label when 2+ positionals follow the subcommand word (or `-e`
+// names it — not both), else the lone word is the query (interactive
+// episode pick). No positionals at all, or a span, is usage.
+Command parse_download(const std::vector<std::string>& args) {
+  Scan s = scan_flags(args, "download");
+  if (s.usage || s.words.empty() || s.range.has_value()) return Command::usage();
+  std::optional<std::string> episode = std::move(s.episode);
+  if (s.words.size() >= 2) {
+    if (episode.has_value()) return Command::usage();
+    episode = std::string(s.words.back());
+    s.words.pop_back();
+  }
+  DownloadArgs a;
+  a.query = join_words(s.words);
+  a.episode = std::move(episode);
+  a.dub = s.dub;
+  a.quality = std::move(s.quality);
+  a.show = s.show;
+  a.provider = std::move(s.provider);
+  return Command::download(std::move(a));
+}
+
+// `continue [<query…>]`: the positionals, if any, are the title filter. An
+// episode or a span is usage — the library decides the episode.
+Command parse_continue(const std::vector<std::string>& args) {
+  Scan s = scan_flags(args, "continue");
+  if (s.usage || s.episode.has_value() || s.range.has_value()) return Command::usage();
+  ContinueArgs a;
+  if (!s.words.empty()) a.query = join_words(s.words);
+  a.dub = s.dub;
+  a.quality = std::move(s.quality);
+  a.show = s.show;
+  a.provider = std::move(s.provider);
+  return Command::continue_show(std::move(a));
 }
 
 }  // namespace
 
 bool debug_flag(const std::vector<std::string>& args) {
   return std::any_of(args.begin(), args.end(), [](const std::string& a) { return a == "--debug"; });
+}
+
+bool ascii_flag(const std::vector<std::string>& args) {
+  return std::any_of(args.begin(), args.end(), [](const std::string& a) { return a == "--ascii"; });
+}
+
+void set_ascii_glyphs(bool ascii) { g_ascii_glyphs = ascii; }
+bool ascii_glyphs() { return g_ascii_glyphs; }
+const Glyphs& glyphs() { return g_ascii_glyphs ? kAsciiGlyphs : kUtf8Glyphs; }
+
+bool utf8_locale_name(std::string_view name) {
+  std::string lower;
+  lower.reserve(name.size());
+  for (char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  return lower.find("utf-8") != std::string::npos || lower.find("utf8") != std::string::npos;
 }
 
 Command parse(const std::vector<std::string>& args) {
@@ -142,12 +236,14 @@ Command parse(const std::vector<std::string>& args) {
   if (is_subcommand(args, "sync")) return Command::sync();
   if (is_subcommand(args, "update")) return Command::update();
   if (is_subcommand(args, "download")) return parse_download(args);
+  if (is_subcommand(args, "continue")) return parse_continue(args);
   return parse_query(args);
 }
 
 const char* const kUsage =
-    "  usage: shigoku <query> [--dub] [--quality <q>] [--debug]\n"
-    "         shigoku download <query> [<ep>] [--dub]\n"
+    "  usage: shigoku <query> [--dub] [-q <quality>] [-S <n>] [-e <ep> | -r <a>-<b>] [-p <source>]\n"
+    "         shigoku continue [<query>] [--dub] [-q <quality>] [-S <n>] [-p <source>]\n"
+    "         shigoku download <query> [<ep>] [--dub] [-q <quality>] [-S <n>] [-p <source>]\n"
     "         shigoku login [--paste]\n"
     "         shigoku sync\n"
     "         shigoku update\n"
@@ -155,11 +251,20 @@ const char* const kUsage =
     "\n"
     "    shigoku frieren\n"
     "    shigoku \"cowboy bebop\" --dub\n"
+    "    shigoku frieren -S 1 -e 7      the first result, episode 7, no prompts\n"
+    "    shigoku frieren -r 1-4         episodes 1 through 4, one after another\n"
+    "    shigoku continue               pick up where you left off\n"
     "    shigoku download frieren 7\n"
     "    shigoku login\n"
     "\n"
+    "  -q <quality>   best (the default), 1080, 720, 480, or worst.\n"
+    "  -S <n>         take the nth search result instead of asking.\n"
+    "  -e <ep>        play that episode: its label, or its position in the list.\n"
+    "  -r <a>-<b>     play the span in order; leave <b> off for \"to the end\".\n"
+    "  -p <source>    ask this source first (shigoku --paths lists them).\n"
     "  --version (or -V) prints the version and exits.\n"
     "  --paths prints the config/data/cache locations and exits.\n"
+    "  --ascii keeps the output to plain ASCII (automatic when the locale isn't UTF-8).\n"
     "  --debug (or SHIGOKU_DEBUG=1) writes diagnostics: stderr in CLI mode,\n"
     "  ~/.local/share/shigoku/shigoku.log in the TUI.\n";
 
@@ -176,22 +281,24 @@ std::string render_connect_result(const login::ConnectResult& result, std::strin
       // AniList-supplied name reaches a raw stdout write with no ratatui
       // backstop; strip terminal-hostile bytes before it prints.
       std::string name = strip_controls(result.user_name);
-      return "  ✓ signed in as " + name + ". Saved to " + std::string(auth_path) + ".\n";
+      return ok_lead() + "signed in as " + name + ". Saved to " + std::string(auth_path) + ".\n";
     }
     case K::NoToken:
-      return paste ? "  ✗ couldn't find an access_token in that; aborted.\n"
-                   : "  ✗ the redirect carried no access_token.\n";
+      return fail_lead() + (paste ? "couldn't find an access_token in that; aborted.\n"
+                                  : "the redirect carried no access_token.\n");
     case K::Rejected:
-      return paste ? "  ✗ AniList rejected the token (invalid or expired); re-copy the whole "
-                     "fragment and retry.\n"
-                   : "  ✗ AniList rejected the token (invalid or expired); re-run to retry.\n";
+      return fail_lead() + (paste ? "AniList rejected the token (invalid or expired); re-copy "
+                                    "the whole fragment and retry.\n"
+                                  : "AniList rejected the token (invalid or expired); re-run to "
+                                    "retry.\n");
     case K::NetworkError:
-      return paste ? "  ✗ couldn't reach AniList to verify; check your connection and retry.\n"
-                   : "  ✗ couldn't reach AniList to verify; re-run shortly.\n";
+      return fail_lead() + (paste ? "couldn't reach AniList to verify; check your connection "
+                                    "and retry.\n"
+                                  : "couldn't reach AniList to verify; re-run shortly.\n");
     case K::SaveFailed:
-      return "  ✗ verified, but couldn't write " + std::string(auth_path) + ".\n";
+      return fail_lead() + "verified, but couldn't write " + std::string(auth_path) + ".\n";
     case K::BadState:
-      return "  ✗ login state mismatch.\n";
+      return fail_lead() + "login state mismatch.\n";
     case K::Canceled:
       return "  login canceled.\n";
   }
@@ -296,10 +403,12 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
              " AniList show(s) aren't in your local library yet; not imported.)\n";
       const std::size_t shown = std::min(s.pulled.unmatched.size(), kShowListCap);
       for (std::size_t i = 0; i < shown; ++i) {
-        out += "      · anilist.co/anime/" + std::to_string(s.pulled.unmatched[i]) + "\n";
+        out += "      " + std::string(glyphs().dot) + " anilist.co/anime/" +
+               std::to_string(s.pulled.unmatched[i]) + "\n";
       }
       if (s.pulled.unmatched.size() > shown) {
-        out += "      … and " + std::to_string(s.pulled.unmatched.size() - shown) + " more\n";
+        out += "      " + ellipsis() + " and " +
+               std::to_string(s.pulled.unmatched.size() - shown) + " more\n";
       }
     }
   }
@@ -336,18 +445,30 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
   return out;
 }
 
+// A title with its English/romaji alternate in parentheses when one is
+// carried and it is not the same name again (ASCII case-folded), both
+// stripped of terminal-hostile bytes.
+std::string title_with_alt(std::string_view title, const std::optional<std::string>& alt) {
+  std::string row = strip_controls(title);
+  if (alt.has_value()) {
+    const std::string other = strip_controls(*alt);
+    if (!other.empty() && !iequals(other, row)) row += " (" + other + ")";
+  }
+  return row;
+}
+
 std::vector<std::string> search_hit_rows(const std::vector<SearchHit>& hits,
                                          Translation translation) {
   std::vector<std::string> rows;
   rows.reserve(hits.size());
   for (const SearchHit& h : hits) {
-    std::string row = strip_controls(h.title);
+    std::string row = title_with_alt(h.title, h.title_english);
     const std::uint32_t per_track = translation == Translation::Dub ? h.eps_dub : h.eps_sub;
     if (per_track > 0) {
-      row += "  ·  " + std::to_string(per_track) + " " + std::string(to_string(translation)) +
+      row += sep() + std::to_string(per_track) + " " + std::string(to_string(translation)) +
              " eps";
     } else if (h.total_episodes.has_value()) {
-      row += "  ·  " + std::to_string(*h.total_episodes) + " eps";
+      row += sep() + std::to_string(*h.total_episodes) + " eps";
     }
     rows.push_back(std::move(row));
   }
@@ -409,44 +530,152 @@ std::string fetch_error_line(FetchStage stage, ProviderError::Kind kind, std::st
   using K = ProviderError::Kind;
   switch (kind) {
     case K::Network:
-      return "  ✗ can't reach " + p + ": check your network, then try again.\n";
+      return fail_lead() + "can't reach " + p + ": check your network, then try again.\n";
     case K::Forbidden:
-      return "  ✗ " + p + " is blocking the request (403/451); a VPN may get you through.\n";
+      return fail_lead() + p + " is blocking the request (403/451); a VPN may get you through.\n";
     case K::Server:
-      return "  ✗ " + p + "'s servers are down (5xx); wait a bit and retry.\n";
+      return fail_lead() + p + "'s servers are down (5xx); wait a bit and retry.\n";
     // RateLimited (429) postdates the Rust FetchClass (P20 split); read it as a
     // transient down/back-off, the closest of the frozen copy set.
     case K::RateLimited:
-      return "  ✗ " + p + " is rate-limiting the request; wait a bit and retry.\n";
+      return fail_lead() + p + " is rate-limiting the request; wait a bit and retry.\n";
     case K::Http:
-      return "  ✗ " + p + " rejected the request; the site may be down or its recipe drifted.\n";
+      return fail_lead() + p + " rejected the request; the site may be down or its recipe drifted.\n";
     case K::Decode:
       switch (stage) {
         case FetchStage::Search:
-          return "  ✗ couldn't parse " + p + "'s search results; its format may have shifted.\n";
+          return fail_lead() + "couldn't parse " + p + "'s search results; its format may have shifted.\n";
         case FetchStage::Episodes:
-          return "  ✗ couldn't read " + p + "'s episode list; its format may have shifted.\n";
+          return fail_lead() + "couldn't read " + p + "'s episode list; its format may have shifted.\n";
         case FetchStage::Resolve:
-          return "  ✗ " + p +
+          return fail_lead() + p +
                  " returned an unexpected stream payload; the protocol may have shifted.\n";
       }
       return {};
     case K::Unsupported:
       switch (stage) {
         case FetchStage::Search:
-          return "  ✗ " + p + " can't search directly; use the TUI.\n";
+          return fail_lead() + p + " can't search directly; use the TUI.\n";
         case FetchStage::Episodes:
-          return "  ✗ " + p + " can't list episodes for this show.\n";
+          return fail_lead() + p + " can't list episodes for this show.\n";
         case FetchStage::Resolve:
-          return "  ✗ " + p + " can't provide a playable stream for this episode.\n";
+          return fail_lead() + p + " can't provide a playable stream for this episode.\n";
       }
       return {};
   }
   return {};
 }
 
-bool quality_note_needed(std::optional<std::string_view> quality) {
-  return quality.has_value() && !iequals(*quality, "best");
+std::optional<std::string> quality_note(std::optional<std::string_view> quality) {
+  if (!quality.has_value()) return std::nullopt;
+  for (std::string_view known : {"best", "1080", "720", "480", "worst"}) {
+    if (*quality == known) return std::nullopt;
+  }
+  return "  (note: no quality called \"" + strip_controls(*quality) + "\"; using best.)";
+}
+
+std::string unknown_source_note(std::string_view asked,
+                                const std::vector<std::string_view>& names) {
+  std::string list;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (i > 0) list += ", ";
+    list += std::string(names[i]);
+  }
+  return "  (note: no source called \"" + strip_controls(asked) +
+         "\"; the sources that can search are " + list + ".)";
+}
+
+std::optional<EpisodeRange> parse_range(std::string_view text) {
+  const std::size_t dash = text.find('-');
+  if (dash == std::string_view::npos || dash == 0) return std::nullopt;
+  const std::string_view rest = text.substr(dash + 1);
+  if (rest.find('-') != std::string_view::npos) return std::nullopt;
+  EpisodeRange r;
+  r.first = std::string(text.substr(0, dash));
+  if (!rest.empty()) r.last = std::string(rest);
+  return r;
+}
+
+std::uint32_t ordinal_of(std::string_view text) {
+  if (text.empty()) return 0;
+  std::uint64_t n = 0;
+  for (const char c : text) {
+    if (c < '0' || c > '9') return 0;
+    n = n * 10 + static_cast<std::uint64_t>(c - '0');
+    if (n > std::numeric_limits<std::uint32_t>::max()) return 0;
+  }
+  return static_cast<std::uint32_t>(n);
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> range_indices(
+    const std::vector<std::string>& episodes, const EpisodeRange& range) {
+  if (episodes.empty()) return std::nullopt;
+  auto first = map_episode_index(episodes, range.first, ordinal_of(range.first));
+  if (!first.has_value()) return std::nullopt;
+  std::size_t last = episodes.size() - 1;
+  if (range.last.has_value()) {
+    auto l = map_episode_index(episodes, *range.last, ordinal_of(*range.last));
+    if (!l.has_value()) return std::nullopt;
+    last = *l;
+  }
+  if (*first > last) return std::nullopt;
+  return std::make_pair(*first, last);
+}
+
+PostPlayMenu post_play_menu(std::size_t index, const std::vector<std::string>& episodes) {
+  PostPlayMenu m;
+  auto add = [&m](std::string row, PostPlay action) {
+    m.rows.push_back(std::move(row));
+    m.actions.push_back(action);
+  };
+  if (index + 1 < episodes.size()) {
+    add("next" + sep() + "ep " + strip_controls(episodes[index + 1]), PostPlay::Next);
+  }
+  if (index < episodes.size()) {
+    add("replay" + sep() + "ep " + strip_controls(episodes[index]), PostPlay::Replay);
+  }
+  if (index > 0 && index - 1 < episodes.size()) {
+    add("previous" + sep() + "ep " + strip_controls(episodes[index - 1]), PostPlay::Previous);
+  }
+  add("quit", PostPlay::Quit);
+  return m;
+}
+
+std::vector<std::string> history_rows(const std::vector<Show>& shows) {
+  std::vector<std::string> rows;
+  rows.reserve(shows.size());
+  for (const Show& s : shows) {
+    std::string row = title_with_alt(s.enrichment.title_romaji, s.enrichment.title_english);
+    if (s.progress > 0) {
+      row += sep() + "ep " + std::to_string(s.progress);
+      if (s.enrichment.total_episodes.has_value() && *s.enrichment.total_episodes > 0) {
+        row += " of " + std::to_string(*s.enrichment.total_episodes);
+      }
+    } else {
+      row += sep() + "not started";
+    }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+std::vector<std::size_t> history_matches(const std::vector<Show>& shows, std::string_view query) {
+  auto fold = [](std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return out;
+  };
+  const std::string q = fold(query);
+  std::vector<std::size_t> out;
+  for (std::size_t i = 0; i < shows.size(); ++i) {
+    const Enrichment& e = shows[i].enrichment;
+    const bool hit = q.empty() || fold(e.title_romaji).find(q) != std::string::npos ||
+                     (e.title_english.has_value() && fold(*e.title_english).find(q) != std::string::npos) ||
+                     (e.title_native.has_value() && fold(*e.title_native).find(q) != std::string::npos);
+    if (hit) out.push_back(i);
+  }
+  return out;
 }
 
 std::optional<std::string> provider_override_note(
@@ -477,7 +706,7 @@ std::string search_walk_note(std::string_view skipped, std::optional<ProviderErr
       case K::RateLimited: why += " is rate-limiting us"; break;
     }
   }
-  return "  (" + why + "; trying " + std::string(next) + "…)\n";
+  return "  (" + why + "; trying " + std::string(next) + ellipsis() + ")\n";
 }
 
 std::string player_failure_line(PlayError::Kind kind, std::string_view provider,
@@ -485,14 +714,14 @@ std::string player_failure_line(PlayError::Kind kind, std::string_view provider,
   using K = PlayError::Kind;
   switch (kind) {
     case K::MpvNotFound:
-      return "  ✗ mpv isn't on your PATH; install mpv and try again.\n";
+      return fail_lead() + "mpv isn't on your PATH; install mpv and try again.\n";
     case K::Exit:
     case K::Wait:
     case K::Spawn:
-      return "  ✗ mpv exited badly (it closed early or couldn't play the stream).\n";
+      return fail_lead() + "mpv exited badly (it closed early or couldn't play the stream).\n";
     case K::OpenFailed:
-      return "  ✗ couldn't open the stream (the CDN may have blocked it); try again in a "
-             "moment.\n";
+      return fail_lead() + "couldn't open the stream (the CDN may have blocked it); try again "
+             "in a moment.\n";
     case K::Resolve:
       // The class was captured in the caller's resolve closure (player::play
       // collapses it into a detail string). nullopt = a non-provider resolve
@@ -500,12 +729,14 @@ std::string player_failure_line(PlayError::Kind kind, std::string_view provider,
       if (resolve_class.has_value()) {
         return fetch_error_line(FetchStage::Resolve, *resolve_class, provider);
       }
-      return "  ✗ playback couldn't start safely; try again or pick a different episode.\n";
+      return fail_lead() + "playback couldn't start safely; try again or pick a different "
+             "episode.\n";
     // UnsafeUrl / UnsafeArg are the shigoku-only hardening stops (no zigoku
     // analog): read as a safe stop, like the Rust Internal class.
     case K::UnsafeUrl:
     case K::UnsafeArg:
-      return "  ✗ playback couldn't start safely; try again or pick a different episode.\n";
+      return fail_lead() + "playback couldn't start safely; try again or pick a different "
+             "episode.\n";
   }
   return {};
 }

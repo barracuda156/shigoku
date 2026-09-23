@@ -9,8 +9,11 @@
 // Headless commands never touch the terminal layer (no tui::run, no term
 // init) — the tty-less contract for headless mode.
 
+#include <langinfo.h>
 #include <unistd.h>
 
+#include <clocale>
+#include <cstdlib>
 #include <ctime>
 #include <cstdint>
 #include <cstdio>
@@ -147,8 +150,8 @@ bool paste_login(const login::Verifier& verifier, const std::string& auth_path, 
   std::printf("1. Open this URL in a browser and approve:\n\n");
   std::printf("   %s\n\n", login::authorize_url_bare().c_str());
   std::printf(
-      "2. You land on http://localhost:%u/…; paste that whole URL below. If nothing\n",
-      static_cast<unsigned>(login::kLoopbackPort));
+      "2. You land on http://localhost:%u/%s; paste that whole URL below. If nothing\n",
+      static_cast<unsigned>(login::kLoopbackPort), std::string(cli::glyphs().ellipsis).c_str());
   std::printf("   is listening there the page won't load; that's fine, the token is in\n");
   std::printf("   the address bar. Select the ENTIRE URL (the token has three dot-\n");
   std::printf("   separated parts; a double-click grabs only the first).\n\n");
@@ -161,7 +164,7 @@ bool paste_login(const login::Verifier& verifier, const std::string& auth_path, 
     return false;
   }
 
-  std::printf("\nverifying…\n");
+  std::printf("\nverifying%s\n", std::string(cli::glyphs().ellipsis).c_str());
   flush_stdout();
   const std::string raw = login::normalize_paste(trim(*line));
   const login::ConnectResult result = login::complete_login(raw, verifier, auth_path, now);
@@ -172,11 +175,12 @@ bool paste_login(const login::Verifier& verifier, const std::string& auth_path, 
 bool loopback_login(loopback::Loopback& lp, const login::Verifier& verifier,
                     const std::string& auth_path, std::int64_t now) {
   const std::string url = lp.authorize_url();
-  std::printf("Opening your browser to approve AniList access…\n");
+  std::printf("Opening your browser to approve AniList access%s\n",
+              std::string(cli::glyphs().ellipsis).c_str());
   std::printf("  If it doesn't open, visit this URL yourself:\n");
   std::printf("  %s\n\n", url.c_str());
-  std::printf("Waiting for the redirect on http://localhost:%u/ …\n",
-              static_cast<unsigned>(lp.port()));
+  std::printf("Waiting for the redirect on http://localhost:%u/ %s\n",
+              static_cast<unsigned>(lp.port()), std::string(cli::glyphs().ellipsis).c_str());
   std::printf("  (Ctrl-C to cancel, or re-run `shigoku login --paste` for manual entry.)\n\n");
   flush_stdout();
   login::open_browser(url);
@@ -184,7 +188,8 @@ bool loopback_login(loopback::Loopback& lp, const login::Verifier& verifier,
   bool warned = false;
   const login::ConnectResult result = lp.serve(verifier, auth_path, now, [&warned] {
     if (!warned) {
-      std::printf("  ⚠ ignoring callback(s) with a bad state (stray or forged requests).\n");
+      std::printf("  %s ignoring callback(s) with a bad state (stray or forged requests).\n",
+                  std::string(cli::glyphs().warn).c_str());
       flush_stdout();
       warned = true;
     }
@@ -270,7 +275,7 @@ int run_sync_cli() {
   const bool mal_on = auth.mal.bearer().has_value();
   if ((auth.anilist.bearer().has_value() && !auth.anilist.is_expired(now)) || mal_on) {
     // Announce before the paced push; flush so it lands pre-network.
-    std::printf("  syncing, this can take a moment…\n");
+    std::printf("  syncing, this can take a moment%s\n", std::string(cli::glyphs().ellipsis).c_str());
     flush_stdout();
   }
 
@@ -465,6 +470,54 @@ std::string resolve_download_dir(const Config& config, const Paths& paths) {
   return paths.data + "/downloads";
 }
 
+// The search-capable sources for one command-line run, led by `-p`'s source
+// when given (else the config's preference) — every one that can search,
+// preferred first when it can (ROD-491), the flow walking past a failing or
+// empty one to the next. Says what it changed: a `-p` the registry has not
+// got (the run walks as if unset), a preference that cannot search. nullopt
+// = nothing can search at all (said; the caller's exit 1).
+std::optional<cli_play::Sources> cli_sources(const ProviderRegistry& registry,
+                                             const Config& config,
+                                             const std::optional<std::string>& flag) {
+  const std::string pref = flag.has_value() ? *flag : config.preferred_provider;
+  const cli_play::Sources sources = registry.searchable(pref);
+  if (sources.empty()) {
+    std::printf("  %s no configured source can search.\n",
+                std::string(cli::glyphs().fail).c_str());
+    return std::nullopt;
+  }
+  const StreamProvider* asked = registry.by_name(pref);
+  if (flag.has_value() && asked == nullptr) {
+    std::vector<std::string_view> names;
+    for (const StreamProvider* p : sources) names.push_back(p->name());
+    std::printf("%s\n", cli::unknown_source_note(*flag, names).c_str());
+  }
+  auto note = cli::provider_override_note(
+      asked != nullptr
+          ? std::optional<std::pair<std::string_view, std::string_view>>({asked->name(),
+                                                                          asked->display_name()})
+          : std::nullopt,
+      {sources.front()->name(), sources.front()->display_name()});
+  if (note.has_value()) std::printf("%s\n", note->c_str());
+  return sources;
+}
+
+// The `-q` heads-up: a spelling parse_quality does not know plays best.
+void say_quality_note(const std::optional<std::string>& quality) {
+  auto note = cli::quality_note(quality.has_value() ? std::optional<std::string_view>(*quality)
+                                                    : std::nullopt);
+  if (note.has_value()) std::printf("%s\n", note->c_str());
+}
+
+// The library, best-effort: one that won't open degrades the run to
+// play-only and never blocks playback.
+std::optional<Store> open_store_best_effort(const Paths& paths) {
+  auto store_r = Store::open(paths.data + "/shigoku.db");
+  if (store_r.has_value()) return std::move(*store_r);
+  std::printf("  (couldn't open your library; continuing without history.)\n");
+  return std::nullopt;
+}
+
 // `shigoku <query>`: the one command whose failure exits nonzero. One
 // provider for the whole run, chosen for search capability (ROD-491);
 // interactive stdin picks; store is best-effort and degrades.
@@ -480,55 +533,21 @@ int run_play_cli(const cli::PlayArgs& args) {
   // Translation is flag-only (parity): --dub/--sub decide it, config's
   // translation never reaches the query path. Not a bug — don't "fix" it.
   const Translation translation = args.dub ? Translation::Dub : Translation::Sub;
+  say_quality_note(args.quality);
 
-  // --quality is parsed but inert: warn once on a non-default value so the
-  // flag never looks silently honored. default_quality drives resolve.
-  if (cli::quality_note_needed(args.quality.has_value()
-                                   ? std::optional<std::string_view>(*args.quality)
-                                   : std::nullopt)) {
-    std::printf(
-        "  (note: --quality isn't wired up yet; playback uses the highest direct stream "
-        "available.)\n");
-  }
-
-  // Store is best-effort: a library that won't open degrades to play-only and
-  // never blocks playback.
-  std::optional<Store> store_holder = std::nullopt;
-  auto store_r = Store::open(paths->data + "/shigoku.db");
-  if (store_r.has_value()) {
-    store_holder.emplace(std::move(*store_r));
-  } else {
-    std::printf("  (couldn't open your library; continuing without history.)\n");
-  }
+  std::optional<Store> store_holder = open_store_best_effort(*paths);
   Store* store = store_holder.has_value() ? &*store_holder : nullptr;
 
   auto registry = build_registry();
   if (!registry.has_value()) {
-    std::printf("  ✗ couldn't set up a provider client.\n");
+    std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
     return 1;
   }
-
-  // Search-capable, not merely preferred (ROD-491). Whichever answers owns the
-  // whole run.
-  // Every source that can search, preferred first when it can (ROD-491);
-  // the flow walks past a failing or empty one to the next.
-  const std::string_view pref = config.preferred_provider;
-  const cli_play::Sources sources = registry->searchable(pref);
-  if (sources.empty()) {
-    std::printf("  ✗ no configured source can search.\n");
-    return 1;
-  }
-  const StreamProvider* asked = registry->by_name(pref);
-  auto note = cli::provider_override_note(
-      asked != nullptr
-          ? std::optional<std::pair<std::string_view, std::string_view>>({asked->name(),
-                                                                          asked->display_name()})
-          : std::nullopt,
-      {sources.front()->name(), sources.front()->display_name()});
-  if (note.has_value()) std::printf("%s\n", note->c_str());
+  auto sources = cli_sources(*registry, config, args.provider);
+  if (!sources.has_value()) return 1;
 
   const cli_play::PickFn pick = make_picker(config);
-  return cli_play::play_flow(sources, pick, translation, config, paths->cache, paths->runtime,
+  return cli_play::play_flow(*sources, pick, translation, config, paths->cache, paths->runtime,
                              resolve_download_dir(config, *paths), store, args);
 }
 
@@ -543,46 +562,87 @@ int run_download_cli(const cli::DownloadArgs& args) {
   ensure_dirs(*paths);
   const Config config = Config::load(config_file_path(*paths));
   const Translation translation = args.dub ? Translation::Dub : Translation::Sub;
+  say_quality_note(args.quality);
 
-  std::optional<Store> store_holder = std::nullopt;
-  auto store_r = Store::open(paths->data + "/shigoku.db");
-  if (store_r.has_value()) {
-    store_holder.emplace(std::move(*store_r));
-  } else {
-    std::printf("  (couldn't open your library; continuing without history.)\n");
-  }
+  std::optional<Store> store_holder = open_store_best_effort(*paths);
   Store* store = store_holder.has_value() ? &*store_holder : nullptr;
 
   auto registry = build_registry();
   if (!registry.has_value()) {
-    std::printf("  ✗ couldn't set up a provider client.\n");
+    std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
     return 1;
   }
-  // Every source that can search, preferred first when it can (ROD-491);
-  // the flow walks past a failing or empty one to the next.
-  const std::string_view pref = config.preferred_provider;
-  const cli_play::Sources sources = registry->searchable(pref);
-  if (sources.empty()) {
-    std::printf("  ✗ no configured source can search.\n");
-    return 1;
-  }
-  const StreamProvider* asked = registry->by_name(pref);
-  auto note = cli::provider_override_note(
-      asked != nullptr
-          ? std::optional<std::pair<std::string_view, std::string_view>>({asked->name(),
-                                                                          asked->display_name()})
-          : std::nullopt,
-      {sources.front()->name(), sources.front()->display_name()});
-  if (note.has_value()) std::printf("%s\n", note->c_str());
+  auto sources = cli_sources(*registry, config, args.provider);
+  if (!sources.has_value()) return 1;
 
   const cli_play::PickFn pick = make_picker(config);
-  return cli_play::download_flow(sources, pick, translation, config,
+  return cli_play::download_flow(*sources, pick, translation, config,
                                  resolve_download_dir(config, *paths), store, args);
+}
+
+// `shigoku continue [<query>]`: a library show picked back up where it was
+// left. The library is the point here, so a store that won't open is the
+// run's failure (1), not a degrade.
+int run_continue_cli(const cli::ContinueArgs& args) {
+  auto paths = resolve_paths();
+  if (!paths.has_value()) {
+    std::fprintf(stderr, "shigoku: could not resolve HOME/XDG dirs\n");
+    return 1;
+  }
+  ensure_dirs(*paths);
+  const Config config = Config::load(config_file_path(*paths));
+  const Translation translation = args.dub ? Translation::Dub : Translation::Sub;
+  say_quality_note(args.quality);
+
+  auto store = Store::open(paths->data + "/shigoku.db");
+  if (!store.has_value()) {
+    std::printf("  %s couldn't open your library (%s); nothing to continue.\n",
+                std::string(cli::glyphs().fail).c_str(), store.error().detail.c_str());
+    return 1;
+  }
+
+  auto registry = build_registry();
+  if (!registry.has_value()) {
+    std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
+    return 1;
+  }
+  auto sources = cli_sources(*registry, config, args.provider);
+  if (!sources.has_value()) return 1;
+
+  const cli_play::PickFn pick = make_picker(config);
+  return cli_play::continue_flow(*registry, *sources, pick, translation, config, paths->cache,
+                                 paths->runtime, resolve_download_dir(config, *paths), *store,
+                                 args);
+}
+
+// Whether the environment's locale is UTF-8: its codeset (nl_langinfo after
+// setlocale from the environment — an unknown locale name leaves "C", an
+// ASCII codeset), else the LC_* variables' own names. LC_CTYPE is put back
+// as it was: the command line's own text handling is byte-wise and stays so.
+bool locale_is_utf8() {
+  const char* prev = std::setlocale(LC_CTYPE, nullptr);
+  const std::string saved = prev != nullptr ? prev : "C";
+  bool utf8 = false;
+  bool decided = false;
+  if (std::setlocale(LC_CTYPE, "") != nullptr) {
+    const char* codeset = nl_langinfo(CODESET);
+    if (codeset != nullptr && codeset[0] != '\0') {
+      utf8 = cli::utf8_locale_name(codeset);
+      decided = true;
+    }
+  }
+  std::setlocale(LC_CTYPE, saved.c_str());
+  if (decided) return utf8;
+  for (const char* var : {"LC_ALL", "LC_CTYPE", "LANG"}) {
+    const char* v = std::getenv(var);
+    if (v != nullptr && v[0] != '\0') return cli::utf8_locale_name(v);
+  }
+  return false;
 }
 
 // ── paths / tui ─────────────────────────────────────────────────────────────
 
-int print_paths() {
+int print_paths(const std::vector<std::string>& args) {
   auto paths = resolve_paths();
   if (!paths.has_value()) {
     std::fprintf(stderr, "shigoku: could not resolve HOME/XDG dirs\n");
@@ -606,6 +666,22 @@ int print_paths() {
     std::printf("  picker   %s\n", choice.binary->c_str());
   } else {
     std::printf("  picker   numbered prompt (%s)\n", choice.why.c_str());
+  }
+  // The glyph set this invocation prints with, and why it is ASCII when it is.
+  if (!cli::ascii_glyphs()) {
+    std::printf("  glyphs   utf-8\n");
+  } else {
+    std::printf("  glyphs   ascii (%s)\n",
+                cli::ascii_flag(args) ? "--ascii" : "the locale isn't UTF-8");
+  }
+  // The sources a command-line search walks, in order (`-p` takes any name).
+  if (auto registry = build_registry(); registry.has_value()) {
+    std::string walk;
+    for (const StreamProvider* p : registry->searchable(config.preferred_provider)) {
+      if (!walk.empty()) walk += ", ";
+      walk += std::string(p->name());
+    }
+    std::printf("  sources  %s\n", walk.c_str());
   }
   return 0;
 }
@@ -731,12 +807,16 @@ int main(int argc, char** argv) {
   // for a future stderr sink.
   const cli::Command cmd = cli::parse(args);
   using K = cli::Command::Kind;
+  // The command line's glyphs: plain ASCII under --ascii or a locale that is
+  // not UTF-8. The interface draws through its own cell layer and is not
+  // touched by this.
+  if (cmd.kind != K::Tui) cli::set_ascii_glyphs(cli::ascii_flag(args) || !locale_is_utf8());
   switch (cmd.kind) {
     case K::Version:
       std::printf("shigoku v%s\n", SHIGOKU_VERSION);
       return 0;
     case K::Paths:
-      return print_paths();
+      return print_paths(args);
     case K::Login:
       return run_login_cli(cmd.paste);
     case K::Sync:
@@ -750,6 +830,8 @@ int main(int argc, char** argv) {
       return run_play_cli(cmd.play_args);
     case K::Download:
       return run_download_cli(cmd.download_args);
+    case K::Continue:
+      return run_continue_cli(cmd.continue_args);
     case K::Tui:
       return run_tui();
   }

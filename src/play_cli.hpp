@@ -40,11 +40,18 @@ using Sources = std::vector<const StreamProvider*>;
 // code (0/1); the caller wraps it. `cache_dir`/`runtime_dir` are the resolved
 // paths.cache / paths.runtime; `store` may be null (play-only). Exit law
 // (06 §7.4): the play path is the one nonzero exit (1); every early return
-// (no results, quit, no episodes) is a clean 0. A search that fails on EVERY
-// source is the search-stage 1; a source that answered "nothing" makes the
-// whole walk a clean no-results 0 even if others failed. `download_dir` is
-// the RESOLVED download root ("" = downloads disabled): a completed local
-// file for the picked (show, track, ep) plays WITHOUT resolving (P35 slice 4).
+// (no results, quit, no episodes, an `-S`/`-e`/`-r` that names nothing in
+// the list) is a clean 0. A search that fails on EVERY source is the
+// search-stage 1; a source that answered "nothing" makes the whole walk a
+// clean no-results 0 even if others failed. `download_dir` is the RESOLVED
+// download root ("" = downloads disabled): a completed local file for the
+// picked (show, track, ep) plays WITHOUT resolving.
+//
+// After an episode plays, the pick seam offers what comes next (next /
+// replay / previous / quit; cli::post_play_menu) and the run loops until
+// quit, EOF, or a play that fails (exit 1, as for the first episode).
+// `-r` plays its span in order with no menu; `-e` starts at that episode
+// and then asks like a prompted pick would.
 [[nodiscard]] int play_flow(const Sources& sources, const PickFn& pick,
                             Translation translation, const Config& config,
                             const std::string& cache_dir, const std::string& runtime_dir,
@@ -62,5 +69,23 @@ using Sources = std::vector<const StreamProvider*>;
                                 Translation translation, const Config& config,
                                 const std::string& download_dir, Store* store,
                                 const cli::DownloadArgs& args);
+
+// `shigoku continue [<query>]`: a library show picked back up. The history
+// (Store::list_history, most recently watched first), narrowed by the query
+// when given, is the list — `-S` or a lone match skips the prompt. The show's
+// stored provider binding is asked for its episodes (the `-p` source when it
+// is bound; else the config's preference, then registry order); a show with
+// no live binding is searched for again by title on `sources`, the hit that
+// carries its AniList or MAL id taken without a prompt. The episode is the
+// freshest partial watch when there is one, else the one after the last
+// finished (Show::progress as a 1-based ordinal into the list); all watched
+// = a clean "caught up" 0. Then the same play loop as play_flow, keyed to
+// the library row whatever the hit claimed. The store is required — there
+// is no history without one — so it is a reference here.
+[[nodiscard]] int continue_flow(const ProviderRegistry& registry, const Sources& sources,
+                                const PickFn& pick, Translation translation,
+                                const Config& config, const std::string& cache_dir,
+                                const std::string& runtime_dir, const std::string& download_dir,
+                                Store& store, const cli::ContinueArgs& args);
 
 }  // namespace shigoku::cli_play
