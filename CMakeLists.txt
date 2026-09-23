@@ -225,16 +225,46 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-# libatomic is only needed where 64-bit atomics aren't native (PPC32). Link it if
-# the linker knows it; harmless no-op on x86_64/aarch64.
-include(CheckLinkerFlag OPTIONAL RESULT_VARIABLE HAVE_CHECK_LINKER_FLAG)
+# 8-byte atomics — fetch_add/compare_exchange/load/store on std::atomic<uint64_t>,
+# as player.cpp's play-id counter, tui/covers.cpp's temp-file nonce and
+# tui/workers.hpp's Generation counter all do — are native on x86_64/aarch64
+# (the compiler emits an inline lock cmpxchg, no library needed) but on a
+# target with no native 8-byte atomic instruction (PPC32, some 32-bit ARM) it
+# emits calls to __atomic_*_8, resolved only by libatomic. Probe the native
+# case FIRST (a plain link, nothing on the line); only fall back to -latomic
+# when that probe actually fails to link, and only link it when doing so is
+# what fixes the link — never add a library the target doesn't need.
+include(CheckCXXSourceCompiles)
+set(_atomic64_probe "
+#include <atomic>
+#include <cstdint>
+int main() {
+  std::atomic<std::uint64_t> a{0};
+  a.fetch_add(1, std::memory_order_relaxed);
+  std::uint64_t expected = 1;
+  a.compare_exchange_strong(expected, 2, std::memory_order_relaxed);
+  a.store(3, std::memory_order_relaxed);
+  return static_cast<int>(a.load(std::memory_order_relaxed));
+}
+")
+set(CMAKE_REQUIRED_QUIET ON)
+check_cxx_source_compiles("${_atomic64_probe}" SHIGOKU_HAVE_NATIVE_ATOMIC64)
+
 add_library(shigoku_atomic INTERFACE)
-if(HAVE_CHECK_LINKER_FLAG)
-  check_linker_flag(CXX "-latomic" SHIGOKU_HAS_LIBATOMIC)
-  if(SHIGOKU_HAS_LIBATOMIC)
+if(NOT SHIGOKU_HAVE_NATIVE_ATOMIC64)
+  set(CMAKE_REQUIRED_LIBRARIES atomic)
+  check_cxx_source_compiles("${_atomic64_probe}" SHIGOKU_ATOMIC64_LINKS_WITH_LIBATOMIC)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(SHIGOKU_ATOMIC64_LINKS_WITH_LIBATOMIC)
     target_link_libraries(shigoku_atomic INTERFACE atomic)
+    message(STATUS "shigoku: no native 8-byte atomics on this target — linking libatomic")
+  else()
+    message(WARNING "shigoku: 8-byte atomics link neither natively nor with "
+      "-latomic — std::atomic<uint64_t> use (player.cpp, tui/covers.cpp, "
+      "tui/workers.hpp) will fail to link")
   endif()
 endif()
+unset(CMAKE_REQUIRED_QUIET)
 
 # ---------------------------------------------------------------------------
 # shigoku_webp_decode (MANGA_PLAN MG-6c): the RIFF….WEBP magic sniff + thin
@@ -2155,3 +2185,20 @@ add_test(NAME fence_missing_walk_origin_arm
           -DSHIGOKU_FENCE_CASE=3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fence_fail.cpp)
 set_tests_properties(fence_missing_walk_origin_arm PROPERTIES WILL_FAIL TRUE)
 endif()  # SHIGOKU_BUILD_TESTS
+
+# ---------------------------------------------------------------------------
+# Install: the three binaries, standard destinations. Each is only built under
+# its own knob (shigoku itself needs curl+sqlite3; shigoku-manga also needs
+# WITH_TUI; shigoku-view also needs WITH_VIEWER + SDL found) — guarding on the
+# target actually existing avoids repeating those conditions here.
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+if(TARGET shigoku)
+  install(TARGETS shigoku RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(TARGET shigoku_manga_bin)
+  install(TARGETS shigoku_manga_bin RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(TARGET shigoku_view_bin)
+  install(TARGETS shigoku_view_bin RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
