@@ -54,6 +54,9 @@
 #ifdef HAVE_MUPDF
 #include "mupdf_source.hpp"
 #endif
+#ifdef HAVE_LIBARCHIVE
+#include "archive_source.hpp"
+#endif
 
 namespace {
 
@@ -260,9 +263,14 @@ int main(int argc, char** argv) {
   }
 
   // Exactly one of these is live: `doc` in document mode, `pages` (and the
-  // decode cache built over it) in image mode.
+  // decode cache built over it) in image mode — an archive is extracted
+  // once into `pages` too, so `archive_holder` just keeps its temp directory
+  // alive for as long as PageCache may still read from it.
   std::unique_ptr<DocSource> doc;
   std::vector<std::string> pages;
+#ifdef HAVE_LIBARCHIVE
+  std::unique_ptr<ArchiveSource> archive_holder;
+#endif
   if (plan->kind == SourceKind::Document) {
 #ifdef HAVE_MUPDF
     // A reflowable book is laid out at the default window size here, and the
@@ -281,9 +289,22 @@ int main(int argc, char** argv) {
     return 5;
 #endif
   } else if (plan->kind == SourceKind::Archive) {
+#ifdef HAVE_LIBARCHIVE
+    // The archive is extracted once into a temp directory of sanitized page
+    // images; from here the archive format never touches the render path —
+    // it falls straight into the same list build_page_list() would produce.
+    auto opened = ArchiveSource::extract(plan->path);
+    if (!opened.has_value()) {
+      std::fprintf(stderr, "shigoku-view: %s\n", opened.error().c_str());
+      return 5;
+    }
+    archive_holder = std::make_unique<ArchiveSource>(std::move(*opened));
+    pages = archive_holder->files();
+#else
     std::fputs("shigoku-view: built without archive support (libarchive not "
                "found at build time, or -DWITH_LIBARCHIVE=OFF)\n", stderr);
     return 5;
+#endif
   } else {
     pages = build_page_list(opt.paths);
     if (pages.empty()) {

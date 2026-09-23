@@ -10,12 +10,23 @@ reflow.epub    A reflowable two-chapter book of plain paragraphs; chapter one
                layout, chapter two is short. Every zip entry is stored (not
                deflated) with a fixed timestamp, so the bytes do not depend
                on the zlib in use.
+probe.cbz      A zip archive exercising archive_names' sanitize/dedupe rule:
+               ch1/010.png, ch1/002.png, a path that collapses to ch1/002.png
+               through its own ".." segments (the dedupe target), ../evil.png
+               (the zip-slip probe), notes.txt (not a page) and a zero-length
+               empty.png. Page bytes are ../cover_2x3.png; entries stored,
+               fixed timestamp, same determinism as reflow.epub.
+probe.cbt      The same six entries as a tar archive (uncompressed, fixed
+               mtime/uid/gid), so the read loop's format-agnostic path is
+               exercised without depending on libarchive's zip vs. tar code.
 
 Standard library only. Run from anywhere:
     python3 tests/fixtures/docs/gen_docs.py
 """
 
+import io
 import os
+import tarfile
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -98,6 +109,58 @@ def write_epub(path):
         z.writestr(_entry("OEBPS/ch2.xhtml"), chapter("Chapter Two", 3))
 
 
+# Raw archive entry names for probe.cbz/.cbt. archive_names.sanitize_entry_name
+# flattens ch1/010.png -> ch1_010.png; the third entry's ".." segments cancel
+# their siblings down to ch1/002.png, the same result as the second entry
+# (the dedupe target); the fourth's leading ".." has nothing to pop, so it
+# drops and evil.png lands at the archive root. notes.txt is a real file but
+# not an image extension, so it never makes it into the page list. empty.png
+# is a zero-length regular file with an image extension: it extracts (an
+# empty file on disk), decode failure is the image pager's business, not
+# extraction's.
+ARCHIVE_ENTRIES = [
+    ("ch1/010.png", "png"),
+    ("ch1/002.png", "png"),
+    ("sub/../weird/../ch1/002.png", "png"),
+    ("../evil.png", "png"),
+    ("notes.txt", "text"),
+    ("empty.png", "empty"),
+]
+
+
+def _archive_bytes(kind, png_bytes):
+    if kind == "png":
+        return png_bytes
+    if kind == "text":
+        return b"not a page\n"
+    return b""
+
+
+def write_cbz(path, png_bytes):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, kind in ARCHIVE_ENTRIES:
+            z.writestr(_entry(name), _archive_bytes(kind, png_bytes))
+
+
+def write_cbt(path, png_bytes):
+    with tarfile.open(path, "w") as t:
+        for name, kind in ARCHIVE_ENTRIES:
+            data = _archive_bytes(kind, png_bytes)
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mtime = 0
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            t.addfile(info, io.BytesIO(data))
+
+
 if __name__ == "__main__":
     write_pdf(os.path.join(HERE, "two_pages.pdf"))
     write_epub(os.path.join(HERE, "reflow.epub"))
+    with open(os.path.join(HERE, "..", "cover_2x3.png"), "rb") as f:
+        _png = f.read()
+    write_cbz(os.path.join(HERE, "probe.cbz"), _png)
+    write_cbt(os.path.join(HERE, "probe.cbt"), _png)

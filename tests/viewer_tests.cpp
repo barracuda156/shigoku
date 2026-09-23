@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/view/archive_names.hpp"
 #include "../src/view/docsrc.hpp"
 #include "../src/view/pager.hpp"
 
@@ -256,6 +257,81 @@ TEST_CASE("is_image_ext_matches_the_decoders_the_viewer_has") {
     CAPTURE(name);
     CHECK_FALSE(is_image_ext(name));
   }
+}
+
+// ===========================================================================
+// archive_names — sanitize/dedupe/select, the comic-archive naming rule
+// ===========================================================================
+
+TEST_CASE("sanitize_entry_name_flattens_directories_with_underscores") {
+  CHECK(sanitize_entry_name("ch1/010.png") == "ch1_010.png");
+  CHECK(sanitize_entry_name("a/b/c.jpg") == "a_b_c.jpg");
+  CHECK(sanitize_entry_name("page.png") == "page.png");  // no directory at all.
+}
+
+TEST_CASE("sanitize_entry_name_backslashes_are_separators_too") {
+  CHECK(sanitize_entry_name("ch1\\010.png") == "ch1_010.png");
+}
+
+TEST_CASE("sanitize_entry_name_dotdot_cancels_the_segment_it_pops") {
+  // The zip-slip fence: ".." never survives as a literal segment. Where it
+  // has something to pop, the pair vanishes together (so two archive
+  // entries that normalize to the same real path collide, on purpose — the
+  // fixture's dedupe target).
+  CHECK(sanitize_entry_name("sub/../weird/../ch1/002.png") == "ch1_002.png");
+  CHECK(sanitize_entry_name("ch1/002.png") == "ch1_002.png");
+  CHECK(sanitize_entry_name("a/./b.png") == "a_b.png");
+}
+
+TEST_CASE("sanitize_entry_name_leading_dotdot_has_nothing_to_pop_so_it_drops") {
+  // An entry trying to escape the archive root simply loses the ".." rather
+  // than erroring or (worse) landing outside the extraction directory.
+  CHECK(sanitize_entry_name("../evil.png") == "evil.png");
+  CHECK(sanitize_entry_name("../../../etc/passwd") == "etc_passwd");
+}
+
+TEST_CASE("sanitize_entry_name_rejects_an_empty_result_or_a_control_byte") {
+  CHECK_FALSE(sanitize_entry_name("").has_value());
+  CHECK_FALSE(sanitize_entry_name("/").has_value());
+  CHECK_FALSE(sanitize_entry_name("./..").has_value());
+  CHECK_FALSE(sanitize_entry_name("../..").has_value());
+  CHECK_FALSE(sanitize_entry_name("page\x01.png").has_value());
+  CHECK_FALSE(sanitize_entry_name("ok/\x7f/x.png").has_value());
+}
+
+TEST_CASE("disambiguate_leaves_the_first_use_untouched") {
+  CHECK(disambiguate("page.png", 1) == "page.png");
+  CHECK(disambiguate("page.png", 0) == "page.png");  // defensive: <=1 is a no-op.
+}
+
+TEST_CASE("disambiguate_splices_before_the_extension") {
+  CHECK(disambiguate("page.png", 2) == "page~2.png");
+  CHECK(disambiguate("page.png", 3) == "page~3.png");
+  CHECK(disambiguate("noext", 2) == "noext~2");
+}
+
+TEST_CASE("dedupe_names_numbers_repeats_in_order_and_leaves_singles_alone") {
+  const std::vector<std::string> in = {"ch1_010.png", "ch1_002.png",
+                                       "ch1_002.png", "evil.png", "empty.png"};
+  const std::vector<std::string> out = dedupe_names(in);
+  const std::vector<std::string> want = {"ch1_010.png", "ch1_002.png",
+                                         "ch1_002~2.png", "evil.png", "empty.png"};
+  CHECK(out == want);
+}
+
+TEST_CASE("dedupe_names_a_third_repeat_gets_its_own_suffix") {
+  const std::vector<std::string> in = {"p.png", "p.png", "p.png"};
+  const std::vector<std::string> out = dedupe_names(in);
+  const std::vector<std::string> want = {"p.png", "p~2.png", "p~3.png"};
+  CHECK(out == want);
+}
+
+TEST_CASE("select_image_entries_keeps_only_what_is_image_ext_accepts") {
+  const std::vector<std::string> in = {"ch1_010.png", "notes.txt", "cover.jpg",
+                                       "readme", "p.webp"};
+  const std::vector<std::string> out = select_image_entries(in);
+  const std::vector<std::string> want = {"ch1_010.png", "cover.jpg", "p.webp"};
+  CHECK(out == want);
 }
 
 // ===========================================================================

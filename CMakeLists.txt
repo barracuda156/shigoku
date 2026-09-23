@@ -1019,7 +1019,8 @@ endif()
 #     X11-only there — hence opt-in). Rename knob: SHIGOKU_VIEW_BIN.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_BUILD_TESTS)
-add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp src/view/docsrc.cpp)
+add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp src/view/docsrc.cpp
+  src/view/archive_names.cpp)
 target_include_directories(viewer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(viewer_tests PRIVATE
   shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
@@ -1282,6 +1283,116 @@ if(SHIGOKU_HAVE_MUPDF)
     target_link_libraries(mupdf_tests PRIVATE
       shigoku::mupdf shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
     add_test(NAME mupdf_tests COMMAND mupdf_tests)
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# libarchive for shigoku-view (MUPDF_PLAN slice 6): CBZ/CBR/CBT comic
+# archives, extracted once into the existing image pager (archive_source.cpp
+# — main.cpp never touches libarchive directly). Optional, the WITH_WEBP
+# posture (default ON, auto-off with a STATUS line when the library is not
+# found, -DWITH_LIBARCHIVE=OFF forces it off).
+#
+# Detection: pkg-config first (Ubuntu and MacPorts both ship libarchive.pc)
+# else find_path/find_library PAIRED FROM THE SAME PREFIX — macOS ships a
+# headerless /usr/lib/libarchive.dylib, and pairing by prefix keeps
+# MacPorts' own headers with MacPorts' own lib rather than that system one.
+# A link probe (archive_read_new + archive_read_support_format_all) also
+# floors the version at 3.4.0 (RAR5) via ARCHIVE_VERSION_NUMBER — the
+# strongest and only real test, the same reasoning as the mupdf ladder above.
+# ---------------------------------------------------------------------------
+option(WITH_LIBARCHIVE "Read CBZ/CBR/CBT comic archives in shigoku-view via libarchive (auto-off if not found)" ON)
+
+set(SHIGOKU_HAVE_LIBARCHIVE OFF)
+if(WITH_VIEWER AND WITH_LIBARCHIVE)
+  set(_la_inc "")
+  set(_la_lib "")
+  if(PkgConfig_FOUND)
+    pkg_check_modules(LIBARCHIVE QUIET libarchive)
+  endif()
+  if(LIBARCHIVE_FOUND)
+    set(_la_inc ${LIBARCHIVE_INCLUDE_DIRS})
+    set(_la_lib ${LIBARCHIVE_LINK_LIBRARIES})
+  else()
+    find_path(LIBARCHIVE_INCLUDE_DIR archive.h)
+    if(LIBARCHIVE_INCLUDE_DIR)
+      get_filename_component(_la_prefix "${LIBARCHIVE_INCLUDE_DIR}" DIRECTORY)
+      set(_la_hints "${_la_prefix}/lib")
+      if(CMAKE_LIBRARY_ARCHITECTURE)
+        list(APPEND _la_hints "${_la_prefix}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+      endif()
+      find_library(LIBARCHIVE_LIBRARY NAMES archive HINTS ${_la_hints} NO_DEFAULT_PATH)
+    endif()
+    if(LIBARCHIVE_INCLUDE_DIR AND LIBARCHIVE_LIBRARY)
+      set(_la_inc ${LIBARCHIVE_INCLUDE_DIR})
+      set(_la_lib ${LIBARCHIVE_LIBRARY})
+    endif()
+  endif()
+
+  if(_la_inc AND _la_lib)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES ${_la_inc})
+    set(CMAKE_REQUIRED_LIBRARIES ${_la_lib})
+    set(CMAKE_REQUIRED_QUIET ON)
+    check_cxx_source_compiles("
+#include <archive.h>
+#include <archive_entry.h>
+#if ARCHIVE_VERSION_NUMBER < 3004000
+#error libarchive too old, need 3.4.0+ for RAR5
+#endif
+int main() {
+  struct archive* a = archive_read_new();
+  if (a == nullptr) return 1;
+  archive_read_support_format_all(a);
+  archive_read_free(a);
+  return 0;
+}
+" SHIGOKU_LIBARCHIVE_LINKS)
+    unset(CMAKE_REQUIRED_INCLUDES)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    unset(CMAKE_REQUIRED_QUIET)
+    if(SHIGOKU_LIBARCHIVE_LINKS)
+      add_library(shigoku_libarchive INTERFACE)
+      target_include_directories(shigoku_libarchive SYSTEM INTERFACE ${_la_inc})
+      target_link_libraries(shigoku_libarchive INTERFACE ${_la_lib})
+      target_compile_definitions(shigoku_libarchive INTERFACE HAVE_LIBARCHIVE)
+      add_library(shigoku::libarchive ALIAS shigoku_libarchive)
+      set(SHIGOKU_HAVE_LIBARCHIVE ON)
+      message(STATUS "shigoku-view: libarchive found (${_la_inc}) — CBZ/CBR/CBT support on")
+    else()
+      message(STATUS "shigoku-view: libarchive found but too old (need 3.4.0+) or fails "
+                     "to link — comic archive support off. The failing link line is in "
+                     "CMakeFiles/CMakeConfigureLog.yaml; -DWITH_LIBARCHIVE=OFF silences this.")
+    endif()
+  else()
+    message(STATUS "shigoku-view: libarchive not found — comic archive support off "
+                   "(install libarchive-dev / the libarchive port, or -DWITH_LIBARCHIVE=OFF "
+                   "to silence this).")
+  endif()
+endif()
+
+if(SHIGOKU_HAVE_LIBARCHIVE)
+  # The viewer itself: ArchiveSource behind main.cpp's Archive arm. No target
+  # when SDL was not found — same reasoning as the mupdf wiring above.
+  if(TARGET shigoku_view_bin)
+    target_sources(shigoku_view_bin PRIVATE src/view/archive_source.cpp
+      src/view/archive_names.cpp)
+    target_link_libraries(shigoku_view_bin PRIVATE shigoku::libarchive)
+  endif()
+
+  # archive_tests: ArchiveSource against the committed cbz/cbt fixtures —
+  # sanitized/deduped names, the zip-slip fence, encrypted/truncated/wrong-
+  # content errors, and that the temp directory is really gone afterwards.
+  # The pure archive_names tables live in viewer_tests, unconditionally.
+  if(SHIGOKU_BUILD_TESTS)
+    add_executable(archive_tests tests/archive_tests.cpp src/view/archive_source.cpp
+      src/view/archive_names.cpp src/view/pager.cpp)
+    target_include_directories(archive_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(archive_tests PRIVATE
+      SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    target_link_libraries(archive_tests PRIVATE
+      shigoku::libarchive shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
+    add_test(NAME archive_tests COMMAND archive_tests)
   endif()
 endif()
 
