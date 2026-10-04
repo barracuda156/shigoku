@@ -420,6 +420,16 @@ std::string by_id_body(std::int64_t anilist_id, MediaKind kind) {
   return body.dump();
 }
 
+std::string by_mal_query() {
+  return std::string("query($id:Int!){Media(idMal:$id,type:ANIME){") +
+         media_fields(MediaKind::Anime) + "}}";
+}
+
+std::string by_mal_body(std::int64_t mal_id) {
+  json body = {{"query", by_mal_query()}, {"variables", {{"id", mal_id}}}};
+  return body.dump();
+}
+
 std::string airing_query(bool by_mal) {
   return std::string("query($ids:[Int]){Page(perPage:50){media(") +
          (by_mal ? "idMal_in" : "id_in") +
@@ -898,6 +908,28 @@ Result<std::optional<Enrichment>, ProviderError> enrich(const http::Client& clie
 
   auto resp = client.fetch(req);
   if (!resp.has_value()) return err(resp.error());
+
+  const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
+  return detail::classify_by_id(raw);
+}
+
+Result<std::optional<Enrichment>, ProviderError> enrich_by_mal(const http::Client& client,
+                                                               std::int64_t mal_id) {
+  http::Request req;
+  req.method = http::Method::Post;
+  req.url = kEndpoint;
+  req.content_type = "application/json";
+  const std::string body = detail::by_mal_body(mal_id);
+  req.body.assign(body.begin(), body.end());
+  req.accept = http::Accept::Any2xx;
+
+  auto resp = client.fetch(req);
+  if (!resp.has_value()) {
+    if (resp.error().kind == ProviderError::Kind::Http && resp.error().status == 404) {
+      return std::optional<Enrichment>(std::nullopt);  // AniList has no entry for it.
+    }
+    return err(resp.error());
+  }
 
   const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
   return detail::classify_by_id(raw);

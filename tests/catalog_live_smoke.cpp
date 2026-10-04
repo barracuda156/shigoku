@@ -70,5 +70,34 @@ int main() {
   std::printf("catalog_live_smoke: OK enrich keeps id %lld; active=%s mal_available=%d\n",
               static_cast<long long>((*e)->anilist_id),
               std::string(catalog::source_name(st.active)).c_str(), st.mal_available ? 1 : 0);
+
+  // Heal: the AniList entry for the first hit's MAL id. AniList only — a
+  // catalog latched on MAL does not ask. An id AniList cannot know is a
+  // clean "no such entry", not a failure.
+  if (!first.mal_id.has_value()) {
+    std::printf("catalog_live_smoke: SKIP heal (first hit has no MAL id)\n");
+    return 0;
+  }
+  auto healed = cat.heal(*first.mal_id);
+  if (!healed.has_value() && healed.error().kind == ProviderError::Kind::Unsupported) {
+    std::printf("catalog_live_smoke: SKIP heal (latched on MAL)\n");
+    return 0;
+  }
+  if (!healed.has_value()) return fail("heal", healed.error());
+  if (!healed->has_value()) {
+    std::fprintf(stderr, "catalog_live_smoke: FAIL heal: AniList has no entry for mal=%lld\n",
+                 static_cast<long long>(*first.mal_id));
+    return 1;
+  }
+  std::printf("catalog_live_smoke: OK heal mal=%lld -> anilist=%lld %s\n",
+              static_cast<long long>(*first.mal_id),
+              static_cast<long long>((*healed)->anilist_id), (*healed)->title_romaji.c_str());
+  auto unknown = cat.heal(999999999);
+  if (!unknown.has_value()) return fail("heal of an unknown MAL id", unknown.error());
+  if (unknown->has_value()) {
+    std::fprintf(stderr, "catalog_live_smoke: FAIL heal found an entry for mal=999999999\n");
+    return 1;
+  }
+  std::printf("catalog_live_smoke: OK heal of an unknown MAL id: no entry\n");
   return 0;
 }

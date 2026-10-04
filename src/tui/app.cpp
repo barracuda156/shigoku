@@ -1480,6 +1480,28 @@ void spawn_enrich(EventQueue& queue, EnrichFn enrich, std::int64_t for_id,
   });
 }
 
+// Heal worker: which AniList entry a synthetic row's MAL id belongs to. A find
+// posts EnrichmentRefreshed under the row's own (synthetic) for_id carrying
+// the real id, which is what tells the handler to re-key; anything else is
+// EnrichmentHealMissed.
+void spawn_heal(EventQueue& queue, HealFn heal, std::int64_t for_id, std::int64_t mal_id) {
+  spawn_detached([&queue, heal = std::move(heal), for_id, mal_id]() {
+    auto ans = heal(mal_id);
+    Event ev = [&]() -> Event {
+      if (!ans.has_value() || !ans->has_value() || (*ans)->anilist_id <= 0) {
+        return EnrichmentHealMissed{for_id};
+      }
+      EnrichmentRefreshed r;
+      r.for_id = for_id;
+      r.enrichment = std::move(**ans);
+      return r;
+    }();
+    const bool posted = queue.try_post(Event{std::move(ev)});
+    debug_log("worker heal: for_id=" + std::to_string(for_id) +
+              " posted=" + std::to_string(posted));
+  });
+}
+
 // Detail zoom `c`-section worker (P36): same three-state shape as
 // spawn_enrich, its own event trio so the two fetches never contend for the
 // same in-flight flag. The `c` toggle is the only spawn site — no
@@ -1605,7 +1627,18 @@ void reconcile_enrich(App& app) {
   if (app.enrich_checked.has_value() && *app.enrich_checked != id) {
     app.enrich_checked = std::nullopt;
   }
+  if (app.heal_checked.has_value() && *app.heal_checked != id) app.heal_checked = std::nullopt;
   if (app.enrich_checked == id || app.enrich_inflight) return;
+
+  // A synthetic MAL-only row asks for its real AniList id first, however
+  // fresh its metadata is; a miss leaves the freshness check below to the
+  // next pass.
+  if (id < 0 && app.deps->heal && app.heal_checked != id) {
+    app.heal_checked = id;
+    spawn_heal(*app.queue, app.deps->heal, id, shown->mal_id.value_or(-id));
+    app.enrich_inflight = true;
+    return;
+  }
 
   const std::int64_t now = now_epoch_secs();
   auto stale = app.deps->store->enrichment_stale(id, now);
@@ -1690,6 +1723,85 @@ void apply_enrichment_to_selection(App& app, std::int64_t for_id, const Enrichme
   }
 }
 
+// --- Heal: a synthetic MAL-only row takes its real AniList id ---------------
+
+// What the re-key changed, for the follow-up once the healed metadata landed.
+struct HealedRow {
+  std::int64_t old_id = 0;
+  std::int64_t new_id = 0;
+  bool grid_reset = false;  // the episode grid was open on the old id.
+};
+
+// Something in flight still writes under `id` with its own copy of the show
+// (a play, a download, an armed play continuation, a resolve walk, a prewarm
+// probe) and would mint the old row straight back.
+bool writes_in_flight(const App& app, std::int64_t id) {
+  if (app.play.active && app.play.for_id == id) return true;
+  if (app.download.active && app.download.for_id == id) return true;
+  if (app.play_continuation.has_value() && app.play_continuation->for_id == id) return true;
+  if (app.episode_session && app.episode_session->has_for_id() &&
+      app.episode_session->for_id() == id &&
+      (app.episode_session->loading() || app.episode_session->walk_active())) {
+    return true;
+  }
+  return app.prewarm && app.prewarm->warming(id);
+}
+
+// The row, its children and its downloads move to the real id
+// (Store::rekey_show), and the in-memory copies naming the old id follow:
+// History's rows are renamed before the reload so its cursor stays on the
+// row. nullopt = not now (busy, or the store refused); the row stays
+// synthetic and a later view asks again.
+std::optional<HealedRow> rekey_row(App& app, std::int64_t old_id, std::int64_t new_id) {
+  if (writes_in_flight(app, old_id)) {
+    debug_log("heal: " + std::to_string(old_id) + " busy, deferred");
+    return std::nullopt;
+  }
+  auto moved = app.deps->store->rekey_show(old_id, new_id);
+  if (!moved.has_value()) {
+    debug_log("heal: rekey " + std::to_string(old_id) + " failed: " + moved.error().detail);
+    return std::nullopt;
+  }
+  download::move_show_downloads(app.deps->download_dir, old_id, new_id);
+  for (Show& row : app.history.rows) {
+    if (row.enrichment.anilist_id == old_id) row.enrichment.anilist_id = new_id;
+  }
+  for (Show& row : app.schedule.rows) {
+    if (row.enrichment.anilist_id == old_id) row.enrichment.anilist_id = new_id;
+  }
+  if (app.resume_demote == old_id) app.resume_demote = new_id;
+  if (app.confirm_delete == old_id) app.confirm_delete = new_id;
+  if (app.undo.has_value() && std::get<0>(*app.undo) == old_id) std::get<0>(*app.undo) = new_id;
+  HealedRow out{old_id, new_id, false};
+  if (app.episode_session && app.episode_session->has_for_id() &&
+      app.episode_session->for_id() == old_id) {
+    app.episode_session->reset();
+    mirror_session_to_episode(app);
+    out.grid_reset = true;
+  }
+  debug_log("heal: " + std::to_string(old_id) + " -> " + std::to_string(new_id));
+  return out;
+}
+
+// After the healed metadata landed: Browse and Discover rows still naming the
+// old id take the merged row, and a grid that was open on the old id reopens
+// under the new one (bindings and episode cache moved with the row).
+void finish_heal(App& app, const HealedRow& h, const Enrichment& merged) {
+  for (CatalogRow& row : app.catalog) {
+    if (row.meta.anilist_id == h.old_id) row.meta = merged;
+  }
+  app.discover.replace_show(h.old_id, merged);
+  if (!h.grid_reset || !app.episode_session || app.deps->registry == nullptr ||
+      app.queue == nullptr) {
+    return;
+  }
+  const bool grid_open = app.pane == Pane::Detail || app.view == View::Detail;
+  const Enrichment* shown = detail::selected_enrichment(app);
+  if (!grid_open || shown == nullptr || shown->anilist_id != h.new_id) return;
+  EpisodeDeps ed = build_episode_deps(app);
+  apply_feedback(app, app.episode_session->engage(*shown, ed));
+}
+
 // --- Enrichment* handlers (P21, 05 §8 three-state law / app.rs) ------------
 
 // A metadata answer overwrites drift fields but preserves user state (the store
@@ -1701,6 +1813,14 @@ void on_enrichment_refreshed(App& app, const EnrichmentRefreshed& ev) {
   app.enrich_inflight = false;
   if (app.deps == nullptr || app.deps->store == nullptr) return;
   Store& store = *app.deps->store;
+  // A heal answer names the real id; from here on the row lives under it.
+  const bool healed = ev.for_id < 0 && ev.enrichment.anilist_id > 0;
+  std::optional<HealedRow> heal;
+  if (healed) {
+    heal = rekey_row(app, ev.for_id, ev.enrichment.anilist_id);
+    if (!heal.has_value()) return;  // busy or failed: the next view asks again.
+  }
+  const std::int64_t row_id = healed ? ev.enrichment.anilist_id : ev.for_id;
   const std::int64_t now = now_epoch_secs();
   const std::int64_t ttl = enrichment_ttl_secs(
       ev.enrichment.status.has_value()
@@ -1709,7 +1829,7 @@ void on_enrichment_refreshed(App& app, const EnrichmentRefreshed& ev) {
   auto patched_res = store.patch_show_enrichment(ev.enrichment, /*stamp_fresh=*/true, now);
   const bool patched = patched_res.has_value() && *patched_res;
   (void)store.upsert_catalog_cache(ev.enrichment, now, now + ttl);
-  if (patched) {
+  if (patched || healed) {
     load_history(app);
     // Schedule holds its own store-row copies (P37): reload them too, or a
     // heal landed while browsing Schedule (fresh next_airing_*) stays
@@ -1721,13 +1841,14 @@ void on_enrichment_refreshed(App& app, const EnrichmentRefreshed& ev) {
   // the read-back IS the merge). Fall back to the raw answer if the read fails.
   std::optional<Enrichment> merged;
   if (patched) {
-    if (auto sh = store.get_show(ev.for_id); sh.has_value() && sh->has_value()) {
+    if (auto sh = store.get_show(row_id); sh.has_value() && sh->has_value()) {
       merged = (*sh)->enrichment;
     }
-  } else if (auto hit = store.get_catalog(ev.for_id); hit.has_value() && hit->has_value()) {
+  } else if (auto hit = store.get_catalog(row_id); hit.has_value() && hit->has_value()) {
     merged = (*hit)->enrichment;
   }
   apply_enrichment_to_selection(app, ev.for_id, merged.value_or(ev.enrichment));
+  if (healed) finish_heal(app, *heal, merged.value_or(ev.enrichment));
 
   app.toasts.clear_topic(kAnilistTopic);
   app.dirty = true;
@@ -1746,6 +1867,14 @@ void on_enrichment_failed(App& app) {
   app.enrich_inflight = false;
   app.toasts.push_persistent(ToastKind::Error, std::string(kAnilistTopic),
                              "can't reach the catalog", app.tick_count);
+  app.dirty = true;
+}
+
+// A heal that found nothing is silent: the row stays synthetic and the next
+// reconcile runs the ordinary freshness check (heal_checked keeps it from
+// asking again this selection).
+void on_enrichment_heal_missed(App& app) {
+  app.enrich_inflight = false;
   app.dirty = true;
 }
 
@@ -3980,6 +4109,7 @@ void tick(App& app, const Event& ev) {
           [&](const EnrichmentRefreshed& e) { on_enrichment_refreshed(app, e); },
           [&](const EnrichmentNull& e) { on_enrichment_null(app, e); },
           [&](const EnrichmentFailed&) { on_enrichment_failed(app); },
+          [&](const EnrichmentHealMissed&) { on_enrichment_heal_missed(app); },
           [&](const CharactersRecsDone& e) { on_char_recs_done(app, e); },
           [&](const CharactersRecsNull& e) { on_char_recs_null(app, e); },
           [&](const CharactersRecsFailed& e) { on_char_recs_failed(app, e); },

@@ -30,6 +30,9 @@ struct Fake {
   int genre_calls = 0;
   std::optional<std::int64_t> last_enrich_id;
   std::optional<std::int64_t> last_enrich_mal;
+  bool can_heal = true;      // sets Backend::by_mal.
+  bool heal_absent = false;  // by_mal answers "no such entry".
+  int heal_calls = 0;
 };
 
 Backend make(Fake& f) {
@@ -76,6 +79,17 @@ Backend make(Fake& f) {
     if (!f.ok) return err(f.fail);
     return std::vector<std::string>{f.tag == Source::AniList ? "Action" : "Suspense"};
   };
+  if (f.can_heal) {
+    b.by_mal = [&f](std::int64_t mal) -> Result<std::optional<Enrichment>, ProviderError> {
+      ++f.heal_calls;
+      if (!f.ok) return err(f.fail);
+      if (f.heal_absent) return std::optional<Enrichment>{};
+      Enrichment e;
+      e.anilist_id = mal + 9000;
+      e.mal_id = mal;
+      return std::optional<Enrichment>(e);
+    };
+  }
   return b;
 }
 
@@ -85,8 +99,9 @@ struct Rig {
   std::int64_t now = 1000;
   std::optional<Catalog> cat;
 
-  explicit Rig(Mode mode, bool with_mal = true) {
+  explicit Rig(Mode mode, bool with_mal = true, bool anilist_heals = true) {
     anilist.tag = Source::AniList;
+    anilist.can_heal = anilist_heals;
     mal.tag = Source::Mal;
     std::optional<Backend> mb;
     if (with_mal) mb = make(mal);
@@ -377,4 +392,98 @@ TEST_CASE("failure_copy / describe") {
   ProviderError e = ProviderError::forbidden(403);
   e.detail = "AniList blocked us (403)";
   CHECK(describe(e) == "AniList blocked us (403)");
+}
+
+// ===========================================================================
+// heal: the real AniList id for a synthetic row's MAL id
+// ===========================================================================
+
+TEST_CASE("heal: AniList names the real id; MAL is never asked") {
+  Rig r(Mode::Auto);
+  auto h = r.cat->heal(555);
+  REQUIRE(h.has_value());
+  REQUIRE(h->has_value());
+  CHECK((*h)->anilist_id == 9555);
+  CHECK((*h)->mal_id == std::optional<std::int64_t>(555));
+  CHECK(r.anilist.heal_calls == 1);
+  CHECK(r.mal.heal_calls == 0);
+  CHECK(r.mal.enrich_calls == 0);
+}
+
+TEST_CASE("heal: a confirmed absence is remembered, so it is not asked twice") {
+  Rig r(Mode::Auto);
+  r.anilist.heal_absent = true;
+  auto h1 = r.cat->heal(556);
+  REQUIRE(h1.has_value());
+  CHECK_FALSE(h1->has_value());
+  auto h2 = r.cat->heal(556);
+  REQUIRE(h2.has_value());
+  CHECK_FALSE(h2->has_value());
+  CHECK(r.anilist.heal_calls == 1);
+  // Another id is still asked.
+  (void)r.cat->heal(557);
+  CHECK(r.anilist.heal_calls == 2);
+  CHECK_FALSE(r.cat->status().serving_from_mal());  // an absence is an answer.
+}
+
+TEST_CASE("heal: no request while latched on MAL or in mode mal") {
+  Rig r(Mode::Auto);
+  r.anilist.ok = false;
+  r.anilist.fail = ProviderError::forbidden(403);
+  REQUIRE(r.cat->search("frieren", 1).has_value());  // latches MAL.
+  REQUIRE(r.cat->status().serving_from_mal());
+
+  auto latched = r.cat->heal(555);
+  REQUIRE_FALSE(latched.has_value());
+  CHECK(latched.error().kind == ProviderError::Kind::Unsupported);
+  CHECK(r.anilist.heal_calls == 0);
+
+  // Window elapsed and AniList back: the heal is the probe, and clears the latch.
+  r.now += FailoverState::kRetryAfterSecs;
+  r.anilist.ok = true;
+  auto back = r.cat->heal(555);
+  REQUIRE(back.has_value());
+  REQUIRE(back->has_value());
+  CHECK(r.anilist.heal_calls == 1);
+  CHECK_FALSE(r.cat->status().serving_from_mal());
+
+  Rig m(Mode::Mal);
+  auto forced = m.cat->heal(555);
+  REQUIRE_FALSE(forced.has_value());
+  CHECK(forced.error().kind == ProviderError::Kind::Unsupported);
+  CHECK(m.anilist.heal_calls == 0);
+}
+
+TEST_CASE("heal: an AniList failure latches MAL and is not remembered as absent") {
+  Rig r(Mode::Auto);
+  r.anilist.ok = false;
+  r.anilist.fail = ProviderError::server(503);
+  auto h = r.cat->heal(555);
+  REQUIRE_FALSE(h.has_value());
+  CHECK(h.error().kind == ProviderError::Kind::Server);
+  CHECK(r.cat->status().serving_from_mal());
+  CHECK(r.mal.enrich_calls == 0);
+
+  r.now += FailoverState::kRetryAfterSecs;
+  r.anilist.ok = true;
+  auto again = r.cat->heal(555);
+  REQUIRE(again.has_value());
+  CHECK(again->has_value());
+  CHECK(r.anilist.heal_calls == 2);
+}
+
+TEST_CASE("heal: mode anilist asks; a backend without by_mal cannot heal") {
+  Rig a(Mode::AniList, /*with_mal=*/false);
+  auto h = a.cat->heal(555);
+  REQUIRE(h.has_value());
+  CHECK(h->has_value());
+
+  Rig none(Mode::Auto, /*with_mal=*/true, /*anilist_heals=*/false);
+  auto u = none.cat->heal(555);
+  REQUIRE_FALSE(u.has_value());
+  CHECK(u.error().kind == ProviderError::Kind::Unsupported);
+
+  auto bad = a.cat->heal(0);
+  REQUIRE_FALSE(bad.has_value());
+  CHECK(bad.error().kind == ProviderError::Kind::Unsupported);
 }

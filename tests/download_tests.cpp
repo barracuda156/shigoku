@@ -728,6 +728,46 @@ TEST_CASE("find_local_episode: a .part never plays; ties pick deterministically"
   CHECK(*hit == root + "/700/sub/7.mkv");
 }
 
+TEST_CASE("move_show_downloads: a free id takes the whole tree") {
+  const std::string root = tmp_dest("rekey-free");
+  scrub(root + "/-555/sub", {"1.mp4", "2.mp4"});
+  scrub(root + "/9555/sub", {"1.mp4", "2.mp4"});
+  ::rmdir((root + "/9555/sub").c_str());
+  ::rmdir((root + "/9555").c_str());
+  plant(root + "/-555/sub", "1.mp4");
+  plant(root + "/-555/sub", "2.mp4");
+
+  move_show_downloads(root, -555, 9555);
+  CHECK_FALSE(exists(root + "/-555"));
+  CHECK(find_local_episode(root, 9555, Translation::Sub, "1").has_value());
+  CHECK(find_local_episode(root, 9555, Translation::Sub, "2").has_value());
+
+  // Nothing under the old id, or downloads disabled: a no-op.
+  move_show_downloads(root, -555, 9555);
+  move_show_downloads("", -555, 9555);
+  CHECK(find_local_episode(root, 9555, Translation::Sub, "1").has_value());
+}
+
+TEST_CASE("move_show_downloads: an existing tree keeps its files and gains the rest") {
+  const std::string root = tmp_dest("rekey-merge");
+  scrub(root + "/-556/sub", {"1.mp4", "2.mp4"});
+  scrub(root + "/-556/dub", {"1.mp4"});
+  scrub(root + "/9556/sub", {"1.mp4", "2.mp4"});
+  scrub(root + "/9556/dub", {"1.mp4"});
+  plant(root + "/9556/sub", "1.mp4");      // the real id's own copy of ep 1.
+  plant(root + "/-556/sub", "1.mp4");
+  plant(root + "/-556/sub", "2.mp4");
+  plant(root + "/-556/dub", "1.mp4");
+
+  move_show_downloads(root, -556, 9556);
+  CHECK(find_local_episode(root, 9556, Translation::Sub, "2").has_value());
+  CHECK(find_local_episode(root, 9556, Translation::Dub, "1").has_value());
+  // The clash stays where it was; only that file (and its dirs) remain.
+  CHECK(exists(root + "/-556/sub/1.mp4"));
+  CHECK_FALSE(exists(root + "/-556/sub/2.mp4"));
+  CHECK_FALSE(exists(root + "/-556/dub"));
+}
+
 TEST_CASE("download_link: the stream url is guarded before any arm runs") {
   auto client = http::Client::create();
   REQUIRE(client.has_value());

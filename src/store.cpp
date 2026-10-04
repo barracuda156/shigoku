@@ -1619,6 +1619,186 @@ Result<bool, StoreError> Store::delete_show(std::int64_t anilist_id) {
   return sqlite3_changes(conn_) > 0;
 }
 
+namespace {
+
+// A show row's presence and library membership.
+struct RowState {
+  bool exists = false;
+  bool in_library = false;
+};
+
+Result<RowState, StoreError> row_state(sqlite3* db, std::int64_t anilist_id) {
+  Stmt s(db, "SELECT library_added_at IS NOT NULL FROM show WHERE anilist_id = ?1");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
+  s.bind_int64(1, anilist_id);
+  const int rc = s.step();
+  if (rc == SQLITE_DONE) return RowState{};
+  if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(db)));
+  return RowState{true, s.col_int64(0) != 0};
+}
+
+// Every `show` column but the key, in table order, read from the live schema
+// so a column a later migration adds moves with the row too.
+Result<std::vector<std::string>, StoreError> show_value_columns(sqlite3* db) {
+  Stmt s(db, "PRAGMA table_info(show)");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
+  std::vector<std::string> out;
+  for (;;) {
+    const int rc = s.step();
+    if (rc == SQLITE_DONE) break;
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(db)));
+    std::string name = s.col_text(1);
+    if (name != "anilist_id") out.push_back(std::move(name));
+  }
+  return out;
+}
+
+// One statement over the (?1 = old id, ?2 = new id) pair, binding whichever
+// of the two it names.
+Result<Unit, StoreError> exec_rekey(sqlite3* db, const std::string& sql, std::int64_t old_id,
+                                    std::int64_t new_id) {
+  Stmt s(db, sql.c_str());
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
+  if (s.index_of("?1") > 0) s.bind_int64(1, old_id);
+  if (s.index_of("?2") > 0) s.bind_int64(2, new_id);
+  if (s.step() != SQLITE_DONE) return err(StoreError::sqlite(driver_msg(db)));
+  return Unit{};
+}
+
+// The old row's value of `col`, as a scalar subquery over ?1.
+std::string old_value(const char* col) {
+  return std::string("(SELECT ") + col + " FROM show WHERE anilist_id = ?1)";
+}
+
+// The UPDATE that folds the old row (?1) into the existing new one (?2); the
+// policy is rekey_show's doc comment in store.hpp. SQLite evaluates every SET
+// expression against the pre-update row, so the CASEs below read the new
+// row's own values as they were.
+std::string merge_show_sql(bool adopt_user_state, bool both_in_library) {
+  std::string set;
+  auto assign = [&set](const std::string& col, const std::string& expr) {
+    if (!set.empty()) set += ", ";
+    set += col + " = " + expr;
+  };
+  if (adopt_user_state) {
+    for (const char* col : {"list_status", "user_rating", "notes", "play_count", "progress",
+                            "progress_stamped_at", "library_added_at", "last_watched_at",
+                            "user_score"}) {
+      assign(col, old_value(col));
+    }
+  } else if (both_in_library) {
+    const std::string old_progress = old_value("progress");
+    assign("progress_stamped_at", "CASE WHEN " + old_progress + " > progress THEN " +
+                                      old_value("progress_stamped_at") +
+                                      " ELSE progress_stamped_at END");
+    assign("progress", "MAX(progress, " + old_progress + ")");
+    const std::string old_watched = old_value("last_watched_at");
+    assign("last_watched_at",
+           "COALESCE(MAX(last_watched_at, " + old_watched + "), last_watched_at, " +
+               old_watched + ")");
+    assign("library_added_at", "MIN(library_added_at, " + old_value("library_added_at") + ")");
+    assign("play_count", "play_count + " + old_value("play_count"));
+    assign("user_score", "COALESCE(NULLIF(user_score, 0), " + old_value("user_score") + ")");
+    assign("notes", "COALESCE(notes, " + old_value("notes") + ")");
+    assign("user_rating", "COALESCE(user_rating, " + old_value("user_rating") + ")");
+  }
+  assign("mal_id", "COALESCE(mal_id, " + old_value("mal_id") + ")");
+  // The mirror snapshot is one (status, progress, score) belief: take it whole
+  // or not at all, keyed on whether the new row was ever mirrored.
+  for (const char* col : {"mal_synced_progress", "mal_synced_score", "mal_synced_status"}) {
+    assign(col, std::string("CASE WHEN mal_synced_status IS NULL THEN ") + old_value(col) +
+                    " ELSE " + col + " END");
+  }
+  const std::string old_notice = old_value("notice_last_episode");
+  assign("notice_last_episode", "COALESCE(MAX(notice_last_episode, " + old_notice +
+                                    "), notice_last_episode, " + old_notice + ")");
+  assign("notice_pending", "MAX(notice_pending, " + old_value("notice_pending") + ")");
+  return "UPDATE show SET " + set + " WHERE anilist_id = ?2";
+}
+
+}  // namespace
+
+Result<RekeyOutcome, StoreError> Store::rekey_show(std::int64_t old_id, std::int64_t new_id) {
+  if (old_id == new_id) return RekeyOutcome::Nothing;
+  if (auto b = begin_immediate(conn_); !b.has_value()) return err(b.error());
+  auto rollback = [&](StoreError e) {
+    sqlite3_exec(conn_, "ROLLBACK", nullptr, nullptr, nullptr);
+    return err(std::move(e));
+  };
+
+  // The browse cache is not FK'd to show and is re-keyed with or without a
+  // show row; an existing entry under the new id is the fresher one.
+  if (auto r = exec_rekey(conn_, "UPDATE OR IGNORE catalog_cache SET anilist_id = ?2 "
+                                 "WHERE anilist_id = ?1", old_id, new_id);
+      !r.has_value()) {
+    return rollback(r.error());
+  }
+  if (auto r = exec_rekey(conn_, "DELETE FROM catalog_cache WHERE anilist_id = ?1",
+                          old_id, new_id);
+      !r.has_value()) {
+    return rollback(r.error());
+  }
+
+  auto from = row_state(conn_, old_id);
+  if (!from.has_value()) return rollback(from.error());
+  auto to = row_state(conn_, new_id);
+  if (!to.has_value()) return rollback(to.error());
+
+  RekeyOutcome outcome = RekeyOutcome::Nothing;
+  if (from->exists && !to->exists) {
+    // A copy under the new key first: the children's FKs need a parent to
+    // point at before they move.
+    auto cols = show_value_columns(conn_);
+    if (!cols.has_value()) return rollback(cols.error());
+    std::string list;
+    for (const std::string& c : *cols) list += ", " + c;
+    const std::string sql = "INSERT INTO show (anilist_id" + list + ") SELECT ?2" + list +
+                            " FROM show WHERE anilist_id = ?1";
+    if (auto r = exec_rekey(conn_, sql, old_id, new_id); !r.has_value()) {
+      return rollback(r.error());
+    }
+    outcome = RekeyOutcome::Moved;
+  } else if (from->exists) {
+    const bool adopt = !to->in_library && from->in_library;
+    const bool both = to->in_library && from->in_library;
+    if (auto r = exec_rekey(conn_, merge_show_sql(adopt, both), old_id, new_id);
+        !r.has_value()) {
+      return rollback(r.error());
+    }
+    outcome = RekeyOutcome::Merged;
+  }
+
+  if (outcome != RekeyOutcome::Nothing) {
+    const char* const moves[] = {
+        // Same episode on both: the more recently updated resume row wins.
+        "DELETE FROM episode_progress WHERE anilist_id = ?2 AND EXISTS ("
+        "  SELECT 1 FROM episode_progress AS o WHERE o.anilist_id = ?1"
+        "    AND o.translation = episode_progress.translation"
+        "    AND o.episode = episode_progress.episode"
+        "    AND o.updated_at > episode_progress.updated_at)",
+        "UPDATE OR IGNORE episode_progress SET anilist_id = ?2 WHERE anilist_id = ?1",
+        "UPDATE OR IGNORE provider_binding SET anilist_id = ?2 WHERE anilist_id = ?1",
+        "UPDATE OR IGNORE episode_cache SET anilist_id = ?2 WHERE anilist_id = ?1",
+        "UPDATE OR IGNORE provider_pin SET anilist_id = ?2 WHERE anilist_id = ?1",
+        "UPDATE OR IGNORE provider_absence SET anilist_id = ?2 WHERE anilist_id = ?1",
+        "UPDATE OR IGNORE provider_route SET anilist_id = ?2 WHERE anilist_id = ?1",
+        // Bound and absent never coexist (bind_provider's rule).
+        "DELETE FROM provider_absence WHERE anilist_id = ?2 AND provider IN ("
+        "  SELECT provider FROM provider_binding WHERE anilist_id = ?2)",
+        // Whatever lost a conflict above goes with the old row (FK cascade).
+        "DELETE FROM show WHERE anilist_id = ?1",
+    };
+    for (const char* sql : moves) {
+      if (auto r = exec_rekey(conn_, sql, old_id, new_id); !r.has_value()) {
+        return rollback(r.error());
+      }
+    }
+  }
+
+  if (auto c = exec(conn_, "COMMIT"); !c.has_value()) return rollback(c.error());
+  return outcome;
+}
+
 // The show-row write shared by set_list_status/restore_list_status: status +
 // progress + the same progress_stamped_at conditional-touch and
 // library_added_at set-once semantics record_finish's bump_engagement uses,

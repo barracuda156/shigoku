@@ -226,6 +226,15 @@ enum class LinkKind {
     std::string_view download_dir, std::int64_t anilist_id,
     Translation translation, std::string_view episode_label);
 
+// A show's downloads follow it to a new id (a synthetic MAL-only id taking
+// its real AniList id): <download_dir>/<old_id>/ becomes <download_dir>/
+// <new_id>/. When the new id already has a tree the two merge track by track
+// and file by file; whatever the new tree already holds stays, and the old
+// copy is left where it was. Best effort, no report: a file that cannot move
+// stays under the old id. "" download_dir = downloads disabled = no-op.
+void move_show_downloads(std::string_view download_dir, std::int64_t old_id,
+                         std::int64_t new_id);
+
 // --- Internals, exposed for the golden tests -------------------------------
 namespace detail {
 

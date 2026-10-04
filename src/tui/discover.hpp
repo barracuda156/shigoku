@@ -134,6 +134,10 @@ class DiscoverState {
   // this row, so a heal must land here to be visible).
   [[nodiscard]] Enrichment* selected_entry_mut();
 
+  // Every feed row (all four axes) naming `anilist_id` becomes `e`: a show
+  // that changed id elsewhere (a synthetic row healed) follows everywhere.
+  void replace_show(std::int64_t anilist_id, const Enrichment& e);
+
   // `[` / `]` cycle with wraparound; switching preserves every slot's state
   // (DESIGN §8.6) and re-arms a failed slot for retry (discover.rs cycle_axis).
   void cycle_axis(std::int64_t delta);

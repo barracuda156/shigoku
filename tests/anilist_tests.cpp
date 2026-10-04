@@ -173,6 +173,18 @@ TEST_CASE("by_id_body binds the id variable") {
         std::string::npos);
 }
 
+TEST_CASE("by_mal_body asks by idMal with the by-id fieldset") {
+  const std::string body = detail::by_mal_body(52991);
+  const json j = json::parse(body);
+  CHECK(j.at("variables").at("id") == 52991);
+  const std::string q = j.at("query").get<std::string>();
+  CHECK(q.rfind("query($id:Int!){Media(idMal:$id,type:ANIME){", 0) == 0);
+  // Same selection as by-id, so the answer maps through the same parser.
+  const std::string by_id = detail::by_id_query();
+  const std::string marker = "type:ANIME){";
+  CHECK(q.substr(q.find(marker)) == by_id.substr(by_id.find(marker)));
+}
+
 // ===========================================================================
 // classify_characters_recs (P36)
 // ===========================================================================

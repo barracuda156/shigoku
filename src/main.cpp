@@ -756,6 +756,9 @@ int run_tui() {
       -> Result<std::optional<Enrichment>, ProviderError> {
     return cat.enrich(anilist_id, mal_id);
   };
+  deps.heal = [&cat](std::int64_t mal_id) -> Result<std::optional<Enrichment>, ProviderError> {
+    return cat.heal(mal_id);
+  };
   deps.char_recs = [&cat](std::int64_t anilist_id, std::optional<std::int64_t> mal_id)
       -> Result<std::optional<CharactersAndRecommendations>, ProviderError> {
     return cat.char_recs(anilist_id, mal_id);

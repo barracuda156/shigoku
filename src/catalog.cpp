@@ -223,6 +223,7 @@ Backend anilist_backend(const http::Client& client) {
     return anilist::characters_and_recommendations(client, anilist_id);
   };
   b.genres = [&client]() { return anilist::genre_collection(client); };
+  b.by_mal = [&client](std::int64_t mal_id) { return anilist::enrich_by_mal(client, mal_id); };
   return b;
 }
 
@@ -334,6 +335,22 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> Catalog::char
 Result<std::vector<std::string>, ProviderError> Catalog::genres() {
   return run<std::vector<std::string>>(
       *this, [&](Source s) { return backend(s)->genres(); }, /*mal_only=*/false);
+}
+
+Result<std::optional<Enrichment>, ProviderError> Catalog::heal(std::int64_t mal_id) {
+  if (mal_id <= 0 || !anilist_.by_mal) return err(ProviderError::unsupported());
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (heal_absent_.contains(mal_id)) return std::optional<Enrichment>{};
+  }
+  if (plan().first != Source::AniList) return err(ProviderError::unsupported());
+  auto r = anilist_.by_mal(mal_id);
+  report(Source::AniList, r.has_value());
+  if (r.has_value() && !r->has_value()) {
+    std::lock_guard<std::mutex> lock(mu_);
+    heal_absent_.insert(mal_id);
+  }
+  return r;
 }
 
 }  // namespace shigoku::catalog

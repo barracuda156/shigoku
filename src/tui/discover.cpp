@@ -128,6 +128,14 @@ Enrichment* DiscoverState::selected_entry_mut() {
   return &s.entries[s.cursor].meta;
 }
 
+void DiscoverState::replace_show(std::int64_t anilist_id, const Enrichment& e) {
+  for (AxisSlot& s : slots_) {
+    for (CatalogRow& row : s.entries) {
+      if (row.meta.anilist_id == anilist_id) row.meta = e;
+    }
+  }
+}
+
 void DiscoverState::cycle_axis(std::int64_t delta) {
   const std::int64_t n = static_cast<std::int64_t>(kDiscoverAxes.size());
   const std::int64_t cur = static_cast<std::int64_t>(axis_index(axis_));

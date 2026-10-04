@@ -553,6 +553,46 @@ std::optional<std::string> find_local_episode(std::string_view download_dir,
   return best;
 }
 
+namespace {
+
+// Move `from` onto `to`: a rename when `to` is free; when both are
+// directories, entry by entry down to `depth` levels. An entry `to` already
+// has stays put, and so does its counterpart under `from`. A directory that
+// ends up empty is removed.
+void merge_path(const std::string& from, const std::string& to, int depth) {
+  struct stat to_st{};
+  if (::lstat(to.c_str(), &to_st) != 0) {
+    if (errno == ENOENT) (void)::rename(from.c_str(), to.c_str());
+    return;
+  }
+  struct stat from_st{};
+  if (depth == 0 || !S_ISDIR(to_st.st_mode) || ::lstat(from.c_str(), &from_st) != 0 ||
+      !S_ISDIR(from_st.st_mode)) {
+    return;
+  }
+  std::vector<std::string> names;
+  if (DIR* d = ::opendir(from.c_str()); d != nullptr) {
+    while (const struct dirent* e = ::readdir(d)) {
+      const std::string_view name = e->d_name;
+      if (name != "." && name != "..") names.emplace_back(name);
+    }
+    ::closedir(d);
+  }
+  for (const std::string& name : names) merge_path(from + '/' + name, to + '/' + name, depth - 1);
+  (void)::rmdir(from.c_str());  // fails, harmlessly, while anything is left.
+}
+
+}  // namespace
+
+void move_show_downloads(std::string_view download_dir, std::int64_t old_id,
+                         std::int64_t new_id) {
+  if (download_dir.empty() || old_id == new_id) return;
+  std::string base(download_dir);
+  if (base.back() != '/') base.push_back('/');
+  // <id>/<track>/<file>: two levels below the show directory.
+  merge_path(base + std::to_string(old_id), base + std::to_string(new_id), 2);
+}
+
 Result<Unit, DownloadError> ensure_parent_dirs(const std::string& dest) {
   const std::size_t last_slash = dest.rfind('/');
   if (last_slash == std::string::npos || last_slash == 0) return Unit{};

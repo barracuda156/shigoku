@@ -327,6 +327,13 @@ struct MalMirrorRow {
   friend bool operator==(const MalMirrorRow&, const MalMirrorRow&) = default;
 };
 
+// What rekey_show did with the show row under the old id.
+enum class RekeyOutcome {
+  Nothing,  // no show row under the old id (or old == new).
+  Moved,    // the new id was free: the row moved over whole.
+  Merged,   // the new id already had a row: it stays, the old one folded in.
+};
+
 class Store {
  public:
   // Open (creating if absent), flip WAL, enable FKs, migrate to kSchemaVersion,
@@ -497,6 +504,32 @@ class Store {
   // Show-wide cascade from the PK: FKs take progress, caches, bindings, pins,
   // absences, routes (02 §5 FIX-IN-RUST). Returns whether a row was deleted.
   [[nodiscard]] Result<bool, StoreError> delete_show(std::int64_t anilist_id);
+
+  // Re-key a show from `old_id` to `new_id` in one transaction: a synthetic
+  // MAL-only row (negative id) taking its real AniList id. The old id is gone
+  // afterwards, its catalog_cache row included (dropped when the new id
+  // already has one).
+  //
+  // New id free: the whole row and every child row (episode progress,
+  // bindings, episode cache, pin, absences, route) move over unchanged.
+  //
+  // New id taken: that row is kept, enrichment and AniList sync snapshot
+  // included, and the old row folds into it:
+  //   - library state: a new row outside the library takes the old row's
+  //     whole user state (status, progress, score, notes, play count and
+  //     stamps); with both in the library the new row's status, score and
+  //     notes stay, progress and last_watched_at take the higher value,
+  //     library_added_at the earlier, and play counts add up;
+  //   - mal_id fills a NULL; the MAL mirror snapshot comes from the old row
+  //     when the new one was never mirrored; the schedule notice keeps the
+  //     higher mark and either pending flag;
+  //   - per-episode progress: on the same (translation, episode) the more
+  //     recently updated row wins;
+  //   - bindings, cache, pin, absences, route: the new row's own win; the old
+  //     row's fill the gaps, and an absence the move puts next to a binding
+  //     for the same provider is dropped.
+  [[nodiscard]] Result<RekeyOutcome, StoreError> rekey_show(std::int64_t old_id,
+                                                            std::int64_t new_id);
 
   // --- Manual status (History P16, ROD-139/189/193) -------------------------
 

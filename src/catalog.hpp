@@ -14,6 +14,8 @@
 // is always served by MAL, whatever the mode; a positive id goes to AniList
 // first and to MAL by the row's mal_id hint (or the offline id map) when
 // AniList fails. The answer for an existing row always keeps that row's id.
+// The one exception is heal(): it asks AniList which entry a MAL id belongs
+// to, so its answer carries the real id a synthetic row should take.
 
 #pragma once
 
@@ -23,6 +25,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "domain.hpp"
@@ -64,6 +67,9 @@ struct Backend {
       std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>
       char_recs;
   std::function<Result<std::vector<std::string>, ProviderError>()> genres;
+  // The entry a MAL id belongs to, under this source's own id. Only the
+  // AniList backend sets it; an unset one means the source cannot heal.
+  std::function<Result<std::optional<Enrichment>, ProviderError>(std::int64_t mal_id)> by_mal;
 };
 
 // The production backends. AniList refuses negative (synthetic) ids as
@@ -122,6 +128,14 @@ class Catalog {
       std::int64_t anilist_id, std::optional<std::int64_t> mal_id);
   [[nodiscard]] Result<std::vector<std::string>, ProviderError> genres();
 
+  // The AniList entry for a MAL id, for re-keying a synthetic row: Ok(some)
+  // carries the real anilist_id; Ok(nullopt) means AniList confirmed it has
+  // no such entry (remembered for the life of this object, so a row viewed
+  // again does not ask again). AniList only, never MAL: in mode mal, or while
+  // auto mode is latched on MAL, the answer is Err(Unsupported) without a
+  // request. A real AniList failure moves the latch like any other call.
+  [[nodiscard]] Result<std::optional<Enrichment>, ProviderError> heal(std::int64_t mal_id);
+
   [[nodiscard]] Status status() const;
 
   // Exposed for the dispatcher tests: the two-step decision and its report.
@@ -139,6 +153,7 @@ class Catalog {
   Backend anilist_;
   std::optional<Backend> mal_;
   Clock clock_;
+  std::unordered_set<std::int64_t> heal_absent_;  // MAL ids AniList has no entry for.
 };
 
 // Human copy for one source's failure: "AniList blocked us (403)",

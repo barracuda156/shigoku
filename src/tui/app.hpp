@@ -416,6 +416,14 @@ using GenreCollectionFn =
 using EnrichFn = std::function<Result<std::optional<Enrichment>, ProviderError>(
     std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>;
 
+// Heal callback: a MAL id -> the AniList entry it belongs to, carrying the
+// real anilist_id a synthetic (negative-id) row should take. Ok(nullopt) =
+// AniList has no such entry; Err = not answered (main.cpp wraps
+// catalog::Catalog::heal, which never asks MAL). Runs on the enrich worker
+// thread.
+using HealFn = std::function<Result<std::optional<Enrichment>, ProviderError>(
+    std::int64_t mal_id)>;
+
 // Characters+recommendations callback (P36): anilist_id -> three-state
 // answer, same shape as EnrichFn. Runs on its own worker thread (the `c`
 // toggle spawns it), so it must be safe off the UI thread.
@@ -428,6 +436,7 @@ struct AppDeps {
   SearchFn search;  // must be set for `/` search to do anything (else no-op).
   DiscoverFn discover;  // must be set for the Discover feed to fetch (else no-op).
   EnrichFn enrich;  // must be set for refresh-on-view to fetch (else no-op).
+  HealFn heal;  // set = refresh-on-view re-keys synthetic rows it can (else they stay).
   CharRecsFn char_recs;  // must be set for the `c` section to fetch (else no-op).
   GenreCollectionFn genre_collection;  // must be set for the filter overlay's genre picker to fetch (else no-op).
   // The top-bar catalog chip: "MAL" while MyAnimeList serves the browse
@@ -617,6 +626,10 @@ struct App {
   // (one fetch at a time; a selection storm defers to the next reconcile).
   std::optional<std::int64_t> enrich_checked;
   bool enrich_inflight = false;
+  // The synthetic (negative-id) row whose heal was already asked this
+  // selection cycle; re-armed with enrich_checked. The heal rides
+  // enrich_inflight, so the two never overlap.
+  std::optional<std::int64_t> heal_checked;
 
   // --- detail zoom `c` section (P36) -----------------------------------------
   CharactersRecsState char_recs;

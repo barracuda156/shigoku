@@ -76,6 +76,13 @@ struct CatalogPage {
     const http::Client& client, std::int64_t anilist_id,
     MediaKind kind = MediaKind::Anime);
 
+// The AniList entry a MyAnimeList id belongs to (Media(idMal:)), same
+// three-state contract as enrich. AniList answers an id it does not know with
+// HTTP 404, which reads here as the confirmed no-match Ok(nullopt), not as a
+// failure. The answer carries the real AniList id.
+[[nodiscard]] Result<std::optional<Enrichment>, ProviderError> enrich_by_mal(
+    const http::Client& client, std::int64_t mal_id);
+
 // One media's next-airing answer from the batched airing lookup: the AniList
 // id, its MAL id, and the next episode (both nullopt = nothing scheduled —
 // finished, or not yet dated — which the caller stores as a cleared stamp).
@@ -205,6 +212,11 @@ namespace detail {
 // by_id_body, :89).
 [[nodiscard]] std::string by_id_body(std::int64_t anilist_id,
                                      MediaKind kind = MediaKind::Anime);
+
+// The by-MAL-id query document and POST body: the same fieldset as by-id,
+// keyed on `idMal` instead.
+[[nodiscard]] std::string by_mal_query();
+[[nodiscard]] std::string by_mal_body(std::int64_t mal_id);
 
 // By-id body -> three-state (05 §8, anilist.rs classify_by_id, :454):
 // data:null/garbage = no answer (Err); Media:null = confirmed no-match

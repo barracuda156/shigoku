@@ -90,6 +90,10 @@ class PrewarmState {
   void cancel();
 
   [[nodiscard]] bool active() const { return run_.has_value(); }
+  // A walk (in flight or paced) is warming this show.
+  [[nodiscard]] bool warming(std::int64_t anilist_id) const {
+    return run_.has_value() && run_->canonical.anilist_id == anilist_id;
+  }
 
  private:
   [[nodiscard]] bool blocked(std::int64_t anilist_id, const PrewarmGates& gates,

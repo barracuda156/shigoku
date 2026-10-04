@@ -617,6 +617,7 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
         [](const EnrichmentRefreshed&) { return std::string("enrichment-refreshed"); },
         [](const EnrichmentNull&) { return std::string("enrichment-null"); },
         [](const EnrichmentFailed&) { return std::string("enrichment-failed"); },
+        [](const EnrichmentHealMissed&) { return std::string("enrichment-heal-missed"); },
         [](const CharactersRecsDone&) { return std::string("characters-recs-done"); },
         [](const CharactersRecsNull&) { return std::string("characters-recs-null"); },
         [](const CharactersRecsFailed&) { return std::string("characters-recs-failed"); },
@@ -637,6 +638,7 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
   CHECK(classify(Event{PlayRetry{2, 3}}) == "play-retry");
   CHECK(classify(Event{EnrichmentNull{700}}) == "enrichment-null");
   CHECK(classify(Event{EnrichmentFailed{700}}) == "enrichment-failed");
+  CHECK(classify(Event{EnrichmentHealMissed{-700}}) == "enrichment-heal-missed");
   CHECK(classify(Event{CharactersRecsDone{700, {}}}) == "characters-recs-done");
   CHECK(classify(Event{CharactersRecsNull{700}}) == "characters-recs-null");
   CHECK(classify(Event{CharactersRecsFailed{700}}) == "characters-recs-failed");

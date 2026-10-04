@@ -886,6 +886,162 @@ TEST_CASE("enrich failed: no stamp, no persist, raises the AniList toast") {
   for (const Toast& t : h->app.toasts.visible()) CHECK(t.topic != "anilist");
 }
 
+// --- Heal: a synthetic MAL-only row takes its real AniList id ---------------
+
+namespace {
+
+Enrichment synthetic_show(std::int64_t mal) {
+  Enrichment e;
+  e.anilist_id = -mal;
+  e.mal_id = mal;
+  e.title_romaji = "Synthetic";
+  e.total_episodes = 12;
+  return e;
+}
+
+Enrichment real_show(std::int64_t mal, std::int64_t aid) {
+  Enrichment e = healed(aid);
+  e.mal_id = mal;
+  e.title_romaji = "Real Title";
+  return e;
+}
+
+// Wait (bounded) for the worker's answer, so the detached thread is done
+// before the harness leaves scope.
+std::optional<Event> pump(EventQueue& queue) {
+  for (int i = 0; i < 50; ++i) {
+    if (auto ev = queue.wait_next(); ev.has_value()) return ev;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+TEST_CASE("heal: viewing a fresh synthetic History row re-keys it onto the real id") {
+  auto h = HistoryHarness::make();
+  EventQueue queue;
+  auto heals = std::make_shared<std::atomic<int>>(0);
+  auto enriches = std::make_shared<std::atomic<int>>(0);
+  h->deps.heal = [heals](std::int64_t mal) -> Result<std::optional<Enrichment>, ProviderError> {
+    heals->fetch_add(1);
+    return std::optional<Enrichment>(real_show(mal, 9555));
+  };
+  h->deps.enrich = [enriches](std::int64_t, std::optional<std::int64_t>)
+      -> Result<std::optional<Enrichment>, ProviderError> {
+    enriches->fetch_add(1);
+    return std::optional<Enrichment>{};
+  };
+  REQUIRE(h->store.add_to_library(synthetic_show(555), 50).has_value());
+  REQUIRE(h->store.set_list_status(-555, ListStatus::Watching, 60).has_value());
+  REQUIRE(h->store.save_progress(-555, Translation::Sub, "3", 300.0, 1400.0, "senshi", 70)
+              .has_value());
+  // Fresh metadata from MAL: the heal must not wait for it to go stale.
+  tick(h->app, Event{EnrichmentRefreshed{-555, synthetic_show(555)}});
+  h->reload();
+  REQUIRE(h->app.history.selected() != nullptr);
+  REQUIRE(h->app.history.selected()->enrichment.anilist_id == -555);
+
+  h->app.queue = &queue;
+  tick(h->app, Event{Tick{}});
+  CHECK(h->app.enrich_inflight);
+  auto ev = pump(queue);
+  REQUIRE(ev.has_value());
+  tick(h->app, *ev);
+  CHECK(heals->load() == 1);
+
+  CHECK_FALSE(h->store.get_show(-555)->has_value());
+  auto g = h->store.get_show(9555);
+  REQUIRE(g->has_value());
+  CHECK((*g)->enrichment.title_romaji == "Real Title");
+  CHECK((*g)->enrichment.mal_id == std::optional<std::int64_t>(555));
+  CHECK((*g)->list_status == ListStatus::Watching);
+  CHECK((*g)->enrichment_fetched_at.has_value());
+  CHECK(h->store.get_resume(9555, Translation::Sub, "3")->has_value());
+  // History reloaded with the cursor still on the row, now under its real id.
+  REQUIRE(h->app.history.selected() != nullptr);
+  CHECK(h->app.history.selected()->enrichment.anilist_id == 9555);
+
+  // Settled: the healed row is fresh, so nothing more is asked.
+  tick(h->app, Event{Tick{}});
+  tick(h->app, Event{Tick{}});
+  CHECK_FALSE(h->app.enrich_inflight);
+  CHECK(heals->load() == 1);
+  CHECK(enriches->load() == 0);
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("heal: a miss falls through to the ordinary refresh, once") {
+  auto h = HistoryHarness::make();
+  EventQueue queue;
+  auto heals = std::make_shared<std::atomic<int>>(0);
+  auto enriches = std::make_shared<std::atomic<int>>(0);
+  h->deps.heal = [heals](std::int64_t) -> Result<std::optional<Enrichment>, ProviderError> {
+    heals->fetch_add(1);
+    return std::optional<Enrichment>{};
+  };
+  h->deps.enrich = [enriches](std::int64_t, std::optional<std::int64_t>)
+      -> Result<std::optional<Enrichment>, ProviderError> {
+    enriches->fetch_add(1);
+    return std::optional<Enrichment>{};
+  };
+  REQUIRE(h->store.add_to_library(synthetic_show(557), 50).has_value());
+  h->reload();
+  h->app.queue = &queue;
+
+  tick(h->app, Event{Tick{}});
+  auto missed = pump(queue);
+  REQUIRE(missed.has_value());
+  CHECK(std::holds_alternative<EnrichmentHealMissed>(*missed));
+  tick(h->app, *missed);  // the row is stale: its ordinary refresh spawns.
+  auto refreshed = pump(queue);
+  REQUIRE(refreshed.has_value());
+  tick(h->app, *refreshed);
+  CHECK(heals->load() == 1);
+  CHECK(enriches->load() == 1);
+  CHECK(h->store.get_show(-557)->has_value());
+  for (const Toast& t : h->app.toasts.visible()) CHECK(t.topic != "anilist");
+
+  tick(h->app, Event{Tick{}});
+  CHECK(heals->load() == 1);
+  CHECK(enriches->load() == 1);
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("heal: deferred while the synthetic row is playing") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(556), 50).has_value());
+  h->reload();
+  h->app.play.active = true;
+  h->app.play.for_id = -556;
+
+  tick(h->app, Event{EnrichmentRefreshed{-556, real_show(556, 9556)}});
+  CHECK(h->store.get_show(-556)->has_value());
+  CHECK_FALSE(h->store.get_show(9556)->has_value());
+  CHECK_FALSE(h->app.enrich_inflight);
+
+  // The play over, the next answer heals.
+  h->app.play.active = false;
+  tick(h->app, Event{EnrichmentRefreshed{-556, real_show(556, 9556)}});
+  CHECK_FALSE(h->store.get_show(-556)->has_value());
+  CHECK(h->store.get_show(9556)->has_value());
+}
+
+TEST_CASE("heal: Browse rows naming the synthetic id take the real one") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  h->app.catalog.push_back(CatalogRow{synthetic_show(558)});
+  h->app.catalog.push_back(CatalogRow{synthetic_show(559)});
+  h->app.catalog.push_back(CatalogRow{synthetic_show(558)});
+  h->app.list_cursor = 0;
+
+  tick(h->app, Event{EnrichmentRefreshed{-558, real_show(558, 9558)}});
+  CHECK(h->app.catalog[0].meta.anilist_id == 9558);
+  CHECK(h->app.catalog[0].meta.title_romaji == "Real Title");
+  CHECK(h->app.catalog[1].meta.anilist_id == -559);
+  CHECK(h->app.catalog[2].meta.anilist_id == 9558);
+  CHECK(h->store.get_catalog(9558)->has_value());
+}
+
 // --- P30 parity-audit pins: view switching, narrow arms, P-add, pagination,
 // resume landing, season chips ----------------------------------------------
 

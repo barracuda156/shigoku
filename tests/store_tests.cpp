@@ -2217,3 +2217,206 @@ TEST_CASE("v2_database_upgrades_by_adding_mal_mirror_columns") {
     std::remove((path + suffix).c_str());
   }
 }
+
+// --- rekey_show: a synthetic MAL-only row taking its real AniList id --------
+
+namespace {
+
+Enrichment show_meta(std::int64_t aid, std::int64_t mal, const char* title) {
+  Enrichment e;
+  e.anilist_id = aid;
+  e.mal_id = mal;
+  e.title_romaji = title;
+  e.total_episodes = 12;
+  return e;
+}
+
+// The MAL mirror's view of one row (its snapshot columns have no other
+// public read), re-keyed so before/after compare across the id change.
+std::optional<MalMirrorRow> mirror_row(Store& s, std::int64_t aid) {
+  auto rows = s.list_dirty_for_mal_mirror();
+  REQUIRE(rows.has_value());
+  for (MalMirrorRow r : *rows) {
+    if (r.anilist_id == aid) {
+      r.anilist_id = 0;
+      return r;
+    }
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+TEST_CASE("rekey_show_moves_a_synthetic_row_whole_onto_a_free_id") {
+  auto s = open_mem();
+  const Enrichment e = show_meta(-555, 555, "Synthetic");
+  REQUIRE(s.add_to_library(e, 100).has_value());
+  REQUIRE(s.record_finish(-555, Translation::Sub, "1", 1, 1400.0, 1420.0, "senshi", 120)
+              .has_value());
+  REQUIRE(s.save_progress(-555, Translation::Sub, "2", 300.0, 1420.0, "senshi", 130)
+              .has_value());
+  REQUIRE(s.set_user_score(-555, 80).has_value());
+  REQUIRE(s.set_schedule_notice(-555, 2).has_value());
+  REQUIRE(s.mark_mal_synced(-555, ListStatus::Planning, 0, std::nullopt).has_value());
+  REQUIRE(s.bind_provider(e, "senshi", "syn-1", 100).has_value());
+  REQUIRE(s.mark_provider_absent(e, "hianime", 100).has_value());
+  REQUIRE(s.set_provider_pin(-555, std::string_view("senshi")).has_value());
+  REQUIRE(s.set_route_pref(e, "senshi").has_value());
+  REQUIRE(s.set_episode_cache(-555, "senshi", Translation::Sub, {"1", "2"}, std::nullopt, 100)
+              .has_value());
+  REQUIRE(s.upsert_catalog_cache(e, 100, 100000).has_value());
+
+  auto before = s.get_show(-555);
+  REQUIRE(before->has_value());
+  const auto mirror_before = mirror_row(s, -555);
+  REQUIRE(mirror_before.has_value());  // Watching/1 vs the Planning/0 snapshot.
+
+  auto r = s.rekey_show(-555, 9555);
+  REQUIRE(r.has_value());
+  CHECK(*r == RekeyOutcome::Moved);
+
+  CHECK_FALSE(s.get_show(-555)->has_value());
+  auto after = s.get_show(9555);
+  REQUIRE(after->has_value());
+  Show expect = **before;
+  expect.enrichment.anilist_id = 9555;
+  CHECK(**after == expect);  // every column, user state and stamps included.
+  CHECK(mirror_row(s, 9555) == mirror_before);
+
+  CHECK(s.get_resume(9555, Translation::Sub, "1")->has_value());
+  CHECK(s.get_resume(9555, Translation::Sub, "2")->has_value());
+  CHECK_FALSE(s.get_resume(-555, Translation::Sub, "2")->has_value());
+  REQUIRE(s.bindings_for(9555)->size() == 1);
+  CHECK(s.bindings_for(9555)->front().provider_id == "syn-1");
+  CHECK(s.show_id_for_binding("senshi", "syn-1")->value_or(0) == 9555);
+  CHECK(*s.provider_absent_fresh(9555, "hianime", 101));
+  CHECK(s.get_provider_pin(9555)->value_or("") == "senshi");
+  CHECK(s.get_route_pref(9555)->value_or("") == "senshi");
+  CHECK(s.get_cached_episodes(9555, "senshi", Translation::Sub, 101)->has_value());
+  CHECK(s.get_catalog(9555)->has_value());
+  CHECK_FALSE(s.get_catalog(-555)->has_value());
+  CHECK(s.list_history()->size() == 1);
+}
+
+TEST_CASE("rekey_show_gives_a_bare_real_row_the_synthetic_library_state") {
+  auto s = open_mem();
+  const Enrichment real = show_meta(9556, 556, "Real Title");
+  const Enrichment syn = show_meta(-556, 556, "Synthetic Title");
+  // The real id is known only as an identity row (a binding minted it) plus
+  // a browse-cache entry.
+  REQUIRE(s.bind_provider(real, "senshi", "real-1", 50).has_value());
+  REQUIRE(s.upsert_catalog_cache(real, 50, 100000).has_value());
+  REQUIRE(s.add_to_library(syn, 100).has_value());
+  REQUIRE(s.record_finish(-556, Translation::Sub, "1", 1, 1400.0, 1420.0, "senshi", 120)
+              .has_value());
+  REQUIRE(s.set_list_status(-556, ListStatus::Paused, 130).has_value());
+  REQUIRE(s.set_user_score(-556, 90).has_value());
+  REQUIRE(s.bind_provider(syn, "senshi", "syn-1", 100).has_value());
+  REQUIRE(s.bind_provider(syn, "hianime", "h-1", 100).has_value());
+  REQUIRE(s.upsert_catalog_cache(syn, 100, 100000).has_value());
+  auto syn_before = s.get_show(-556);
+  REQUIRE(syn_before->has_value());
+
+  auto r = s.rekey_show(-556, 9556);
+  REQUIRE(r.has_value());
+  CHECK(*r == RekeyOutcome::Merged);
+
+  CHECK_FALSE(s.get_show(-556)->has_value());
+  auto g = s.get_show(9556);
+  REQUIRE(g->has_value());
+  const Show& sh = **g;
+  CHECK(sh.enrichment.title_romaji == "Real Title");  // the real row's metadata stays.
+  CHECK(sh.list_status == ListStatus::Paused);
+  CHECK(sh.progress == (*syn_before)->progress);
+  CHECK(sh.play_count == (*syn_before)->play_count);
+  CHECK(sh.user_score == std::optional<std::uint32_t>(90));
+  CHECK(sh.library_added_at == (*syn_before)->library_added_at);
+  CHECK(sh.last_watched_at == (*syn_before)->last_watched_at);
+  CHECK(s.get_resume(9556, Translation::Sub, "1")->has_value());
+
+  // The real row's binding wins its provider; the synthetic one fills the gap.
+  auto b = s.bindings_for(9556);
+  REQUIRE(b->size() == 2);
+  CHECK((*b)[0].provider == "hianime");
+  CHECK((*b)[0].provider_id == "h-1");
+  CHECK((*b)[1].provider == "senshi");
+  CHECK((*b)[1].provider_id == "real-1");
+  CHECK_FALSE(s.show_id_for_binding("senshi", "syn-1")->has_value());
+
+  // The real browse-cache row stays; the synthetic one is gone.
+  auto c = s.get_catalog(9556);
+  REQUIRE(c->has_value());
+  CHECK((*c)->enrichment.title_romaji == "Real Title");
+  CHECK_FALSE(s.get_catalog(-556)->has_value());
+}
+
+TEST_CASE("rekey_show_with_both_in_the_library_keeps_the_real_status_and_raises_progress") {
+  auto s = open_mem();
+  const Enrichment real = show_meta(9557, 557, "Real");
+  const Enrichment syn = show_meta(-557, 557, "Synthetic");
+  REQUIRE(s.add_to_library(real, 150).has_value());
+  REQUIRE(s.record_finish(9557, Translation::Sub, "1", 1, 1400.0, 1420.0, "senshi", 200)
+              .has_value());
+  REQUIRE(s.set_user_score(9557, 70).has_value());
+  REQUIRE(s.bind_provider(real, "senshi", "real-1", 150).has_value());
+
+  REQUIRE(s.add_to_library(syn, 100).has_value());
+  for (std::uint32_t ep = 1; ep <= 3; ++ep) {
+    REQUIRE(s.record_finish(-557, Translation::Sub, std::to_string(ep), ep, 1410.0, 1420.0,
+                            "senshi", 300)
+                .has_value());
+  }
+  REQUIRE(s.set_user_score(-557, 90).has_value());
+  REQUIRE(s.mark_provider_absent(syn, "senshi", 300).has_value());
+
+  auto real_before = s.get_show(9557);
+  auto syn_before = s.get_show(-557);
+  REQUIRE(real_before->has_value());
+  REQUIRE(syn_before->has_value());
+  REQUIRE((*syn_before)->progress > (*real_before)->progress);
+
+  auto r = s.rekey_show(-557, 9557);
+  REQUIRE(r.has_value());
+  CHECK(*r == RekeyOutcome::Merged);
+
+  auto g = s.get_show(9557);
+  REQUIRE(g->has_value());
+  const Show& sh = **g;
+  CHECK(sh.list_status == (*real_before)->list_status);
+  CHECK(sh.user_score == std::optional<std::uint32_t>(70));
+  CHECK(sh.progress == (*syn_before)->progress);
+  CHECK(sh.last_watched_at == std::optional<std::int64_t>(300));
+  CHECK(sh.library_added_at == std::optional<std::int64_t>(100));
+  CHECK(sh.play_count == (*real_before)->play_count + (*syn_before)->play_count);
+
+  // Episode 1 exists on both: the later update (the synthetic row's) wins.
+  auto ep1 = s.get_resume(9557, Translation::Sub, "1");
+  REQUIRE(ep1->has_value());
+  CHECK((*ep1)->position_secs == doctest::Approx(1410.0));
+  CHECK(s.get_resume(9557, Translation::Sub, "3")->has_value());
+
+  // The moved absence sat next to the real binding for the same provider.
+  CHECK_FALSE(*s.provider_absent_fresh(9557, "senshi", 301));
+  CHECK(s.bindings_for(9557)->size() == 1);
+  CHECK(s.list_history()->size() == 1);
+}
+
+TEST_CASE("rekey_show_without_a_show_row_moves_only_the_browse_cache") {
+  auto s = open_mem();
+  REQUIRE(s.upsert_catalog_cache(show_meta(-558, 558, "Browse Only"), 100, 100000)
+              .has_value());
+
+  auto r = s.rekey_show(-558, 9558);
+  REQUIRE(r.has_value());
+  CHECK(*r == RekeyOutcome::Nothing);
+  CHECK_FALSE(s.get_catalog(-558)->has_value());
+  auto c = s.get_catalog(9558);
+  REQUIRE(c->has_value());
+  CHECK((*c)->enrichment.anilist_id == 9558);
+  CHECK_FALSE(s.get_show(9558)->has_value());
+
+  auto same = s.rekey_show(9558, 9558);
+  REQUIRE(same.has_value());
+  CHECK(*same == RekeyOutcome::Nothing);
+  CHECK(s.get_catalog(9558)->has_value());
+}

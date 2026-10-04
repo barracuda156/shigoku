@@ -426,6 +426,16 @@ struct EnrichmentFailed {
   friend bool operator==(const EnrichmentFailed&, const EnrichmentFailed&) = default;
 };
 
+// A synthetic MAL-only row asked AniList for its real id and got none (no
+// entry, AniList unreachable, or the catalog not asking AniList right now).
+// Not a failure the user hears about: the row stays as it is and the usual
+// refresh-on-view takes over. A heal that finds the id posts
+// EnrichmentRefreshed instead, its enrichment under the real id.
+struct EnrichmentHealMissed {
+  std::int64_t for_id = 0;
+  friend bool operator==(const EnrichmentHealMissed&, const EnrichmentHealMissed&) = default;
+};
+
 // --- 4.7a Detail zoom characters+recommendations (P36) ---------------------
 //
 // The `c`-toggle worker posts one of the three below by `for_id`, same
@@ -546,6 +556,7 @@ using Event = std::variant<KeyEvent,
                            EnrichmentRefreshed,
                            EnrichmentNull,
                            EnrichmentFailed,
+                           EnrichmentHealMissed,
                            CharactersRecsDone,
                            CharactersRecsNull,
                            CharactersRecsFailed,
