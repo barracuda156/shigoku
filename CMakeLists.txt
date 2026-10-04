@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.2.1 LANGUAGES CXX C)
+project(shigoku VERSION 0.2.2 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)
@@ -144,7 +144,7 @@ else()
     set(SHIGOKU_HAVE_CURL ON)
   else()
     set(SHIGOKU_HAVE_CURL OFF)
-    message(WARNING "libcurl not found: HTTP layer (P2), AniList (P3), senshi (P4), covers (P8) will not build.")
+    message(WARNING "libcurl not found: HTTP layer, AniList, senshi, covers will not build.")
   endif()
 endif()
 
@@ -165,7 +165,7 @@ else()
     set(SHIGOKU_HAVE_SQLITE3 ON)
   else()
     set(SHIGOKU_HAVE_SQLITE3 OFF)
-    message(WARNING "sqlite3 not found: store (P9) will not build.")
+    message(WARNING "sqlite3 not found: store will not build.")
   endif()
 endif()
 
@@ -193,7 +193,7 @@ elseif(WITH_WEBP)
   else()
     set(SHIGOKU_HAVE_WEBP OFF)
     message(STATUS "shigoku-webp: libwebp not found — WebP manga pages/covers "
-                   "will decode-fail cleanly (MG-6c). `source scripts/env.sh` "
+                   "will decode-fail cleanly. `source scripts/env.sh` "
                    "or install libwebp-dev to enable.")
   endif()
 else()
@@ -652,7 +652,7 @@ endif()
 # shigoku_nhentai: the nhentai source — three JSON parsers
 # over the v2 FastAPI (search/cdn/gallery) + a blocking transport with the
 # adaptive TLS-fingerprint posture (plain first, sticky Chrome escalation on
-# 403 through the P25 impersonate seam). nsfw() true: the `nsfw_sources`
+# 403 through the impersonate seam). nsfw() true: the `nsfw_sources`
 # config gate (default off) keeps it invisible until the user opts in. Links
 # shigoku_mangadex for detail::url_encode / filename_safe (no HTML anywhere,
 # so no weebcentral dependency).
@@ -784,9 +784,8 @@ endif()
 # shigoku_aniskip: AniSkip OP/ED fetch -> skip.lua + mpv
 # --script-opts, keyed on MAL id + numeric episode. Best-effort throughout: any
 # failure collapses to plain play, never a hard error. Falls back to a Jikan
-# title lookup when enrichment carries no MAL id (shigoku addition, no 1:1
-# Rust source — sabigoku ships without a jikan module, ROD-439). Needs
-# shigoku_player only for the SkipScript{path,opts} return type.
+# title lookup when enrichment carries no MAL id. Needs shigoku_player
+# only for the SkipScript{path,opts} return type.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_aniskip STATIC src/aniskip.cpp)
@@ -906,12 +905,12 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
             shigoku_sync shigoku_mal_mirror shigoku_updatecheck shigoku_download
             shigoku_webp_decode Threads::Threads shigoku_atomic)
 
-  # --- shigoku-manga (MANGA_PLAN MG-1): the manga companion app -------------
+  # --- shigoku-manga: the manga companion app -------------
   # Second executable, same tree, shared static libs (ANALYSIS §4c). mapp.cpp
   # links the pure render core + the MangaDex source; covers.cpp comes from
   # shigoku_tui via selective object pull (mapp references only Covers/
   # make_http_fetch — the anime app.cpp object never links in). Rename knob:
-  # SHIGOKU_MANGA_BIN (MANGA_PLAN §0 "rename is one CMake var").
+  # SHIGOKU_MANGA_BIN.
   set(SHIGOKU_MANGA_BIN "shigoku-manga" CACHE STRING
       "Output name of the manga companion binary")
   add_library(shigoku_manga_app STATIC src/manga/mapp.cpp)
@@ -938,7 +937,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
     shigoku_login shigoku_loopback shigoku_flags shigoku_thirdparty
     shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
 
-  # drive-tui (P6 DoD demo binary): bars, animating spinner, key echo, live
+  # drive-tui (demo binary): bars, animating spinner, key echo, live
   # resize reflow, q/Ctrl-C restore.
   add_executable(drive_tui src/tui/drive_tui.cpp)
   target_link_libraries(drive_tui PRIVATE
@@ -973,12 +972,12 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
-# shigoku-view (MANGA_PLAN MG-2): the SDL micro-viewer. Independent of curl AND
+# shigoku-view: the SDL micro-viewer. Independent of curl AND
 # sqlite (it decodes local files with vendored stb, plus libwebp when
-# WITH_WEBP is on — MG-6c) — so it lives OUTSIDE the tui block's
+# WITH_WEBP is on) — so it lives OUTSIDE the tui block's
 # HAVE_CURL/HAVE_SQLITE3 guard. Two pieces:
 #   - viewer_tests: the PURE pager core (pager.cpp), NO SDL — always built and
-#     ctest-registered, the MG-2 DoD's offline proof.
+#     ctest-registered.
 #   - shigoku-view binary: gated on SDL via pkg-config, auto-off with a status
 #     line (never a hard configure error, per the plan). SDL2 default;
 #     -DVIEWER_SDL3=ON selects SDL3 (rev 2.3: SDL2=Cocoa on ppc darwin, SDL3
@@ -1213,8 +1212,8 @@ if(WITH_VIEWER AND WITH_MUPDF)
 endif()
 
 # mupdf_selftest: the run-time half of the probe above. Configure proved that
-# a link set links; this proves the linked library loads and works — opens a
-# document, counts its pages, renders the first one. Registered with ctest on
+# a link set links; this proves the linked library loads and works — opens
+# a document, counts its pages, renders the first one. Registered with ctest on
 # the committed two-page PDF fixture.
 if(SHIGOKU_HAVE_MUPDF)
   add_executable(mupdf_selftest src/view/mupdf_selftest.cpp)
@@ -1253,15 +1252,15 @@ if(SHIGOKU_HAVE_MUPDF)
 endif()
 
 # ---------------------------------------------------------------------------
-# libarchive for shigoku-view (MUPDF_PLAN slice 6): CBZ/CBR/CBT comic
+# libarchive for shigoku-view: CBZ/CBR/CBT comic
 # archives, extracted once into the existing image pager (archive_source.cpp
 # — main.cpp never touches libarchive directly). Optional, the WITH_WEBP
 # posture (default ON, auto-off with a STATUS line when the library is not
 # found, -DWITH_LIBARCHIVE=OFF forces it off).
 #
 # Detection: pkg-config first (Ubuntu and MacPorts both ship libarchive.pc)
-# else find_path/find_library PAIRED FROM THE SAME PREFIX — macOS ships a
-# headerless /usr/lib/libarchive.dylib, and pairing by prefix keeps
+# else find_path/find_library PAIRED FROM THE SAME PREFIX — macOS ships
+# a headerless /usr/lib/libarchive.dylib, and pairing by prefix keeps
 # MacPorts' own headers with MacPorts' own lib rather than that system one.
 # A link probe (archive_read_new + archive_read_support_format_all) also
 # floors the version at 3.4.0 (RAR5) via ARCHIVE_VERSION_NUMBER — the
@@ -1402,7 +1401,7 @@ target_link_libraries(picker_tests PRIVATE
   shigoku_picker shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME picker_tests COMMAND picker_tests)
 
-# config_tests (P18): config.json load/save — total-load defaults, atomic
+# config_tests: config.json load/save — total-load defaults, atomic
 # save, oversized/corrupt/FIFO handling, concurrency clamp. Pure file I/O, no
 # curl/sqlite; links only the leaf shigoku_config.
 add_executable(config_tests tests/config_tests.cpp)
@@ -1410,7 +1409,7 @@ target_link_libraries(config_tests PRIVATE
   shigoku_config shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME config_tests COMMAND config_tests)
 
-# auth_tests (P19): auth.json load/save — total-load defaults, atomic 0600
+# auth_tests: auth.json load/save — total-load defaults, atomic 0600
 # save, oversized/corrupt/FIFO handling, control-byte token rejection,
 # is_expired boundary. Pure file I/O, no curl/sqlite; links only the leaf
 # shigoku_auth.
@@ -1419,7 +1418,7 @@ target_link_libraries(auth_tests PRIVATE
   shigoku_auth shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME auth_tests COMMAND auth_tests)
 
-# settings_tests (P18): the Settings view state machine — row nav, preset
+# settings_tests: the Settings view state machine — row nav, preset
 # cycling (incl. out-of-preset snap-to-zero + provider wheel wrap), toggles,
 # edit mode (prefill/append/backspace/commit/cancel, control-char rejection).
 # Pure state, no curl/sqlite; links the render core + config.
@@ -1430,7 +1429,7 @@ target_link_libraries(settings_tests PRIVATE
   Threads::Threads shigoku_atomic)
 add_test(NAME settings_tests COMMAND settings_tests)
 
-# connect_tests (P19): the AniList connect modal's pure render — the row-plan
+# connect_tests: the AniList connect modal's pure render — the row-plan
 # fit check across a size sweep (no key hint ever silently clips), the
 # contained-not-full-bleed float shape, and the cramped-fallback strip. Pure
 # state, no curl/sqlite; links only the render core + domain.
@@ -1441,7 +1440,7 @@ target_link_libraries(connect_tests PRIVATE
 add_test(NAME connect_tests COMMAND connect_tests)
 endif()  # WITH_TUI
 
-# resolver_tests / resolve_tests (P15): the pure Tier-B/C scorer and the pure
+# resolver_tests / resolve_tests: the pure Tier-B/C scorer and the pure
 # resolve engine, ported 1:1 from resolver.rs / resolve.rs. No curl/sqlite/tui —
 # they link only the leaf shigoku_resolve + domain, so they run everywhere.
 add_executable(resolver_tests tests/resolver_tests.cpp)
@@ -1456,7 +1455,7 @@ target_link_libraries(resolve_tests PRIVATE
   Threads::Threads shigoku_atomic)
 add_test(NAME resolve_tests COMMAND resolve_tests)
 
-# store_tests (P9): resume rule + watched ratio + recompute + record_finish +
+# store_tests: resume rule + watched ratio + recompute + record_finish +
 # migration idempotence + the resume DoD, in-memory or a tmp file. Links the
 # store lib (+ sqlite); no curl/tui needed (the store is a leaf on domain).
 if(SHIGOKU_HAVE_SQLITE3)
@@ -1467,7 +1466,7 @@ if(SHIGOKU_HAVE_SQLITE3)
   add_test(NAME store_tests COMMAND store_tests)
 endif()
 
-# http_tests (P2) additionally links the http lib + curl. Only when curl is
+# http_tests additionally links the http lib + curl. Only when curl is
 # present (the lib itself is gated on SHIGOKU_HAVE_CURL).
 if(SHIGOKU_HAVE_CURL)
   add_executable(http_tests tests/http_tests.cpp)
@@ -1477,7 +1476,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME http_tests COMMAND http_tests)
 endif()
 
-# download_tests (P35 slice 1): the headless download core over a scripted
+# download_tests: the headless download core over a scripted
 # loopback server — .part/atomic-rename law, Range resume (206 append / 200
 # restart / 416 drop), kill-mid-transfer and cancel leave only the .part, no
 # 4 MiB cap on the streaming path. Needs curl for the http client.
@@ -1490,17 +1489,16 @@ if(SHIGOKU_HAVE_CURL)
   set_tests_properties(download_tests PROPERTIES TIMEOUT 60)
 endif()
 
-# semver_tests (P28): pure version-parse/compare table (semver.rs tests).
+# semver_tests: pure version-parse/compare table (semver.rs tests).
 # No curl/sqlite3 — links shigoku_semver only.
 add_executable(semver_tests tests/semver_tests.cpp)
 target_link_libraries(semver_tests PRIVATE
   shigoku_semver shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME semver_tests COMMAND semver_tests)
 
-# updatecheck_tests (P28): cache read/write/parse + is_fresh (updatecheck.rs
-# tests) plus a live-fixture pass over fetch_latest/check/latest_fresh through
-# the SHIGOKU_UPDATE_URL seam and a loopback OneShotServer (no real GitHub
-# hit). Needs curl for the http client.
+# updatecheck_tests: cache read/write/parse + is_fresh plus a live-fixture pass
+# over fetch_latest/check/latest_fresh through the SHIGOKU_UPDATE_URL seam and a loopback
+# OneShotServer (no real GitHub hit). Needs curl for the http client.
 if(SHIGOKU_HAVE_CURL)
   add_executable(updatecheck_tests tests/updatecheck_tests.cpp)
   target_link_libraries(updatecheck_tests PRIVATE
@@ -1509,10 +1507,10 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME updatecheck_tests COMMAND updatecheck_tests)
 endif()
 
-# anilist_tests (P3, +P20 sync): golden fixture parsing + live-shaped
+# anilist_tests: golden fixture parsing + live-shaped
 # HTTP-error/empty tests over a loopback fixture server. SHIGOKU_TEST_FIXTURES_DIR
 # points the binary at tests/fixtures regardless of ctest's working directory.
-# Gated on both curl and sqlite3 now: shigoku_anilist links shigoku_store (P20).
+# Gated on both curl and sqlite3 now: shigoku_anilist links shigoku_store.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(anilist_tests tests/anilist_tests.cpp)
   target_compile_definitions(anilist_tests PRIVATE
@@ -1524,8 +1522,8 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # login_tests (P19): complete_login's extract/floor-check/verify/save state
-# machine + authorize_url/normalize_paste/param boundary-anchoring, against a
-# fake Verifier (no network). Links login + auth only; gated the same as
+# machine + authorize_url/normalize_paste/param boundary-anchoring, against
+# a fake Verifier (no network). Links login + auth only; gated the same as
 # shigoku_login (transitively shigoku_anilist, shigoku_store) is.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(login_tests tests/login_tests.cpp)
@@ -1535,10 +1533,9 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME login_tests COMMAND login_tests)
 endif()
 
-# mal_login_tests (P31 §9.1 slice 2): complete_mal_login/refresh_mal_token's
+# mal_login_tests: complete_mal_login/refresh_mal_token's
 # state machine + PKCE minting/authorize_url/form_encode/parse_token_response,
-# against a fake Exchanger (no network). No sabigoku golden reference (see
-# mal_login.hpp). Gated the same as shigoku_mal_login.
+# against a fake Exchanger (no network). Gated the same as shigoku_mal_login.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(mal_login_tests tests/mal_login_tests.cpp)
   target_link_libraries(mal_login_tests PRIVATE
@@ -1547,10 +1544,9 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mal_login_tests COMMAND mal_login_tests)
 endif()
 
-# mal_tests (P31 §9.1 slice 3): the status-map branch table (both directions)
+# mal_tests: the status-map branch table (both directions)
 # + get/put request+response goldens, offline (asserts on the built Request,
-# no socket). No sabigoku golden reference (see mal.hpp). Gated the same as
-# shigoku_mal.
+# no socket). Gated the same as shigoku_mal.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(mal_tests tests/mal_tests.cpp)
   target_link_libraries(mal_tests PRIVATE
@@ -1558,7 +1554,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mal_tests COMMAND mal_tests)
 endif()
 
-# sync_tests (P20): run_sync/flush_push/push_dirty against a FakeAni/RaceAni
+# sync_tests: run_sync/flush_push/push_dirty against a FakeAni/RaceAni
 # (no network) + a RecordingSleeper (no real waits) — the 2s/60s schedule,
 # 401/429 branching, contended/ROD-498 races. Gated the same as shigoku_login
 # (transitively shigoku_anilist, shigoku_store) is.
@@ -1570,7 +1566,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME sync_tests COMMAND sync_tests)
 endif()
 
-# mal_mirror_tests (P31 §9.1 slice 4): push_mirror against a FakeMalMirror
+# mal_mirror_tests: push_mirror against a FakeMalMirror
 # (no network) — NULL-mal_id skip (store-level), dirty-set push + snapshot
 # advance, 401/429 branching, MAL-deleted-entry (nullopt) handling, and the
 # ROD-498-equivalent guard (MAL's live value moved since our last accepted
@@ -1583,11 +1579,10 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mal_mirror_tests COMMAND mal_mirror_tests)
 endif()
 
-# cli_tests (P27): the pure CLI surface — parse dispatch, sync/connect/search/
-# pick renderers, classify_pick, paste_line, fetch/player error copy (cli.rs
-# tests) + the play_flow exit table with a fake provider + scripted picker
-# (main.rs play_flow mod; no mpv spawn — the exit cases return before launch).
-# Links shigoku_cli (→ player/aniskip/store/sync/login). Gated the same.
+# cli_tests: the pure CLI surface — parse dispatch, sync/connect/search/
+# pick renderers, classify_pick, paste_line, fetch/player error copy + the play_flow
+# exit table with a fake provider + scripted picker (no mpv spawn — the exit cases return
+# before launch). Links shigoku_cli (→ player/aniskip/store/sync/login). Gated the same.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(cli_tests tests/cli_tests.cpp)
   # shigoku_download directly too (P35 slice 4): the play-prefers-local test
@@ -1599,7 +1594,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME cli_tests COMMAND cli_tests)
 endif()
 
-# loopback_tests (P19): the OAuth callback listener end-to-end over real
+# loopback_tests: the OAuth callback listener end-to-end over real
 # loopback sockets (ephemeral port) — relay->callback completes login,
 # bad-state warns and keeps waiting, page byte-shape (scrub-first, relay
 # carries no scrub), cancel wakes a blocked serve(). Links loopback + login +
@@ -1612,7 +1607,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME loopback_tests COMMAND loopback_tests)
 endif()
 
-# mal_loopback_tests (P31 §9.1 slice 2): the MAL OAuth callback listener
+# mal_loopback_tests: the MAL OAuth callback listener
 # end-to-end over real loopback sockets (ephemeral port) — code+state
 # completes login, a non-callback path is ignored (no relay hop for this
 # grant type), bad-state warns and keeps waiting without reaching the
@@ -1629,7 +1624,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mal_loopback_tests COMMAND mal_loopback_tests)
 endif()
 
-# anilist_live_smoke (P3 DoD): real network hit, gated on SHIGOKU_LIVE=1 at
+# anilist_live_smoke: real network hit, gated on SHIGOKU_LIVE=1 at
 # runtime (not registered with ctest — scripts/live_smoke.sh drives it).
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(anilist_live_smoke tests/anilist_live_smoke.cpp)
@@ -1638,7 +1633,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# hls_tests (P12 seed + P23): providers/hls.rs `mod tests` ported 1:1 —
+# hls_tests: providers/hls.rs `mod tests` ported 1:1 —
 # parse_master_playlist, select_variant's cap policy, join_url. Pure/offline,
 # no curl needed.
 add_executable(hls_tests tests/hls_tests.cpp)
@@ -1646,9 +1641,9 @@ target_link_libraries(hls_tests PRIVATE
   shigoku_hls shigoku_domain shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME hls_tests COMMAND hls_tests)
 
-# senshi_tests (P4): the ~20-test golden contract ported 1:1 from senshi.rs,
-# offline (pure helpers + fixture parsing) plus a few transport cases over a
-# loopback fixture server.
+# senshi_tests: the ~20-test golden contract ported 1:1 from senshi.rs,
+# offline (pure helpers + fixture parsing) plus a few transport cases over
+# a loopback fixture server.
 if(SHIGOKU_HAVE_CURL)
   add_executable(senshi_tests tests/senshi_tests.cpp)
   target_compile_definitions(senshi_tests PRIVATE
@@ -1659,7 +1654,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME senshi_tests COMMAND senshi_tests)
 endif()
 
-# manga_mangadex_tests (MANGA_PLAN MG-1): URL builders exact-string, the
+# manga_mangadex_tests: URL builders exact-string, the
 # three parsers over tests/fixtures/mangadex/, chapter_less / dedupe /
 # next_offset pinned rules. Fully offline (no fixture server; the transport
 # loop's math is tested pure via detail::next_offset).
@@ -1673,7 +1668,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME manga_mangadex_tests COMMAND manga_mangadex_tests)
 endif()
 
-# manga_flow_tests (MANGA_PLAN MG-3): pages fetch-to-cache over a loopback
+# manga_flow_tests: pages fetch-to-cache over a loopback
 # fixture server (.part/.complete atomicity, re-entry skip, node rotation),
 # the viewer argv table + report parse, config-lite, and the mapp read-flow
 # state machine driven through tick() with hand-made events.
@@ -1686,7 +1681,7 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME manga_flow_tests COMMAND manga_flow_tests)
 endif()
 
-# manga_mangadex_live_smoke (MG-1 DoD): real api.mangadex.org hit, gated on
+# manga_mangadex_live_smoke: real api.mangadex.org hit, gated on
 # SHIGOKU_LIVE=1 at runtime (not registered with ctest).
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_mangadex_live_smoke tests/manga_mangadex_live_smoke.cpp)
@@ -1695,9 +1690,8 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# manga_weebcentral_tests (MANGA_PLAN MG-6b): URL builders exact-string, the
-# three fragment parsers over tests/fixtures/weebcentral/, the ULID vet /
-# entity unescape / challenge sniff. Fully offline.
+# manga_weebcentral_tests: URL builders exact-string, the three fragment parsers
+# over tests/fixtures/weebcentral/, the ULID vet / entity unescape / challenge sniff. Fully offline.
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_weebcentral_tests tests/manga_weebcentral_tests.cpp)
   target_compile_definitions(manga_weebcentral_tests PRIVATE
@@ -1708,8 +1702,8 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME manga_weebcentral_tests COMMAND manga_weebcentral_tests)
 endif()
 
-# manga_weebcentral_live_smoke (MG-6b DoD): real weebcentral.com hit incl. a
-# page-CDN byte fetch, gated on SHIGOKU_LIVE=1 at runtime (not ctest).
+# manga_weebcentral_live_smoke: real weebcentral.com hit incl. a page-CDN byte fetch,
+# gated on SHIGOKU_LIVE=1 at runtime (not ctest).
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_weebcentral_live_smoke tests/manga_weebcentral_live_smoke.cpp)
   target_link_libraries(manga_weebcentral_live_smoke PRIVATE
@@ -1717,8 +1711,8 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# manga_dynasty_tests (MANGA_PLAN MG-6d): URL builders exact-string, the two
-# JSON parsers + the search HTML parser over tests/fixtures/dynasty/, the slug
+# manga_dynasty_tests: URL builders exact-string, the two JSON parsers +
+# the search HTML parser over tests/fixtures/dynasty/, the slug
 # vet and the permalink→chapter-number rules. Fully offline.
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_dynasty_tests tests/manga_dynasty_tests.cpp)
@@ -1730,8 +1724,8 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME manga_dynasty_tests COMMAND manga_dynasty_tests)
 endif()
 
-# manga_dynasty_live_smoke (MG-6d DoD): real dynasty-scans.com hit incl. a
-# WebP page byte fetch, gated on SHIGOKU_LIVE=1 at runtime (not ctest).
+# manga_dynasty_live_smoke: real dynasty-scans.com hit incl. a WebP page byte fetch,
+# gated on SHIGOKU_LIVE=1 at runtime (not ctest).
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_dynasty_live_smoke tests/manga_dynasty_live_smoke.cpp)
   target_link_libraries(manga_dynasty_live_smoke PRIVATE
@@ -1739,9 +1733,9 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# manga_nhentai_tests (MANGA_PLAN MG-6e): URL builders exact-string, the three
+# manga_nhentai_tests: URL builders exact-string, the three
 # JSON parsers over tests/fixtures/nhentai/, the id/path vets, the
-# gallery≡oneshot adapter, and the nsfw_sources gate. Fully offline.
+# gallery≡oneshot adapter and the nsfw_sources gate. Fully offline.
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_nhentai_tests tests/manga_nhentai_tests.cpp)
   target_compile_definitions(manga_nhentai_tests PRIVATE
@@ -1752,7 +1746,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME manga_nhentai_tests COMMAND manga_nhentai_tests)
 endif()
 
-# mstore_tests (MANGA_PLAN MG-4): the manga.db ladder (fresh create,
+# mstore_tests: the manga.db ladder (fresh create,
 # idempotent re-open, foreign-file refusal), the library query's ordering +
 # counters, progress round-trips incl. the exact-undo pair, the chapter cache,
 # and the pure helpers (split_scoped, next_unread_index, new_chapter_ids).
@@ -1765,10 +1759,9 @@ if(SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mstore_tests COMMAND mstore_tests)
 endif()
 
-# manga_sync_tests (MANGA_PLAN MG-5): the AniList push rules — the floor of a
-# display chapter number, the never-decrease guard, and push_chapter driven
-# against a scripted MangaListClient (no socket: a failed read must be shown
-# to write nothing). Gated like shigoku_manga_sync is.
+# manga_sync_tests: the AniList push rules — the floor of a display chapter number,
+# and push_chapter driven the never-decrease guard, against a scripted MangaListClient
+# (no socket: a failed read must be shown to write nothing). Gated like shigoku_manga_sync is.
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(manga_sync_tests tests/manga_sync_tests.cpp)
   target_link_libraries(manga_sync_tests PRIVATE
@@ -1777,7 +1770,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME manga_sync_tests COMMAND manga_sync_tests)
 endif()
 
-# manga_nhentai_live_smoke (MG-6e DoD): real nhentai.net hit incl. the cdn
+# manga_nhentai_live_smoke: real nhentai.net hit incl. the cdn
 # pool + a page byte fetch, gated on SHIGOKU_LIVE=1 at runtime (not ctest).
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_nhentai_live_smoke tests/manga_nhentai_live_smoke.cpp)
@@ -1786,7 +1779,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# senshi_live_smoke (P4 DoD): real network hit, gated on SHIGOKU_LIVE=1 at
+# senshi_live_smoke: real network hit, gated on SHIGOKU_LIVE=1 at
 # runtime (not registered with ctest — scripts/live_smoke.sh drives it).
 if(SHIGOKU_HAVE_CURL)
   add_executable(senshi_live_smoke tests/senshi_live_smoke.cpp)
@@ -1795,7 +1788,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# anibd_tests (P12a): every anibd #[test] ported 1:1 — pure parsers/guards
+# anibd_tests: every anibd #[test] ported 1:1 — pure parsers/guards
 # offline plus transport cases (SSRF skip, percent-encoded data param, 403 ->
 # taxonomy) over a loopback fixture server. No fixture files (JSON is inline).
 if(SHIGOKU_HAVE_CURL)
@@ -1806,7 +1799,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME anibd_tests COMMAND anibd_tests)
 endif()
 
-# anibd_live_smoke (P12a DoD): real network resolve against the verified-alive
+# anibd_live_smoke: real network resolve against the verified-alive
 # upstream, gated on SHIGOKU_LIVE=1 at runtime (not a ctest — driven by hand).
 if(SHIGOKU_HAVE_CURL)
   add_executable(anibd_live_smoke tests/anibd_live_smoke.cpp)
@@ -1815,11 +1808,11 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# megaplay_tests (P13 + P51): every megaplay #[test] ported 1:1 — pure
+# megaplay_tests: every megaplay #[test] ported 1:1 — pure
 # parsers/guards offline (data-id scrape, getSources map, softsub pick,
 # cue-cap, the P51 envelope scrape/bake) plus transport cases (episodes probe,
-# two/three-hop resolve, private-host sub drop, the envelope cache) over a
-# loopback fixture server. One fixture file: tests/fixtures/megaplay_newclient.js.
+# two/three-hop resolve, private-host sub drop, the envelope cache) over
+# a loopback fixture server. One fixture file: tests/fixtures/megaplay_newclient.js.
 if(SHIGOKU_HAVE_CURL)
   add_executable(megaplay_tests tests/megaplay_tests.cpp)
   target_compile_definitions(megaplay_tests PRIVATE
@@ -1830,10 +1823,10 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME megaplay_tests COMMAND megaplay_tests)
 endif()
 
-# anidbapp_tests (P25): every anidbapp #[test] ported 1:1 — pure parsers/guards
+# anidbapp_tests: every anidbapp #[test] ported 1:1 — pure parsers/guards
 # offline (card/slug/entity/year parsing, external ids, challenge gate, HLS
-# extraction, episode sort/dedup/offset) plus transport cases (Slice 3) over a
-# loopback fixture server. No fixture files (HTML/JSON inline).
+# extraction, episode sort/dedup/offset) plus transport cases over a loopback
+# fixture server. No fixture files (HTML/JSON inline).
 if(SHIGOKU_HAVE_CURL)
   add_executable(anidbapp_tests tests/anidbapp_tests.cpp)
   target_link_libraries(anidbapp_tests PRIVATE
@@ -1842,7 +1835,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME anidbapp_tests COMMAND anidbapp_tests)
 endif()
 
-# anidbapp_live_smoke (P25 DoD): real resolve against anidb.app through the REAL
+# anidbapp_live_smoke: real resolve against anidb.app through the REAL
 # Chrome-shaped TLS handshake (needs libcurl-impersonate at runtime), gated on
 # SHIGOKU_LIVE=1 (not a ctest — driven by hand). A stock ClientHello 403s here.
 if(SHIGOKU_HAVE_CURL)
@@ -1852,7 +1845,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# hianime_tests (P47): every hianime #[test] — pure parsers/guards offline
+# hianime_tests: every hianime #[test] — pure parsers/guards offline
 # (search card scrape + main-sidebar cut, episode-list/servers JSON-envelope
 # unwrap, data-hash base64, the __P XOR+JSON decode, entity decode, url
 # encode) plus transport cases (episode listing, dub-prefix bisection, the
@@ -1868,7 +1861,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME hianime_tests COMMAND hianime_tests)
 endif()
 
-# hianime_live_smoke (P47 DoD): real resolve against hianime.at + the
+# hianime_live_smoke: real resolve against hianime.at + the
 # ZokoAnime embed host, gated on SHIGOKU_LIVE=1 (not a ctest — driven by hand,
 # and picked up by scripts/provider_canary.sh).
 if(SHIGOKU_HAVE_CURL)
@@ -1941,7 +1934,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
 endif()
 
-# megaplay_live_smoke (P13 DoD): real network resolve against the live upstream,
+# megaplay_live_smoke: real network resolve against the live upstream,
 # gated on SHIGOKU_LIVE=1 at runtime (not a ctest — driven by hand).
 if(SHIGOKU_HAVE_CURL)
   add_executable(megaplay_live_smoke tests/megaplay_live_smoke.cpp)
@@ -1950,7 +1943,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# player_tests (P5): argv goldens + retry law + IPC watcher over a socketpair.
+# player_tests: argv goldens + retry law + IPC watcher over a socketpair.
 # The lib pulls in http (guard) + curl transitively; link them explicitly too.
 # P39 adds the stub-backend walks (stub_mplayer.py / stub_qmplay2.py), hence
 # the fixtures dir.
@@ -1964,7 +1957,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME player_tests COMMAND player_tests)
 endif()
 
-# aniskip_tests (P22): aniskip.rs mod tests ported 1:1 — skip_mode parse,
+# aniskip_tests: aniskip.rs mod tests ported 1:1 — skip_mode parse,
 # times_from_body/build_opts/episode_number pure helpers, ensure_script
 # rewrite, prepare() early-outs. Needs shigoku_player for SkipScript.
 if(SHIGOKU_HAVE_CURL)
@@ -1975,7 +1968,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME aniskip_tests COMMAND aniskip_tests)
 endif()
 
-# proxy_tests (P12): the proxy.rs golden suite ported 1:1 — pure codec/scan/
+# proxy_tests: the proxy.rs golden suite ported 1:1 — pure codec/scan/
 # rewrite helpers offline, plus fetch_upstream guard/injection, the lifecycle
 # stop-wakes-accept, and the token gate driven over a real loopback socket.
 if(SHIGOKU_HAVE_CURL)
@@ -2014,10 +2007,10 @@ foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests sixel_tests
 endforeach()
 endif()  # WITH_TUI
 
-# app_tests (P7): pure-helper unit layer — pane_split, classify_tier, the
+# app_tests: pure-helper unit layer — pane_split, classify_tier, the
 # ProviderError/PlayError -> toast mapping, idle_help's Detail arm. No worker/
 # network/pty involved (pty_walk_tests.cpp is the end-to-end layer). Links
-# shigoku_tui, so it needs sqlite too (the store rides that lib since P9).
+# shigoku_tui, so it needs sqlite too.
 if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(app_tests tests/app_tests.cpp)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -2034,7 +2027,7 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME app_tests COMMAND app_tests)
 endif()
 
-# resolve_transport_tests (P15): the EpisodeSession walk transport driven
+# resolve_transport_tests: the EpisodeSession walk transport driven
 # end-to-end against a real in-memory Store + a two-fixture registry — store
 # write ownership (bind/absence/route/pin), tier-B/C scoring, pin-flip +
 # fallback, the staleness guard, and prewarm mint. Links shigoku_tui (transport)
@@ -2048,11 +2041,11 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   set_tests_properties(resolve_transport_tests PROPERTIES TIMEOUT 30)
 endif()
 
-# covers_tests (P8): kitty emitter goldens, cover geometry, decoded LRU, PNG
+# covers_tests: kitty emitter goldens, cover geometry, decoded LRU, PNG
 # decode + crop/resize, the CoverState decision table, and the CSI 14t parse.
 # Links shigoku_tui (covers.cpp — decode/crop/LRU/CoverState) + the render core
 # (kitty/cover_geom/cover_probe). curl-gated because covers.cpp pulls http;
-# also sqlite-gated since P9 (shigoku_tui carries the store).
+# also sqlite-gated (shigoku_tui carries the store).
 if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_executable(covers_tests tests/covers_tests.cpp)
   target_compile_definitions(covers_tests PRIVATE
@@ -2064,7 +2057,7 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME covers_tests COMMAND covers_tests)
 endif()
 
-# discover_tests (P17a): the Discover card-grid STATE suite — feed filing by
+# discover_tests: the Discover card-grid STATE suite — feed filing by
 # axis, stale/duplicate discard, MAX_FEED_ROWS exhaustion, catalog_cache upsert,
 # wanted_fetch, sticky feed error, nav wrap/clamp, cursor/scroll survival, the
 # glyph table + format labels. Links shigoku_tui (DiscoverState::on_feed →
@@ -2077,9 +2070,8 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME discover_tests COMMAND discover_tests)
 endif()
 
-# pty_walk_tests (P7 DoD, §8 "the only integration test"): forkpty()s itself
-# (--child re-invocation) to drive the real event loop against a
-# FixtureProvider + stub mpv script, offline. Needs shigoku_tui (curl+sqlite-
+# pty_walk_tests: forkpty()s itself (--child re-invocation) to drive the real event loop
+# against a FixtureProvider + stub mpv script, offline. Needs shigoku_tui (curl+sqlite-
 # gated, links anilist/player/provider/store transitively) + -lutil for
 # forkpty/openpty.
 if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
@@ -2093,7 +2085,7 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   set_tests_properties(pty_walk_tests PROPERTIES TIMEOUT 45)
 endif()
 
-# --- Exhaustiveness fence: compile-fail tests (A2, P1 DoD) -----------------
+# --- Exhaustiveness fence: compile-fail tests -----------------
 #
 # fence_fail.cpp MUST NOT compile under our flag set. We register two ctest
 # cases that invoke the compiler and mark them WILL_FAIL, so a green suite
@@ -2113,7 +2105,7 @@ add_test(NAME fence_missing_visit_arm
           -DSHIGOKU_FENCE_CASE=2 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fence_fail.cpp)
 set_tests_properties(fence_missing_visit_arm PROPERTIES WILL_FAIL TRUE)
 
-# The K-2 fence (P15): a switch over WalkOrigin missing the PinFlip arm must not
+# The K-2 fence: a switch over WalkOrigin missing the PinFlip arm must not
 # compile — proving no future edit can silently fold a pin flip into the
 # forced-preferred continuation path (the exact conflation the K-2 bug was).
 add_test(NAME fence_missing_walk_origin_arm
