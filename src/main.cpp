@@ -89,16 +89,17 @@ constexpr int kMaxPickAttempts = 1000;
 //
 // Position is priority: the resolve walk's tiers and the CLI's search walk
 // both try sources in this order (after any configured preference). The
-// two id-keyed sources lead (they cannot search, so the CLI walks past
-// them); senshi is the first that can search, English-catalogued and keyed
-// by MAL id; hianime next (also English-catalogued, MAL-keyed only at
-// resolve); AniLibria (a Russian-dub catalogue) after that; anidb.app last
-// while its "under maintenance" 503 holds — every walk would otherwise spend
-// a request on it before reaching a live source.
-std::optional<ProviderRegistry> build_registry() {
+// sources that answer today lead: megaplay (id-keyed, cannot search, so the
+// CLI walks past it), hianime (English-catalogued, MAL-keyed at resolve),
+// senshi (English-catalogued, keyed by MAL id, its stream hop needs Node),
+// then AniLibria (a Russian-dub catalogue). The two whose upstream is gone,
+// anibd (host shut down) and anidb.app ("under maintenance" 503), close the
+// list, so a walk spends requests on them only once every live source has
+// passed.
+std::optional<ProviderRegistry> build_registry(const Config& config) {
   auto megaplay_provider = megaplay::MegaPlay::create();
   auto anibd_provider = anibd::AniBd::create();
-  auto senshi = senshi::Senshi::create();
+  auto senshi = senshi::Senshi::create(config.senshi_node);
   auto hianime_provider = hianime::Hianime::create();
   auto anilibria_provider = anilibria::AniLibria::create();
   auto anidbapp_provider = anidbapp::AniDbApp::create();
@@ -108,10 +109,10 @@ std::optional<ProviderRegistry> build_registry() {
   }
   std::vector<std::unique_ptr<StreamProvider>> providers;
   providers.push_back(std::make_unique<megaplay::MegaPlay>(std::move(*megaplay_provider)));
-  providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
-  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   providers.push_back(std::make_unique<hianime::Hianime>(std::move(*hianime_provider)));
+  providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
+  providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
   providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
   return ProviderRegistry(std::move(providers));
 }
@@ -538,7 +539,7 @@ int run_play_cli(const cli::PlayArgs& args) {
   std::optional<Store> store_holder = open_store_best_effort(*paths);
   Store* store = store_holder.has_value() ? &*store_holder : nullptr;
 
-  auto registry = build_registry();
+  auto registry = build_registry(config);
   if (!registry.has_value()) {
     std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
     return 1;
@@ -567,7 +568,7 @@ int run_download_cli(const cli::DownloadArgs& args) {
   std::optional<Store> store_holder = open_store_best_effort(*paths);
   Store* store = store_holder.has_value() ? &*store_holder : nullptr;
 
-  auto registry = build_registry();
+  auto registry = build_registry(config);
   if (!registry.has_value()) {
     std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
     return 1;
@@ -601,7 +602,7 @@ int run_continue_cli(const cli::ContinueArgs& args) {
     return 1;
   }
 
-  auto registry = build_registry();
+  auto registry = build_registry(config);
   if (!registry.has_value()) {
     std::printf("  %s couldn't set up a provider client.\n", std::string(cli::glyphs().fail).c_str());
     return 1;
@@ -675,7 +676,7 @@ int print_paths(const std::vector<std::string>& args) {
                 cli::ascii_flag(args) ? "--ascii" : "the locale isn't UTF-8");
   }
   // The sources a command-line search walks, in order (`-p` takes any name).
-  if (auto registry = build_registry(); registry.has_value()) {
+  if (auto registry = build_registry(config); registry.has_value()) {
     std::string walk;
     for (const StreamProvider* p : registry->searchable(config.preferred_provider)) {
       if (!walk.empty()) walk += ", ";
@@ -714,7 +715,7 @@ int run_tui() {
     return 1;
   }
 
-  auto registry = build_registry();
+  auto registry = build_registry(config);
   if (!registry.has_value()) {
     std::fprintf(stderr, "shigoku: provider init failed\n");
     return 1;

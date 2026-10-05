@@ -485,15 +485,27 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_subprocess: run a helper program to completion (stdin fed from
+# a buffer, stdout kept, stderr dropped, a wall-clock bound, the child always
+# reaped). posix_spawnp + select; no curl, no TUI.
+# ---------------------------------------------------------------------------
+add_library(shigoku_subprocess STATIC src/subprocess.cpp)
+target_include_directories(shigoku_subprocess PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_subprocess PUBLIC Threads::Threads)
+
+# ---------------------------------------------------------------------------
 # shigoku_senshi: senshi.live StreamProvider ABC implementation.
 # cap_variant (HLS quality capping) rides shigoku_hls (parse_master_playlist +
-# select_variant).
+# select_variant). senshi_oct.cpp is the stream hop through the site's player
+# runtime under Node (shigoku_subprocess); Node itself is a runtime-only
+# dependency, nothing here needs it at build time.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
-  add_library(shigoku_senshi STATIC src/senshi.cpp)
+  add_library(shigoku_senshi STATIC src/senshi.cpp src/senshi_oct.cpp)
   target_include_directories(shigoku_senshi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_senshi
-    PUBLIC shigoku_http shigoku_hls shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_http shigoku_hls shigoku_crypto shigoku_domain shigoku_flags shigoku_thirdparty
+           shigoku_subprocess)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1653,6 +1665,13 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
   add_test(NAME senshi_tests COMMAND senshi_tests)
 endif()
+
+# subprocess_tests: the helper runner — stdin/stdout/exit code, a missing
+# binary, the bound, the output cap, and no wedge on a child that exits
+# without reading its input.
+add_executable(subprocess_tests tests/subprocess_tests.cpp)
+target_link_libraries(subprocess_tests PRIVATE shigoku_subprocess shigoku_thirdparty Threads::Threads)
+add_test(NAME subprocess_tests COMMAND subprocess_tests)
 
 # manga_mangadex_tests: URL builders exact-string, the
 # three parsers over tests/fixtures/mangadex/, chapter_less / dedupe /

@@ -57,6 +57,11 @@ struct Config {
   // P35 slice 3: the HLS download muxer, spawned like mpv (runtime-only dep;
   // absent at spawn = the "install ffmpeg" toast, never a config error).
   std::string ffmpeg_path = "ffmpeg";
+  // Node for the Senshi source's stream hop (the site's player runtime runs
+  // under it): a name on PATH or a full path; "" = no runtime hop, Senshi
+  // takes its older direct hop. Runtime-only like ffmpeg: missing at spawn
+  // = Senshi unavailable for that play, never a config error.
+  std::string senshi_node = "node";
   // P39 slice 2: which player backend runs playback ("mpv" / "mplayer" /
   // "qmplay2"); any unknown value plays as mpv (player::parse_backend).
   // player_path is the ALTERNATE backends' binary ("" = the kind's default

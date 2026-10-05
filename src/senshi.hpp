@@ -4,16 +4,18 @@
 // /episode-embeds/{mal}/{ep} (resolve), /posters/{mal}.webp (cover, via
 // cover_request).
 //
-// The stream recipe since the site's move to senshi.to, beyond the Rust
-// reference: an embed row names a `remote_source_id`; the real master and
-// the subtitle tracks come from the sources endpoint (kSourcesBase); the
-// master and every media playlist arrive as kPlaylistMagic + base64(iv ‖
-// ciphertext ‖ tag), AES-256-GCM under a key the site's watch-page bundle
-// carries as two XORed byte arrays. The key rotates with the site's
-// deploys, so resolve scrapes the live bundle (index -> WatchPage chunk)
-// and falls back to the baked copy; playback routes through the loopback
-// proxy, which decrypts every playlist it relays (StreamLink::playlist_cipher).
-// Segments stay plain MPEG-TS behind a .jpg extension (cloaked_segments).
+// The stream recipe, beyond the Rust reference: an embed row names a
+// `remote_source_id`, and the real master plus the subtitle tracks come from
+// the site's player runtime (vendor.js from vidcloud), which negotiates them
+// over an ECDH / AES-GCM handshake nothing but that script reproduces. So
+// the hop runs that script under Node (senshi_oct.hpp): `__oct.open(id)`
+// answers a tokenized master URL and the tracks, and from there the master,
+// the media playlists and the segments are plain HLS behind a .jpg extension
+// (cloaked_segments) that wants a browser UA and the site's referer. Without
+// Node the provider falls back to the older direct hop (kSourcesBase), whose
+// playlists arrived as kPlaylistMagic + base64(iv ‖ ciphertext ‖ tag),
+// AES-256-GCM under a key scraped from the watch-page bundle (or the baked
+// copy) and opened by the loopback proxy (StreamLink::playlist_cipher).
 //
 // Pure helpers are free functions over bytes/string_view (mirrors the Rust
 // file-private fns) so the golden contract runs offline without a network
@@ -40,8 +42,8 @@ namespace shigoku::senshi {
 inline constexpr const char* kApi = "https://senshi.to";
 // The stream CDN 403s a refererless GET; gate on this origin.
 inline constexpr const char* kStreamReferer = "https://senshi.to/";
-// The sources hop: `<base><remote_source_id>` answers the real master (+
-// tracks). The live bundle carries this prefix too and may move it.
+// The older direct sources hop (`<base><remote_source_id>`), taken only
+// when no Node is available for the runtime hop; the bundle may move it.
 inline constexpr const char* kSourcesBase = "https://s.vidcloud.se/_v1/sources?id=";
 // An encrypted playlist starts with this; the base64 envelope follows.
 inline constexpr const char* kPlaylistMagic = "EM3U8v1:";
@@ -118,11 +120,15 @@ struct SubTrack {
 
 // The sources hop's answer: the master url and the subtitle tracks (each
 // track's WebVTT url lands in SubTrack::src, so the sidecar pickers apply).
+// `source` is one object (the direct hop) or, from the runtime, a list with
+// one entry per audio labelled "sub" / "dub": the wanted label wins, a list
+// without it yields its first entry.
 struct Sources {
   std::optional<std::string> src;
   std::vector<SubTrack> tracks;
 };
-[[nodiscard]] Result<Sources, ProviderError> parse_sources(std::string_view raw_json);
+[[nodiscard]] Result<Sources, ProviderError> parse_sources(
+    std::string_view raw_json, Translation translation = Translation::Sub);
 
 // Rank a status label for a track (0 = wrong/unranked track).
 [[nodiscard]] std::uint8_t match_score(std::optional<std::string_view> status,
@@ -158,6 +164,9 @@ struct Sources {
 class Senshi final : public StreamProvider {
  public:
   [[nodiscard]] static Result<Senshi, ProviderError> create();
+  // `node_path` runs the runtime hop (a name on PATH or a full path); ""
+  // leaves it out and resolve takes the direct hop.
+  [[nodiscard]] static Result<Senshi, ProviderError> create(std::string node_path);
 
   [[nodiscard]] std::string_view name() const override { return "senshi"; }
   [[nodiscard]] std::string_view display_name() const override { return "Senshi"; }
@@ -184,6 +193,9 @@ class Senshi final : public StreamProvider {
   [[nodiscard]] static Result<Senshi, ProviderError> with_endpoint(std::string api);
   [[nodiscard]] static Result<Senshi, ProviderError> with_endpoints(std::string api,
                                                                     std::string sources_base);
+  // Test-only seam: what stands in for `node` (any command that reads the
+  // shim from stdin and takes `- <id> <ua>`); empty = the direct hop.
+  void set_sidecar(std::vector<std::string> argv) { node_ = std::move(argv); }
 
  private:
   // The bundle key, scraped once per process (first resolve) and cached;
@@ -215,6 +227,7 @@ class Senshi final : public StreamProvider {
   std::string api_;
   std::string sources_base_;
   std::shared_ptr<BundleCache> bundle_;
+  std::vector<std::string> node_;  // the runtime hop's command; empty = direct hop.
 };
 
 }  // namespace shigoku::senshi

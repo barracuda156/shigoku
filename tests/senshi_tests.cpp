@@ -7,6 +7,7 @@
 #include <doctest/doctest.h>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -20,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../src/senshi.hpp"
+#include "../src/senshi_oct.hpp"
 
 using namespace shigoku;
 using namespace shigoku::senshi;
@@ -515,4 +517,112 @@ TEST_CASE("resolve_guards_a_bad_episode_label_before_any_fetch") {
   auto got = p->resolve("59708", "1.2.3", Translation::Sub, Quality::Best);
   REQUIRE_FALSE(got.has_value());
   CHECK(got.error().kind == ProviderError::Kind::Decode);
+}
+
+// ===========================================================================
+// The runtime hop: the site's player runtime under Node, or what stands in
+// for it here.
+// ===========================================================================
+
+namespace {
+
+// What `__oct.open` answers: a list of sources labelled by audio, and the
+// tracks in the direct hop's shape.
+const char* kOctJson =
+    R"([{"source":[{"src":"https://cdn.example/i/@ID@/master.txt?token=s","label":"sub"},
+                   {"src":"https://cdn.example/i/@ID@/dub.txt?token=d","label":"Dub"}],
+         "tracks":[{"url":"https://cdn.example/sub_en.ass","vtt_url":"https://cdn.example/sub_en.vtt","label":"English","default":true},
+                   {"url":"","vtt_url":"https://cdn.example/storyboard.vtt","label":"chapter","default":false}]}])";
+
+// A stand-in for `node -`: swallows the shim on stdin, prints `body` with
+// every `@ID@` replaced by the id argument, exits with `code`.
+std::string fake_sidecar(const char* name, const std::string& body, int code = 0) {
+  std::string path = "/tmp/shigoku-senshi-test-";
+  path += std::to_string(static_cast<long>(::getpid()));
+  path += "-";
+  path += name;
+  path += ".sh";
+  {
+    std::ofstream f(path);
+    f << "#!/bin/sh\ncat >/dev/null\nsed \"s/@ID@/$2/g\" <<'JSON'\n" << body << "\nJSON\nexit " << code
+      << "\n";
+  }
+  ::chmod(path.c_str(), 0755);
+  return path;
+}
+
+}  // namespace
+
+TEST_CASE("parse_sources_picks_the_wanted_audio_out_of_a_source_list") {
+  auto sub = parse_sources(kOctJson);
+  REQUIRE(sub.has_value());
+  CHECK(sub->src == "https://cdn.example/i/@ID@/master.txt?token=s");
+  REQUIRE(sub->tracks.size() == 1);
+  CHECK(sub->tracks[0].src == "https://cdn.example/sub_en.vtt");
+  auto dub = parse_sources(kOctJson, Translation::Dub);
+  REQUIRE(dub.has_value());
+  CHECK(dub->src == "https://cdn.example/i/@ID@/dub.txt?token=d");  // label match is case-blind.
+  // A list without the wanted label yields its first entry.
+  auto only = parse_sources(R"([{"source":[{"src":"https://x/only","label":"dub"}]}])");
+  REQUIRE(only.has_value());
+  CHECK(only->src == "https://x/only");
+  auto none = parse_sources(R"([{"source":[]}])");
+  REQUIRE(none.has_value());
+  CHECK_FALSE(none->src.has_value());
+}
+
+TEST_CASE("transport_resolve_takes_the_runtime_hop_and_hands_mpv_a_plain_master") {
+  const std::string_view embeds =
+      R"([{"url":"https://cdn1.example/stream/abc/playlist.m3u8","status":"HardSub","remote_source_id":4788}])";
+  auto p = against(response_with_body("200 OK", embeds));
+  p.set_sidecar({fake_sidecar("ok", kOctJson)});
+  auto sl = p.resolve("59708", "1", Translation::Sub, Quality::Best);
+  REQUIRE(sl.has_value());
+  CHECK(sl->url == "https://cdn.example/i/4788/master.txt?token=s");  // the id reached the runtime.
+  CHECK(sl->sub_url == "https://cdn.example/sub_en.vtt");
+  CHECK(sl->cloaked_segments);
+  CHECK_FALSE(sl->decloak_segments);
+  CHECK_FALSE(sl->playlist_cipher.has_value());  // plain playlists: no proxy.
+  CHECK(sl->referer.value() == kStreamReferer);
+  CHECK(sl->user_agent.value() == http::kBrowserUserAgent);
+}
+
+TEST_CASE("transport_resolve_without_node_is_unsupported_not_an_outage") {
+  const std::string_view embeds =
+      R"([{"url":"https://cdn1.example/stream/abc/playlist.m3u8","status":"HardSub","remote_source_id":4788}])";
+  auto p = against(response_with_body("200 OK", embeds));
+  p.set_sidecar({"/nonexistent/shigoku-node"});
+  auto got = p.resolve("59708", "1", Translation::Sub, Quality::Best);
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == ProviderError::Kind::Unsupported);
+  CHECK(got.error().detail.find("node not found") != std::string::npos);
+}
+
+TEST_CASE("transport_resolve_reports_the_runtimes_own_error") {
+  const std::string_view embeds =
+      R"([{"url":"https://cdn1.example/stream/abc/playlist.m3u8","status":"HardSub","remote_source_id":4788}])";
+  auto p = against(response_with_body("200 OK", embeds));
+  p.set_sidecar({fake_sidecar("err", R"({"error":"the runtime did not define __oct.open"})", 1)});
+  auto got = p.resolve("59708", "1", Translation::Sub, Quality::Best);
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == ProviderError::Kind::Decode);
+  CHECK(got.error().detail.find("__oct.open") != std::string::npos);
+  // Garbage out of a clean exit is a decode failure too (a fresh fixture:
+  // the one-shot server above has answered its one request).
+  auto q = against(response_with_body("200 OK", embeds));
+  q.set_sidecar({fake_sidecar("garbage", "not json at all")});
+  auto bad = q.resolve("59708", "1", Translation::Sub, Quality::Best);
+  REQUIRE_FALSE(bad.has_value());
+  CHECK(bad.error().kind == ProviderError::Kind::Decode);
+}
+
+TEST_CASE("oct_shim_is_the_node_script_the_provider_feeds_on_stdin") {
+  const std::string_view shim = oct::kShim;
+  CHECK(shim.find("__oct.open") != std::string::npos);
+  CHECK(shim.find("https://cdn.vidcloud.se/vjs/vendor.js") != std::string::npos);
+  CHECK(shim.find("process.argv") != std::string::npos);
+  // No runtime command: unsupported before any spawn.
+  auto none = oct::open({}, 4788, "ua");
+  REQUIRE_FALSE(none.has_value());
+  CHECK(none.error().kind == ProviderError::Kind::Unsupported);
 }

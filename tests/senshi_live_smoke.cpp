@@ -85,13 +85,9 @@ int main() {
     return 1;
   }
 
-  // The envelope: fetch the master the way the proxy would and open it with
-  // the link's key — proves the scrape (or the baked copy) still matches the
-  // site's current deploy.
-  if (!link->playlist_cipher.has_value()) {
-    std::fprintf(stderr, "senshi_live_smoke: FAIL no playlist cipher on the link\n");
-    return 1;
-  }
+  // The master, fetched the way the player (or the proxy) would. Through
+  // the runtime hop it is a plain playlist; through the older direct hop it
+  // is enveloped and must open under the link's key.
   auto client = http::Client::create();
   if (!client.has_value()) {
     std::fprintf(stderr, "senshi_live_smoke: FAIL http client\n");
@@ -111,6 +107,17 @@ int main() {
     return 1;
   }
   const std::string_view raw(reinterpret_cast<const char*>(body->data()), body->size());
+  if (!link->playlist_cipher.has_value()) {
+    if (raw.rfind("#EXTM3U", 0) != 0) {
+      std::fprintf(stderr, "senshi_live_smoke: FAIL master is not a playlist (head=%.16s)\n",
+                   raw.data());
+      return 1;
+    }
+    std::printf("senshi_live_smoke: OK %zu hit(s), %zu episode(s), url=%s, plain master (%zu B) via the runtime hop%s\n",
+                hits->size(), eps->size(), link->url.c_str(), raw.size(),
+                link->sub_url.has_value() ? ", softsub" : "");
+    return 0;
+  }
   const std::string_view magic = link->playlist_cipher->magic;
   if (raw.substr(0, magic.size()) != magic) {
     std::fprintf(stderr, "senshi_live_smoke: FAIL master is not enveloped (head=%.16s)\n",

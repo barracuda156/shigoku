@@ -46,6 +46,7 @@ Config from_json(const json& j) {
   c.catalog = j.value("catalog", c.catalog);
   c.download_dir = j.value("download_dir", c.download_dir);
   c.ffmpeg_path = j.value("ffmpeg_path", c.ffmpeg_path);
+  c.senshi_node = j.value("senshi_node", c.senshi_node);
   c.player = j.value("player", c.player);
   c.player_path = j.value("player_path", c.player_path);
   c.cli_picker = j.value("cli_picker", c.cli_picker);
@@ -75,6 +76,7 @@ json to_json(const Config& c) {
       {"catalog", c.catalog},
       {"download_dir", c.download_dir},
       {"ffmpeg_path", c.ffmpeg_path},
+      {"senshi_node", c.senshi_node},
       {"player", c.player},
       {"player_path", c.player_path},
       {"cli_picker", c.cli_picker},

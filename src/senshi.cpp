@@ -22,6 +22,7 @@
 
 #include "crypto.hpp"
 #include "provider.hpp"
+#include "senshi_oct.hpp"
 
 namespace shigoku::senshi {
 
@@ -227,7 +228,7 @@ std::optional<std::string> guarded_sub_track(const std::vector<SubTrack>& tracks
   return src;
 }
 
-Result<Sources, ProviderError> parse_sources(std::string_view raw_json) {
+Result<Sources, ProviderError> parse_sources(std::string_view raw_json, Translation translation) {
   json parsed;
   try {
     parsed = json::parse(raw_json.begin(), raw_json.end());
@@ -243,8 +244,26 @@ Result<Sources, ProviderError> parse_sources(std::string_view raw_json) {
   }
   if (row == nullptr) return err(ProviderError::decode("sources: not an object"));
   Sources out;
-  if (row->contains("source") && row->at("source").is_object()) {
-    out.src = opt_str_opt(row->at("source"), "src");
+  if (row->contains("source")) {
+    const json& source = row->at("source");
+    if (source.is_object()) {
+      out.src = opt_str_opt(source, "src");
+    } else if (source.is_array()) {
+      const std::string want = translation == Translation::Dub ? "dub" : "sub";
+      const json* pick = nullptr;
+      for (const auto& entry : source) {
+        if (!entry.is_object()) continue;
+        if (pick == nullptr) pick = &entry;
+        auto label = opt_str_opt(entry, "label");
+        if (!label.has_value()) continue;
+        for (char& c : *label) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (*label == want) {
+          pick = &entry;
+          break;
+        }
+      }
+      if (pick != nullptr) out.src = opt_str_opt(*pick, "src");
+    }
   }
   if (row->contains("tracks") && row->at("tracks").is_array()) {
     for (const auto& t : row->at("tracks")) {
@@ -408,7 +427,13 @@ Senshi::Senshi(http::Client client, std::string api, std::string sources_base)
       sources_base_(std::move(sources_base)),
       bundle_(std::make_shared<BundleCache>()) {}
 
-Result<Senshi, ProviderError> Senshi::create() { return with_endpoint(kApi); }
+Result<Senshi, ProviderError> Senshi::create() { return create("node"); }
+
+Result<Senshi, ProviderError> Senshi::create(std::string node_path) {
+  auto p = with_endpoint(kApi);
+  if (p.has_value() && !node_path.empty()) p->node_ = {std::move(node_path)};
+  return p;
+}
 
 Result<Senshi, ProviderError> Senshi::with_endpoint(std::string api) {
   return with_endpoints(std::move(api), kSourcesBase);
@@ -658,18 +683,29 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   auto picked = detail::pick_embed(embeds, translation);
   if (!picked.has_value()) return err(ProviderError::decode("no stream for track"));
 
-  // The sources hop (a row with a remote_source_id) answers the real master
-  // and the subtitle tracks; a row without one is the older direct shape.
+  // The hop for the master and the subtitle tracks. A row with a
+  // remote_source_id goes through the site's player runtime under Node or,
+  // without Node, through the older direct sources endpoint; a row without
+  // one is the oldest shape, the stream url on the row itself. Only the two
+  // older paths hand back enveloped playlists.
   std::string stream;
   std::vector<detail::SubTrack> tracks;
   bool from_sources = false;
-  const detail::BundleKey& bundle = bundle_key();
+  std::optional<StreamLink::PlaylistCipher> cipher;
   if (picked->remote_source_id.has_value()) {
-    auto raw_src = sources_get(bundle.sources_base + std::to_string(*picked->remote_source_id));
-    if (!raw_src.has_value()) return err(raw_src.error());
-    const std::string_view src_view(reinterpret_cast<const char*>(raw_src->data()),
-                                    raw_src->size());
-    auto sources = detail::parse_sources(src_view);
+    std::string src_json;
+    if (!node_.empty()) {
+      auto answer = oct::open(node_, *picked->remote_source_id, http::kBrowserUserAgent);
+      if (!answer.has_value()) return err(answer.error());
+      src_json = std::move(*answer);
+    } else {
+      const detail::BundleKey& bundle = bundle_key();
+      auto raw_src = sources_get(bundle.sources_base + std::to_string(*picked->remote_source_id));
+      if (!raw_src.has_value()) return err(raw_src.error());
+      src_json.assign(raw_src->begin(), raw_src->end());
+      cipher = StreamLink::PlaylistCipher{bundle.key, kPlaylistMagic};
+    }
+    auto sources = detail::parse_sources(src_json, translation);
     if (!sources.has_value()) return err(sources.error());
     if (!sources->src.has_value()) return err(ProviderError::decode("no stream source"));
     stream = *sources->src;
@@ -678,6 +714,7 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   } else {
     if (!picked->url.has_value()) return err(ProviderError::decode("no stream for track"));
     stream = *picked->url;
+    cipher = StreamLink::PlaylistCipher{bundle_key().key, kPlaylistMagic};
   }
 
   if (!is_absolute_url(stream) || !clean_arg(stream)) {
@@ -688,7 +725,9 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   // Best-effort: failure falls back to the adaptive master.
   std::string chosen = stream;
   if (quality != Quality::Best) {
-    if (auto capped = cap_variant(stream, quality, bundle.key); capped.has_value()) {
+    static const std::vector<std::uint8_t> kNoKey;
+    if (auto capped = cap_variant(stream, quality, cipher.has_value() ? cipher->key : kNoKey);
+        capped.has_value()) {
       chosen = std::move(*capped);
     }
   }
@@ -713,8 +752,9 @@ Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
   link.cloaked_segments = true;
   link.decloak_segments = false;
   link.sub_url = sub_url;
-  // Every playlist comes back enveloped: the proxy opens them for mpv.
-  link.playlist_cipher = StreamLink::PlaylistCipher{bundle.key, kPlaylistMagic};
+  // Enveloped playlists (the older hops) route through the proxy, which
+  // opens them for mpv; the runtime hop's are plain and mpv takes the url.
+  link.playlist_cipher = std::move(cipher);
   return link;
 }
 
