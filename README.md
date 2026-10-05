@@ -38,6 +38,8 @@ Cover art needs a terminal with support for kitty/iterm/sixel graphics protocol.
 
 For macOS the app can be installed via PowerPC Ports: https://macos-powerpc.org
 
+![shigoku on macOS 10.6](.github/assets/shigoku_powerpc.png)
+
 ## License
 
 [GPL-3.0-or-later](LICENSE).
