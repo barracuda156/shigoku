@@ -33,6 +33,7 @@ to play it, `q` to quit. Full key reference and every feature:
   backend; `mplayer` and `qmplay2` also work — see the manual).
 - **libsdl**, **mupdf**, **libarchive** for manga reader.
 - optional runtime dependencies: **curl-impersonate** and **nodejs** (some providers need them).
+- optional dependency for CLI: [**fzf++**](https://github.com/barracuda156/fzfpp) (or **fzf**).
 
 Cover art needs a terminal with support for kitty/iterm/sixel graphics protocol.
 
