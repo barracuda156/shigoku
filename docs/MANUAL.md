@@ -253,7 +253,10 @@ Save an episode to disk instead of streaming it.
 
 Files land under `<download dir>/<AniList id>/<sub or dub>/<episode>.<ext>`
 ("download dir" is set in Settings; blank defaults to `<data dir>/downloads`
-— see [Files on disk](#files-on-disk)). A transfer writes to a `.part` file
+— see [Files on disk](#files-on-disk)). A command-line download of a show
+the catalogue couldn't place (see [Command line](#command-line)) goes under
+its source's name and id instead, such as `hianime-86/`, so two such shows
+never share a folder. A transfer writes to a `.part` file
 and only renames it to the final name once it completes; an interrupted
 download resumes from where the `.part` left off next time, and a `.part`
 never counts as a finished episode. Only one download runs at a time.
@@ -350,10 +353,25 @@ the prompt.
 
 A command-line search walks the streaming sources that can search, your
 preferred one first: a source that fails or finds nothing is noted on the
-spot and the next one is tried, and the first that answers serves the whole
-run (its episode list, its streams). Only when every source fails does the
+spot and the next one is tried, and the first that answers serves the run (its
+episode list, its streams). Only when every source fails does the
 command exit with an error; a source that answered "nothing" makes it a plain
 "no results".
+
+A result from a source that names no catalogue id (HiAnime) is looked up
+in the catalogue by its title and filed under the entry that clearly
+matches it, so it resumes and joins your history like any other; when none
+clearly does, that run plays without joining the library.
+
+An episode that won't play on the run's source — its stream never opens
+(after the three tries), or none can be found — is looked for on the other
+sources, your preferred one first and then the usual order, the way the
+interface fails over: each is asked for the show (MegaPlay, which can't
+search, by its MyAnimeList id; the others by a title search) and then for
+the same episode, and the first that plays it serves the rest of the run.
+A line names each source as it is tried. Only when none has it, or mpv
+itself is the problem (missing, crashing), does the run end with the
+error.
 
 A shigoku built with `-DWITH_TUI=OFF` has only this command line — no
 interface, no `shigoku-manga` — and running a bare `shigoku` there prints the
