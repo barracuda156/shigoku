@@ -42,6 +42,14 @@ struct Variant {
 // link as one stream.
 [[nodiscard]] std::vector<Variant> parse_master_playlist(std::string_view text);
 
+// Whether a master carries its audio as separate renditions: an
+// `#EXT-X-MEDIA` of TYPE=AUDIO with a URI. Its variants are then video-only,
+// and a cap that hands the player (or ffmpeg) one variant plays — or saves —
+// silent; the capping callers keep the master instead and let the player
+// pick the tracks. A TYPE=AUDIO entry without a URI only labels audio that is
+// muxed into the variants, so it does not count.
+[[nodiscard]] bool has_separate_audio(std::string_view text);
+
 // Pick by quality preference, or nullptr if empty (ROD-152). Cap policy:
 // best/worst take the highest/lowest resolution; a rung takes the highest ≤
 // cap, and if every variant exceeds it, the lowest available (never invent a

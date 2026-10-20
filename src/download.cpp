@@ -357,6 +357,9 @@ std::optional<std::string> choose_from_master(std::string_view playlist,
                                               Quality quality) {
   const auto variants = hls::parse_master_playlist(playlist);
   if (variants.empty()) return std::nullopt;  // media playlist.
+  // Audio in its own renditions: one variant alone would save silent, so
+  // ffmpeg gets the master and picks the tracks itself.
+  if (hls::has_separate_audio(playlist)) return std::nullopt;
 
   std::vector<StreamLink> links;
   for (const auto& v : variants) {

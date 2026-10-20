@@ -43,6 +43,36 @@ TEST_CASE("parse_master_playlist_media_playlist_yields_empty") {
   CHECK(parse_master_playlist(media).empty());
 }
 
+TEST_CASE("has_separate_audio: audio renditions with a URI, not labels of muxed audio") {
+  // The shape senshi's CDN serves: video-only variants beside two audio
+  // renditions.
+  const std::string demuxed =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"group_audio\",NAME=\"Japanese\",DEFAULT=YES,"
+      "LANGUAGE=\"ja\",URI=\"/i/x/p/audio-ja.jpg\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"group_audio\",NAME=\"English\",DEFAULT=NO,"
+      "LANGUAGE=\"en\",URI=\"/i/x/p/audio-en.jpg\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=3476000,RESOLUTION=1920x1080,AUDIO=\"group_audio\"\n"
+      "/i/x/p/video-1080.jpg\n";
+  CHECK(has_separate_audio(demuxed));
+  // TYPE=AUDIO with no URI only names audio muxed into the variants.
+  const std::string labelled =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Japanese\",DEFAULT=YES\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=842x480,AUDIO=\"aac\"\n"
+      "480/index.m3u8\n";
+  CHECK_FALSE(has_separate_audio(labelled));
+  // Subtitle renditions are not audio; a plain ladder has none.
+  CHECK_FALSE(has_separate_audio(
+      "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",NAME=\"en\",URI=\"en.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1x480,SUBTITLES=\"s\"\nv.m3u8\n"));
+  CHECK_FALSE(has_separate_audio(
+      "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=842x480\n480/index.m3u8\n"));
+  // The words inside a quoted value are not attributes.
+  CHECK_FALSE(has_separate_audio(
+      "#EXT-X-MEDIA:TYPE=VIDEO,NAME=\"x TYPE=AUDIO y\",URI=\"v.m3u8\"\n"));
+}
+
 TEST_CASE("parse_master_playlist_bandwidth_only_variant_has_no_resolution") {
   const std::string playlist = "#EXT-X-STREAM-INF:BANDWIDTH=800000\nv.m3u8\n";
   const auto vs = parse_master_playlist(playlist);

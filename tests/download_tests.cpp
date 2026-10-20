@@ -499,6 +499,20 @@ TEST_CASE("choose_from_master: joins and picks per the cap policy") {
   CHECK(*worst == "https://cdn.example/x/v480.m3u8");
 }
 
+TEST_CASE("choose_from_master: a master with separate audio keeps the master") {
+  // Its variants are video-only: picking one would save a silent file.
+  const char* demuxed =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Japanese\",DEFAULT=YES,URI=\"ja.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO=\"a\"\n"
+      "v1080.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"a\"\n"
+      "v720.m3u8\n";
+  CHECK_FALSE(download::detail::choose_from_master(demuxed, "https://cdn.example/x/master.txt",
+                                                   Quality::P720)
+                  .has_value());
+}
+
 TEST_CASE("choose_from_master: a media playlist yields nothing") {
   CHECK_FALSE(download::detail::choose_from_master(
                   kMedia, "https://cdn.example/x/m.m3u8", Quality::Best)

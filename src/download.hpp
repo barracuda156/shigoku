@@ -247,8 +247,8 @@ namespace detail {
 
 // Master-playlist text -> the variant url for `quality` (the P23 cap policy
 // via hls::select_variant), joined against `base` (senshi::cap_variant's
-// shape). nullopt = media playlist / nothing usable: caller keeps the
-// original url.
+// shape). nullopt = media playlist / nothing usable / audio in separate
+// renditions (hls::has_separate_audio): caller keeps the original url.
 [[nodiscard]] std::optional<std::string> choose_from_master(
     std::string_view playlist, std::string_view base, Quality quality);
 

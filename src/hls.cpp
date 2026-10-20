@@ -119,6 +119,37 @@ std::vector<Variant> parse_master_playlist(std::string_view text) {
   return out;
 }
 
+namespace {
+
+// `attr` (`NAME=` or `NAME=VALUE`) as one attribute of a tag line: right
+// after the tag's ':' or an attribute-separating ','.
+bool has_attribute(std::string_view line, std::string_view attr) {
+  for (std::size_t at = line.find(attr); at != std::string_view::npos;
+       at = line.find(attr, at + 1)) {
+    if (at > 0 && (line[at - 1] == ':' || line[at - 1] == ',')) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool has_separate_audio(std::string_view text) {
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto nl = text.find('\n', pos);
+    const std::string_view raw =
+        (nl == std::string_view::npos) ? text.substr(pos) : text.substr(pos, nl - pos);
+    const std::string_view line = trim_line(raw);
+    if (line.starts_with("#EXT-X-MEDIA:") && has_attribute(line, "TYPE=AUDIO") &&
+        has_attribute(line, "URI=")) {
+      return true;
+    }
+    if (nl == std::string_view::npos) break;
+    pos = nl + 1;
+  }
+  return false;
+}
+
 const StreamLink* select_variant(const std::vector<StreamLink>& variants, Quality quality) {
   if (variants.empty()) return nullptr;
   const StreamLink* pick = &variants.front();

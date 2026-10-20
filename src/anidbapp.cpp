@@ -543,6 +543,8 @@ std::optional<std::string> AniDbApp::cap_variant(const std::string& master_url,
   const std::string text(body->begin(), body->end());
   auto variants = hls::parse_master_playlist(text);
   if (variants.empty()) return std::nullopt;  // media playlist: keep the master.
+  // Audio in its own renditions: a variant alone would play silent.
+  if (hls::has_separate_audio(text)) return std::nullopt;
   std::vector<StreamLink> links;
   for (const auto& v : variants) {
     auto joined = hls::join_url(master_url, v.url);

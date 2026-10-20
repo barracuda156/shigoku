@@ -630,6 +630,8 @@ std::optional<std::string> Senshi::cap_variant(const std::string& master_url, Qu
   }
   const auto variants = hls::parse_master_playlist(body_view);
   if (variants.empty()) return std::nullopt;  // media playlist: let mpv take the master.
+  // Audio in its own renditions: a variant alone would play silent.
+  if (hls::has_separate_audio(body_view)) return std::nullopt;
 
   std::vector<StreamLink> links;
   for (const auto& v : variants) {
