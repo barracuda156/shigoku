@@ -36,6 +36,22 @@ using PickFn = std::function<std::optional<std::size_t>(std::string_view,
 // outlives the flow.
 using Sources = std::vector<const StreamProvider*>;
 
+// Title -> catalogue entries: the first page of catalog.hpp's search
+// (AniList, MAL when AniList can't answer). Production wires the dispatcher;
+// tests script it.
+using CatalogSearch =
+    std::function<Result<std::vector<Enrichment>, ProviderError>(std::string_view title)>;
+
+// What a run can reach beyond its search walk. A default Reach is the bare
+// walk.
+struct Reach {
+  // A hit that carries no id is looked up here by its title, and the entry
+  // resolver::best_catalog_match names files the show — its library row,
+  // resume, history and downloads key on that id like any other. Unset, or
+  // no clear match: the hit stays play-only.
+  CatalogSearch catalog;
+};
+
 // The search -> pick -> episodes -> pick -> play flow. Returns the raw exit
 // code (0/1); the caller wraps it. `cache_dir`/`runtime_dir` are the resolved
 // paths.cache / paths.runtime; `store` may be null (play-only). Exit law
@@ -56,7 +72,7 @@ using Sources = std::vector<const StreamProvider*>;
                             Translation translation, const Config& config,
                             const std::string& cache_dir, const std::string& runtime_dir,
                             const std::string& download_dir, Store* store,
-                            const cli::PlayArgs& args);
+                            const cli::PlayArgs& args, const Reach& reach = {});
 
 // `shigoku download <query> [<ep>]` (P35 slice 3): the same search/pick/
 // episodes spine as play_flow, then download_link instead of mpv. An explicit
@@ -64,11 +80,13 @@ using Sources = std::vector<const StreamProvider*>;
 // rule); absent, the episode is picked interactively. `download_dir` is the
 // RESOLVED root (main.cpp turns a blank config value into <data>/downloads).
 // Same exit law: transfer failure is the nonzero exit (1); every early
-// return (no results, quit, no episodes, unknown <ep>) is a clean 0.
+// return (no results, quit, no episodes, unknown <ep>) is a clean 0. A show
+// with an id downloads under it (download::episode_dest); a play-only one
+// under its source's own folder (download::source_episode_dest).
 [[nodiscard]] int download_flow(const Sources& sources, const PickFn& pick,
                                 Translation translation, const Config& config,
                                 const std::string& download_dir, Store* store,
-                                const cli::DownloadArgs& args);
+                                const cli::DownloadArgs& args, const Reach& reach = {});
 
 // `shigoku continue [<query>]`: a library show picked back up. The history
 // (Store::list_history, most recently watched first), narrowed by the query

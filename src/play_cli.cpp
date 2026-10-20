@@ -15,6 +15,7 @@
 #include "download.hpp"
 #include "idmap.hpp"
 #include "player.hpp"
+#include "resolver.hpp"
 
 namespace shigoku::cli_play {
 
@@ -37,17 +38,22 @@ struct BoundShow {
   std::optional<std::int64_t> anilist_id;
   std::optional<std::int64_t> mal_id;
   std::optional<std::uint32_t> total_episodes;
+  // The catalogue entry a hit with no id was filed under (bind_hit): the
+  // library row is warmed from it, not from the hit's bare title.
+  std::optional<Enrichment> entry;
 };
 
 // The hit as the show a run is bound to. Persistence keys on an anilist_id:
 // a hit that carries one is that show; a hit that carries only a MAL id
-// (senshi, hianime, megaplay name shows that way) is filed as the MAL
-// catalog files such a show — under the offline table's AniList id, else
-// the synthetic negative one — so it joins the same library row the
-// interface would make, resumes, and is there for `continue`. A hit with
-// neither id is play-only: episodes fetch fresh, no bind, no cache, and
-// later no resume or history.
-BoundShow bind_hit(const StreamProvider& provider, const SearchHit& hit) {
+// (senshi names shows that way) is filed as the MAL catalog files such a
+// show — under the offline table's AniList id, else the synthetic negative
+// one — so it joins the same library row the interface would make, resumes,
+// and is there for `continue`. A hit with neither id (hianime's) is looked up
+// in the catalogue by its title and filed under the entry it clearly names
+// (resolver::best_catalog_match, the rule the interface binds a source to a
+// show by). Without one it is play-only: episodes fetch fresh, no bind, no
+// cache, and later no resume or history.
+BoundShow bind_hit(const StreamProvider& provider, const SearchHit& hit, const Reach& reach) {
   BoundShow b;
   b.provider = &provider;
   b.provider_id = hit.provider_id;
@@ -58,6 +64,18 @@ BoundShow bind_hit(const StreamProvider& provider, const SearchHit& hit) {
   }
   b.mal_id = hit.mal_id;
   b.total_episodes = hit.total_episodes;
+  if (!b.anilist_id.has_value() && reach.catalog) {
+    // A catalogue that can't answer leaves the hit play-only, as before.
+    if (auto entries = reach.catalog(b.title); entries.has_value()) {
+      if (auto i = resolver::best_catalog_match(hit, *entries); i.has_value()) {
+        const Enrichment& e = (*entries)[*i];
+        b.anilist_id = e.anilist_id;
+        b.mal_id = e.mal_id;
+        if (!b.total_episodes.has_value()) b.total_episodes = e.total_episodes;
+        b.entry = e;
+      }
+    }
+  }
   return b;
 }
 
@@ -65,6 +83,10 @@ BoundShow bind_hit(const StreamProvider& provider, const SearchHit& hit) {
 // bind miss must not sink the play.
 void warm_binding(Store* store, const BoundShow& show, std::int64_t now) {
   if (store == nullptr || !show.anilist_id.has_value()) return;
+  if (show.entry.has_value()) {
+    (void)store->bind_provider(*show.entry, show.provider->name(), show.provider_id, now);
+    return;
+  }
   Enrichment enrichment;
   enrichment.anilist_id = *show.anilist_id;
   enrichment.mal_id = show.mal_id;
@@ -283,9 +305,9 @@ bool play_one(const PlayEnv& env, const BoundShow& show, const std::vector<std::
   }
 
   // Play-prefers-local (P35 slice 4): a completed download for this exact
-  // (show, track, ep) plays as a file — no resolve, no network. Gated on a
-  // real anilist_id: the value_or(0) shelf download_flow writes for play-only
-  // shows can mix shows, and a wrong-show match is worse than a resolve.
+  // (show, track, ep) plays as a file — no resolve, no network. Gated on an
+  // anilist_id: a play-only show's downloads sit under its source's folder,
+  // which this scan never reads.
   std::optional<std::string> local;
   if (!env.download_dir->empty() && show.anilist_id.has_value()) {
     local = download::find_local_episode(*env.download_dir, *show.anilist_id, translation, episode);
@@ -431,7 +453,8 @@ const StreamProvider* bound_source(const ProviderRegistry& registry,
 
 int play_flow(const Sources& sources, const PickFn& pick, Translation translation,
               const Config& config, const std::string& cache_dir, const std::string& runtime_dir,
-              const std::string& download_dir, Store* store, const cli::PlayArgs& args) {
+              const std::string& download_dir, Store* store, const cli::PlayArgs& args,
+              const Reach& reach) {
   const std::int64_t now = unix_now();
 
   const SearchWalk walked = search_walk(sources, args.query, translation);
@@ -439,7 +462,7 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
 
   auto idx = choose_show(walked.hits, translation, args.show, pick);
   if (!idx.has_value()) return 0;
-  const BoundShow show = bind_hit(*walked.provider, walked.hits[*idx]);
+  const BoundShow show = bind_hit(*walked.provider, walked.hits[*idx], reach);
   warm_binding(store, show, now);
 
   auto episodes_r = load_episodes(store, show, translation, now);
@@ -494,7 +517,7 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
 int download_flow(const Sources& sources, const PickFn& pick,
                   Translation translation, const Config& config,
                   const std::string& download_dir, Store* store,
-                  const cli::DownloadArgs& args) {
+                  const cli::DownloadArgs& args, const Reach& reach) {
   const std::int64_t now = unix_now();
   const cli::Glyphs& gl = cli::glyphs();
 
@@ -503,7 +526,7 @@ int download_flow(const Sources& sources, const PickFn& pick,
 
   auto idx = choose_show(walked.hits, translation, args.show, pick);
   if (!idx.has_value()) return 0;
-  const BoundShow show = bind_hit(*walked.provider, walked.hits[*idx]);
+  const BoundShow show = bind_hit(*walked.provider, walked.hits[*idx], reach);
   const StreamProvider& provider = *show.provider;
   // Same best-effort bind as play_flow: a download is a first-class library
   // touch (the show becomes resumable/locatable later).
@@ -551,9 +574,11 @@ int download_flow(const Sources& sources, const PickFn& pick,
     return 1;
   }
 
-  const std::int64_t dest_id = show.anilist_id.value_or(0);  // 0 = play-only shows.
   const std::string dest =
-      download::episode_dest(download_dir, dest_id, translation, episode, *link);
+      show.anilist_id.has_value()
+          ? download::episode_dest(download_dir, *show.anilist_id, translation, episode, *link)
+          : download::source_episode_dest(download_dir, provider.name(), show.provider_id,
+                                          translation, episode, *link);
   if (auto md = download::ensure_parent_dirs(dest); !md.has_value()) {
     std::printf("  %s couldn't create %s (%s).\n", g(gl.fail), download_dir.c_str(),
                 md.error().detail.c_str());
@@ -711,7 +736,7 @@ int continue_flow(const ProviderRegistry& registry, const Sources& sources, cons
     if (!idx.has_value() && walked.hits.size() == 1) idx = 0;
     if (!idx.has_value()) idx = choose_show(walked.hits, translation, std::nullopt, pick);
     if (!idx.has_value()) return 0;
-    BoundShow b = bind_hit(*walked.provider, walked.hits[*idx]);
+    BoundShow b = bind_hit(*walked.provider, walked.hits[*idx], Reach{});
     // The library row is the identity: its ids and title, whatever the hit
     // claimed (a hit with no AniList id would otherwise leave the run
     // play-only, and a different one would split the history).

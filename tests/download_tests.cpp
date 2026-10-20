@@ -728,6 +728,20 @@ TEST_CASE("episode_dest: <dir>/<id>/<track>/<label>.<ext>") {
                      plain_link("https://cdn.example/v/e.mp4")) == "/dl/700/sub/.._evil.mp4");
 }
 
+TEST_CASE("source_episode_dest: a show only its source names gets that source's folder") {
+  CHECK(source_episode_dest("/dl", "hianime", "86", Translation::Sub, "1",
+                            plain_link("https://cdn.example/v/master.m3u8")) ==
+        "/dl/hianime-86/sub/1.mp4");
+  // Two such shows never share a folder.
+  CHECK(source_episode_dest("/dl/", "hianime", "521", Translation::Dub, "1",
+                            plain_link("https://cdn.example/v/e.mp4")) ==
+        "/dl/hianime-521/dub/1.mp4");
+  // A hostile id stays one path component.
+  CHECK(source_episode_dest("/dl", "x", "../../etc", Translation::Sub, "1",
+                            plain_link("https://cdn.example/v/e.mp4")) ==
+        "/dl/x-.._.._etc/sub/1.mp4");
+}
+
 TEST_CASE("ensure_parent_dirs: mkdir -p the chain, idempotent") {
   const std::string root = tmp_dest("dirs");
   const std::string dest = root + "/700/sub/7.mp4";

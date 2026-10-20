@@ -1572,3 +1572,78 @@ TEST_CASE("a_hit_with_only_a_mal_id_is_filed_under_the_bridged_anilist_id") {
   REQUIRE(none.has_value());
   CHECK_FALSE(none->has_value());
 }
+
+// ── a hit with no id: the catalogue files it ─────────────────────────────────
+
+namespace {
+
+Enrichment catalog_entry(std::int64_t id, std::string title) {
+  Enrichment e;
+  e.anilist_id = id;
+  e.title_romaji = std::move(title);
+  return e;
+}
+
+// one_hit()'s id-less "Frieren", whose resolve fails, played under `reach`:
+// exit 0 is reachable only through a download planted under the id the
+// catalogue gave it (the local scan is gated on an id).
+int run_reached(const std::string& dl, const shigoku::cli_play::Reach& reach) {
+  auto p = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
+                []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  Config config;
+  config.mpv_path = write_stub_mpv();
+  const auto pick = [](std::string_view prompt, const std::vector<std::string>&) {
+    return prompt == "what next" ? std::optional<std::size_t>{} : std::optional<std::size_t>(0);
+  };
+  return shigoku::cli_play::play_flow({&p}, pick, Translation::Sub, config, /*cache_dir=*/"",
+                                      /*runtime_dir=*/"/tmp", dl, /*store=*/nullptr,
+                                      play("frieren"), reach);
+}
+
+using CatalogR = Result<std::vector<Enrichment>, ProviderError>;
+
+}  // namespace
+
+TEST_CASE("a hit with no id is filed under the catalogue entry it names") {
+  const std::string dl = fresh_download_dir("catalog");
+  plant_download(dl + "/900/sub/1.mp4");
+  std::vector<std::string> asked;
+  shigoku::cli_play::Reach reach;
+  reach.catalog = [&asked](std::string_view title) -> CatalogR {
+    asked.emplace_back(title);
+    return std::vector<Enrichment>{catalog_entry(901, "Frieren 2nd Season"),
+                                   catalog_entry(900, "Frieren")};
+  };
+  CHECK(run_reached(dl, reach) == 0);
+  CHECK(asked == std::vector<std::string>{"Frieren"});
+}
+
+TEST_CASE("no clear catalogue match, or no catalogue, leaves the hit play-only") {
+  const std::string dl = fresh_download_dir("catalog-refused");
+  plant_download(dl + "/900/sub/1.mp4");
+  shigoku::cli_play::Reach tie;
+  tie.catalog = [](std::string_view) -> CatalogR {
+    return std::vector<Enrichment>{catalog_entry(900, "Frieren"), catalog_entry(902, "Frieren")};
+  };
+  CHECK(run_reached(dl, tie) == 1);
+  shigoku::cli_play::Reach down;
+  down.catalog = [](std::string_view) -> CatalogR { return err(ProviderError::network()); };
+  CHECK(run_reached(dl, down) == 1);
+  CHECK(run_reached(dl, shigoku::cli_play::Reach{}) == 1);
+}
+
+TEST_CASE("a hit that carries an id never asks the catalogue") {
+  auto p = show_700();  // the hit carries AniList 700.
+  bool asked = false;
+  shigoku::cli_play::Reach reach;
+  reach.catalog = [&asked](std::string_view) -> CatalogR {
+    asked = true;
+    return std::vector<Enrichment>{};
+  };
+  ScriptedPick pick;
+  pick.answers = {0, 0};  // the show, the episode; resolve fails -> exit 1.
+  CHECK(shigoku::cli_play::play_flow({&p}, pick.fn(), Translation::Sub, Config{}, "", "/tmp", "",
+                                     nullptr, play_args(), reach) == 1);
+  CHECK_FALSE(asked);
+}

@@ -85,6 +85,14 @@ namespace shigoku::resolver {
 [[nodiscard]] std::optional<std::size_t> best_provider_match(
     const Enrichment& canonical, const std::vector<SearchHit>& candidates);
 
+// best_catalog_match — best_provider_match turned around: the catalogue entry
+// a provider hit names, for a hit that carries no id of its own. Each entry
+// scores candidate_score(entry, hit) under the same floor and margin, so it
+// refuses exactly where binding that hit to the entry would. nullopt = file
+// the hit under nothing.
+[[nodiscard]] std::optional<std::size_t> best_catalog_match(
+    const SearchHit& hit, const std::vector<Enrichment>& entries);
+
 // The two thresholds (resolver.rs:13-16), exposed for the tests' documentation.
 inline constexpr std::int32_t kBestFloor = 1200;
 inline constexpr std::int32_t kMatchMargin = 250;

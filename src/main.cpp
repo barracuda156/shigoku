@@ -519,6 +519,38 @@ std::optional<Store> open_store_best_effort(const Paths& paths) {
   return std::nullopt;
 }
 
+// The catalogue a command-line run looks a hit with no id up in: the
+// interface's dispatcher (AniList, MAL when AniList can't answer) over a
+// client of its own. A client that won't set up leaves the run without one,
+// and such hits play-only.
+class CliCatalog {
+ public:
+  explicit CliCatalog(const Config& config) {
+    auto client = http::Client::create();
+    if (!client.has_value()) return;
+    client_.emplace(std::move(*client));
+    const std::string mal_client_id = mal_catalog::effective_client_id(config.mal_client_id);
+    std::optional<catalog::Backend> mal_backend;
+    if (!mal_client_id.empty()) mal_backend = catalog::mal_backend(*client_, mal_client_id);
+    catalog_.emplace(catalog::parse_mode(config.catalog), catalog::anilist_backend(*client_),
+                     std::move(mal_backend));
+  }
+
+  // The flows' lookup; empty when there is no catalogue. Borrows this object.
+  [[nodiscard]] cli_play::CatalogSearch search() {
+    if (!catalog_.has_value()) return {};
+    return [this](std::string_view title) -> Result<std::vector<Enrichment>, ProviderError> {
+      auto page = catalog_->search(title, 1);
+      if (!page.has_value()) return err(page.error());
+      return std::move(page->entries);
+    };
+  }
+
+ private:
+  std::optional<http::Client> client_;  // the backends hold it by reference.
+  std::optional<catalog::Catalog> catalog_;
+};
+
 // `shigoku <query>`: the one command whose failure exits nonzero. One
 // provider for the whole run, chosen for search capability (ROD-491);
 // interactive stdin picks; store is best-effort and degrades.
@@ -548,8 +580,11 @@ int run_play_cli(const cli::PlayArgs& args) {
   if (!sources.has_value()) return 1;
 
   const cli_play::PickFn pick = make_picker(config);
+  CliCatalog catalog(config);
+  cli_play::Reach reach;
+  reach.catalog = catalog.search();
   return cli_play::play_flow(*sources, pick, translation, config, paths->cache, paths->runtime,
-                             resolve_download_dir(config, *paths), store, args);
+                             resolve_download_dir(config, *paths), store, args, reach);
 }
 
 // `shigoku download <query> [<ep>]`: the play CLI's spine with download_link
@@ -577,8 +612,11 @@ int run_download_cli(const cli::DownloadArgs& args) {
   if (!sources.has_value()) return 1;
 
   const cli_play::PickFn pick = make_picker(config);
+  CliCatalog catalog(config);
+  cli_play::Reach reach;
+  reach.catalog = catalog.search();
   return cli_play::download_flow(*sources, pick, translation, config,
-                                 resolve_download_dir(config, *paths), store, args);
+                                 resolve_download_dir(config, *paths), store, args, reach);
 }
 
 // `shigoku continue [<query>]`: a library show picked back up where it was

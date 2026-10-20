@@ -478,16 +478,21 @@ std::string safe_episode_component(std::string_view label) {
 
 namespace {
 
-// <download_dir>/<anilist_id>/<track> — the shared prefix episode_dest writes
-// under and find_local_episode scans.
-std::string track_dir(std::string_view download_dir, std::int64_t anilist_id,
+// <download_dir>/<show>/<track> — the shared prefix the episode paths are
+// built under and find_local_episode scans. `show` is one path component.
+std::string track_dir(std::string_view download_dir, std::string_view show,
                       Translation translation) {
   std::string p(download_dir);
   if (!p.empty() && p.back() != '/') p.push_back('/');
-  p += std::to_string(anilist_id);
+  p += show;
   p += '/';
   p += to_string(translation);
   return p;
+}
+
+std::string track_dir(std::string_view download_dir, std::int64_t anilist_id,
+                      Translation translation) {
+  return track_dir(download_dir, std::to_string(anilist_id), translation);
 }
 
 // Extension for the final file. HLS lands as mp4 (the ffmpeg arm's -f mp4);
@@ -526,6 +531,20 @@ std::string episode_dest(std::string_view download_dir, std::int64_t anilist_id,
                          std::string_view episode_label,
                          const StreamLink& link) {
   std::string p = track_dir(download_dir, anilist_id, translation);
+  p += '/';
+  p += safe_episode_component(episode_label);
+  p += '.';
+  p += dest_extension(link);
+  return p;
+}
+
+std::string source_episode_dest(std::string_view download_dir, std::string_view provider,
+                                std::string_view provider_id, Translation translation,
+                                std::string_view episode_label, const StreamLink& link) {
+  // The provider id is provider bytes: the label's sanitizer keeps it one
+  // component.
+  const std::string show = std::string(provider) + "-" + safe_episode_component(provider_id);
+  std::string p = track_dir(download_dir, show, translation);
   p += '/';
   p += safe_episode_component(episode_label);
   p += '.';

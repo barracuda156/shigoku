@@ -360,3 +360,47 @@ TEST_CASE("candidate_episodes prefers total falls back to larger track (resolver
   }
   CHECK(candidate_episodes(SearchHit{}) == 0);
 }
+
+// --- best_catalog_match: the provider match turned around -------------------
+
+namespace {
+
+Enrichment entry(std::int64_t id, std::string title) {
+  Enrichment e = canonical(std::move(title));
+  e.anilist_id = id;
+  return e;
+}
+
+}  // namespace
+
+TEST_CASE("catalog match files a bare-title hit under the entry it clearly names") {
+  // A hit with a title and nothing else: no ids, no counts, no year.
+  const std::vector<Enrichment> entries{entry(2, "Dandadan 2nd Season"), entry(1, "Dandadan"),
+                                        entry(3, "Dandadan: Evil Eye")};
+  CHECK(best_catalog_match(hit("86", "Dandadan"), entries) == std::optional<std::size_t>(1));
+  // The season-two card names season two, in either season spelling.
+  CHECK(best_catalog_match(hit("521", "Dan Da Dan Season 2"), entries) ==
+        std::optional<std::size_t>(0));
+}
+
+TEST_CASE("catalog match refuses a near tie, a title nothing shares, and an empty page") {
+  // Two entries under one title (an original and its remake): nothing on the
+  // hit tells them apart, so it is filed under neither.
+  CHECK(!best_catalog_match(hit("1", "Hunter x Hunter"),
+                            {entry(136, "Hunter x Hunter"), entry(11061, "Hunter x Hunter")})
+             .has_value());
+  CHECK(!best_catalog_match(hit("1", "Naruto"), {entry(1, "Bleach")}).has_value());
+  CHECK(!best_catalog_match(hit("1", "Naruto"), {}).has_value());
+}
+
+TEST_CASE("catalog match uses the hit's episode count against an authoritative total") {
+  // Same title, a 1-episode film and a 12-episode series: a hit listing 12
+  // episodes names the series, as the provider match would.
+  Enrichment film = entry(10, "Frieren");
+  film.total_episodes = 1;
+  Enrichment series = entry(11, "Frieren");
+  series.total_episodes = 12;
+  SearchHit h = hit("x", "Frieren");
+  h.total_episodes = 12;
+  CHECK(best_catalog_match(h, {film, series}) == std::optional<std::size_t>(1));
+}

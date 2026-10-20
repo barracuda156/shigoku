@@ -217,6 +217,17 @@ enum class LinkKind {
                                        std::string_view episode_label,
                                        const StreamLink& link);
 
+// The same for a show only its source can name (a search hit no catalogue
+// entry was found for): its folder is `<provider>-<provider_id>`, so two such
+// shows never share one, and none reads as an AniList id (those are plain or
+// negative numbers). No play-prefers-local scan looks there.
+[[nodiscard]] std::string source_episode_dest(std::string_view download_dir,
+                                              std::string_view provider,
+                                              std::string_view provider_id,
+                                              Translation translation,
+                                              std::string_view episode_label,
+                                              const StreamLink& link);
+
 // mkdir -p the dest's parent chain (0755). Err = Io with the failing errno.
 [[nodiscard]] Result<Unit, DownloadError> ensure_parent_dirs(
     const std::string& dest);

@@ -244,13 +244,17 @@ std::optional<std::size_t> best_id_match(const Enrichment& canonical,
   return bare;
 }
 
-std::optional<std::size_t> best_provider_match(const Enrichment& canonical,
-                                               const std::vector<SearchHit>& candidates) {
+namespace {
+
+// The index of the top of `n` scores, or nullopt when it is below the floor
+// or within the margin of a non-negative runner-up.
+template <typename ScoreAt>
+std::optional<std::size_t> clear_winner(std::size_t n, ScoreAt score_at) {
   std::optional<std::size_t> best_idx;
   std::int32_t best_score = std::numeric_limits<std::int32_t>::min();
   std::int32_t second_score = std::numeric_limits<std::int32_t>::min();
-  for (std::size_t i = 0; i < candidates.size(); ++i) {
-    const std::int32_t score = candidate_score(canonical, candidates[i]);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::int32_t score = score_at(i);
     if (!best_idx.has_value() || score > best_score) {
       second_score = best_score;  // old best falls to second.
       best_score = score;
@@ -263,6 +267,22 @@ std::optional<std::size_t> best_provider_match(const Enrichment& canonical,
   if (best_score < kBestFloor) return std::nullopt;
   if (second_score >= 0 && best_score - second_score < kMatchMargin) return std::nullopt;
   return best_idx;
+}
+
+}  // namespace
+
+std::optional<std::size_t> best_provider_match(const Enrichment& canonical,
+                                               const std::vector<SearchHit>& candidates) {
+  return clear_winner(candidates.size(), [&](std::size_t i) {
+    return candidate_score(canonical, candidates[i]);
+  });
+}
+
+std::optional<std::size_t> best_catalog_match(const SearchHit& hit,
+                                              const std::vector<Enrichment>& entries) {
+  return clear_winner(entries.size(), [&](std::size_t i) {
+    return candidate_score(entries[i], hit);
+  });
 }
 
 }  // namespace shigoku::resolver
