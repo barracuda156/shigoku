@@ -367,6 +367,23 @@ StreamLink plain_link(const std::string& url) {
 
 }  // namespace
 
+TEST_CASE("classify_link: the provider's flags outrank the url's spelling") {
+  // Unflagged, the url decides.
+  CHECK(classify_link(plain_link("https://cdn.example/x/master.m3u8")) == LinkKind::Hls);
+  CHECK(classify_link(plain_link("https://cdn.example/x/ep1.mp4")) == LinkKind::Direct);
+  CHECK(classify_link(plain_link("https://cdn.example/x/master.txt?token=t")) == LinkKind::Direct);
+  // A master served as .txt behind cloaked segments is a playlist, not a file.
+  StreamLink cloaked = plain_link("https://cdn.example/x/master.txt?token=t");
+  cloaked.cloaked_segments = true;
+  CHECK(classify_link(cloaked) == LinkKind::Hls);
+  StreamLink decoy = plain_link("https://cdn.example/x/list");
+  decoy.decloak_segments = true;
+  CHECK(classify_link(decoy) == LinkKind::Hls);
+  StreamLink sealed = plain_link("https://cdn.example/x/playlist");
+  sealed.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
+  CHECK(classify_link(sealed) == LinkKind::Hls);
+}
+
 TEST_CASE("ffmpeg argv: minimal table") {
   const auto argv = build_ffmpeg_argv(
       plain_link("https://cdn.example/m.m3u8"), "https://cdn.example/m.m3u8",
@@ -616,6 +633,46 @@ TEST_CASE("download_hls: a master's variant pick is re-guarded — a private "
   CHECK_FALSE(exists(part_path(dest)));
 }
 
+TEST_CASE("download_hls: a master behind a non-playlist extension still gets the walk") {
+  // Same private-host pick as above, from a master served as .txt: the
+  // UnsafeUrl proves the body was read as a master whatever the url says.
+  const std::string dest = tmp_dest("hls_txt_master.mp4");
+  ScriptedServer srv({{response("200 OK", "", kMaster), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link(srv.url("/master.txt?token=t"));
+  link.cloaked_segments = true;
+  std::atomic<bool> cancel{false};
+  auto r = download_hls(*client, link, dest, Quality::Best, "/no/such/ffmpeg", cancel);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error().kind == DownloadError::Kind::UnsafeUrl);
+  CHECK_FALSE(exists(dest));
+}
+
+TEST_CASE("download_hls: encrypted playlists transfer through the proxy, as play does") {
+  const std::string dest = tmp_dest("hls_sealed.mp4");
+  const std::string argv_out = tmp_dest("hls_sealed_argv.txt");
+  ::setenv("STUB_ARGV_OUT", argv_out.c_str(), 1);
+  const std::string stub = write_stub("stub_ffmpeg_sealed.sh",
+                                      "printf '%s\\n' \"$@\" > \"$STUB_ARGV_OUT\"\n"
+                                      "for a; do o=\"$a\"; done\n"
+                                      "printf 'FAKEVIDEO' > \"$o\"\n"
+                                      "exit 0\n");
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link("https://cdn.example/i/abc/master.txt?token=t");
+  link.cloaked_segments = true;
+  link.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
+  std::atomic<bool> cancel{false};
+  auto r = download_hls(*client, link, dest, Quality::Best, stub, cancel);
+  REQUIRE(r.has_value());
+  CHECK(read_file(dest) == "FAKEVIDEO");
+  // ffmpeg was handed the loopback proxy, never the sealed upstream url.
+  const std::string captured_argv = read_file(argv_out);
+  CHECK(captured_argv.find("-i\nhttp://127.0.0.1:") != std::string::npos);
+  CHECK(captured_argv.find("-i\n" + link.url + "\n") == std::string::npos);
+}
+
 // ===========================================================================
 // Slice 2: download_link owns THE guard.
 // ===========================================================================
@@ -637,20 +694,24 @@ TEST_CASE("safe_episode_component: separators and hostile labels never escape") 
 
 TEST_CASE("episode_dest: <dir>/<id>/<track>/<label>.<ext>") {
   CHECK(episode_dest("/dl", 700, Translation::Sub, "7",
-                     "https://cdn.example/v/7.mp4") == "/dl/700/sub/7.mp4");
+                     plain_link("https://cdn.example/v/7.mp4")) == "/dl/700/sub/7.mp4");
   CHECK(episode_dest("/dl/", 700, Translation::Dub, "7",
-                     "https://cdn.example/v/7.MKV?tok=1") == "/dl/700/dub/7.mkv");
+                     plain_link("https://cdn.example/v/7.MKV?tok=1")) == "/dl/700/dub/7.mkv");
   // HLS lands as mp4 (the ffmpeg arm's -f mp4), whatever the playlist ext.
   CHECK(episode_dest("/dl", 700, Translation::Sub, "7",
-                     "https://cdn.example/v/master.m3u8") == "/dl/700/sub/7.mp4");
+                     plain_link("https://cdn.example/v/master.m3u8")) == "/dl/700/sub/7.mp4");
+  // ...and a flagged link is HLS whatever its url ends in: never 7.txt.
+  StreamLink cloaked = plain_link("https://cdn.example/v/master.txt?token=t");
+  cloaked.cloaked_segments = true;
+  CHECK(episode_dest("/dl", 700, Translation::Sub, "7", cloaked) == "/dl/700/sub/7.mp4");
   // No ext / junk ext falls back to mp4.
   CHECK(episode_dest("/dl", 700, Translation::Sub, "7",
-                     "https://cdn.example/stream") == "/dl/700/sub/7.mp4");
+                     plain_link("https://cdn.example/stream")) == "/dl/700/sub/7.mp4");
   CHECK(episode_dest("/dl", 700, Translation::Sub, "7",
-                     "https://cdn.example/v/x.longext7") == "/dl/700/sub/7.mp4");
+                     plain_link("https://cdn.example/v/x.longext7")) == "/dl/700/sub/7.mp4");
   // The label rides safe_episode_component.
   CHECK(episode_dest("/dl", 700, Translation::Sub, "../evil",
-                     "https://cdn.example/v/e.mp4") == "/dl/700/sub/.._evil.mp4");
+                     plain_link("https://cdn.example/v/e.mp4")) == "/dl/700/sub/.._evil.mp4");
 }
 
 TEST_CASE("ensure_parent_dirs: mkdir -p the chain, idempotent") {

@@ -220,6 +220,13 @@ LinkKind classify_url(std::string_view url) {
   return (ext == "m3u8" || ext == "m3u") ? LinkKind::Hls : LinkKind::Direct;
 }
 
+LinkKind classify_link(const StreamLink& link) {
+  if (link.cloaked_segments || link.decloak_segments || link.playlist_cipher.has_value()) {
+    return LinkKind::Hls;
+  }
+  return classify_url(link.url);
+}
+
 Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
     std::string_view out_path) {
@@ -377,11 +384,12 @@ Result<Unit, DownloadError> download_hls(const http::Client& client,
                                          std::atomic<long>* child_pid_out) {
   std::string input = link.url;
 
-  // Decloak links transfer through the P12 proxy exactly as play does; the
-  // guard object keeps the proxy alive for ffmpeg's lifetime. Such providers
-  // never cap (the P23 law), so no variant walk on this arm.
+  // A link play would proxy (decoy-prefixed segments, encrypted playlists)
+  // transfers through the same proxy; the guard object keeps it alive for
+  // ffmpeg's lifetime. ffmpeg reads the proxied master itself, so no variant
+  // walk on this arm.
   std::optional<proxy::Decloak> decloak;
-  if (link.decloak_segments) {
+  if (link.decloak_segments || link.playlist_cipher.has_value()) {
     auto engaged = proxy::engage(link);
     if (!engaged) {
       return err(
@@ -389,10 +397,11 @@ Result<Unit, DownloadError> download_hls(const http::Client& client,
     }
     decloak.emplace(std::move(*engaged));
     input = std::string(decloak->url());
-  } else if (classify_url(link.url) == LinkKind::Hls) {
+  } else {
     // Best-effort master walk (senshi::cap_variant's spirit: a fetch/parse
     // failure falls back to the link url — a download is never worse off
-    // than handing ffmpeg what mpv would have gotten).
+    // than handing ffmpeg what mpv would have gotten). The body decides, not
+    // the url's spelling: a master served as .txt walks like a .m3u8.
     http::Request req;
     req.url = link.url;
     if (link.user_agent) req.user_agent = *link.user_agent;
@@ -433,14 +442,9 @@ Result<Unit, DownloadError> download_link(const http::Client& client,
   if (auto g = http::guard_fetch_url(link.url); !g.has_value()) {
     return err(DownloadError::unsafe_url(g.error()));
   }
-  // A decloak link is HLS by construction (decoy-prefixed segments): route it
-  // to the proxy arm no matter what its url spelling classifies as — the curl
-  // arm would land the decoy bytes in the file verbatim.
-  if (link.decloak_segments) {
-    return download_hls(client, link, dest, quality, ffmpeg_path, cancel,
-                        child_pid_out);
-  }
-  switch (classify_url(link.url)) {
+  // The link's flags outrank its url's spelling (classify_link): the curl arm
+  // would land a playlist, or decoy bytes, in the file verbatim.
+  switch (classify_link(link)) {
     case LinkKind::Direct: {
       Options opts;
       opts.url = link.url;
@@ -485,8 +489,9 @@ std::string track_dir(std::string_view download_dir, std::int64_t anilist_id,
 
 // Extension for the final file. HLS lands as mp4 (the ffmpeg arm's -f mp4);
 // a direct link keeps a sane url extension (1-5 alnum chars), else mp4.
-std::string dest_extension(std::string_view resolved_url) {
-  if (classify_url(resolved_url) == LinkKind::Hls) return "mp4";
+std::string dest_extension(const StreamLink& link) {
+  if (classify_link(link) == LinkKind::Hls) return "mp4";
+  const std::string_view resolved_url = link.url;
   std::size_t end = resolved_url.size();
   for (std::size_t i = 0; i < resolved_url.size(); ++i) {
     if (resolved_url[i] == '?' || resolved_url[i] == '#') {
@@ -516,12 +521,12 @@ std::string dest_extension(std::string_view resolved_url) {
 std::string episode_dest(std::string_view download_dir, std::int64_t anilist_id,
                          Translation translation,
                          std::string_view episode_label,
-                         std::string_view resolved_url) {
+                         const StreamLink& link) {
   std::string p = track_dir(download_dir, anilist_id, translation);
   p += '/';
   p += safe_episode_component(episode_label);
   p += '.';
-  p += dest_extension(resolved_url);
+  p += dest_extension(link);
   return p;
 }
 

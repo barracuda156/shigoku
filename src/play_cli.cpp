@@ -553,7 +553,7 @@ int download_flow(const Sources& sources, const PickFn& pick,
 
   const std::int64_t dest_id = show.anilist_id.value_or(0);  // 0 = play-only shows.
   const std::string dest =
-      download::episode_dest(download_dir, dest_id, translation, episode, link->url);
+      download::episode_dest(download_dir, dest_id, translation, episode, *link);
   if (auto md = download::ensure_parent_dirs(dest); !md.has_value()) {
     std::printf("  %s couldn't create %s (%s).\n", g(gl.fail), download_dir.c_str(),
                 md.error().detail.c_str());

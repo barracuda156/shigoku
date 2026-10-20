@@ -1371,7 +1371,7 @@ void spawn_download(EventQueue& queue, const ProviderRegistry& registry,
       return;
     }
     const std::string dest = download::episode_dest(download_dir, for_id, translation,
-                                                    episode, link->url);
+                                                    episode, *link);
     if (auto md = download::ensure_parent_dirs(dest); !md.has_value()) {
       auto [outcome, detail] = download_failed_payload(md.error());
       queue.try_post(Event{DownloadFailed{outcome, std::move(detail), for_id, episode}});

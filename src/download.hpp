@@ -132,6 +132,13 @@ enum class LinkKind {
 };
 [[nodiscard]] LinkKind classify_url(std::string_view url);
 
+// The same call for a resolved link, which knows more than its url: a link
+// whose segments are cloaked (plain or decoy-prefixed) or whose playlists
+// arrive encrypted is HLS whatever its playlist url ends in — a master served
+// as `master.txt` must never land on disk as a text file. Otherwise the url
+// decides.
+[[nodiscard]] LinkKind classify_link(const StreamLink& link);
+
 // Pure ffmpeg argv builder (the golden tests pin this table; the ROD-435
 // guard applies as in player::build_argv — every provider-derived field is
 // vetted, Err = UnsafeArg with the field name):
@@ -166,9 +173,9 @@ enum class LinkKind {
 // Download an HLS link via external ffmpeg -c copy into `dest` (through the
 // .part + fsync + atomic-rename law). Contract as download_to_file: link.url
 // must already have passed the guard (download_link below owns it).
-//   * decloak links (megaplay-shaped segments) engage the P12 proxy for the
-//     transfer and hand ffmpeg the loopback url — such providers never cap
-//     (the P23 law), so no variant walk.
+//   * a link play would proxy — decoy-prefixed segments, encrypted playlists
+//     — engages the same proxy for the transfer and hands ffmpeg the loopback
+//     url; no variant walk there (ffmpeg reads the proxied master itself).
 //   * otherwise the playlist is fetched (best-effort, link headers): a master
 //     gets the P23 variant walk — join + hls::select_variant under `quality`,
 //     the pick re-guarded (provider bytes) — and a media playlist / failed
@@ -181,7 +188,7 @@ enum class LinkKind {
     const std::atomic<bool>& cancel, std::atomic<long>* child_pid_out = nullptr);
 
 // The one entry a surface calls (slice 3): guard link.url, then route by
-// classify_url — Direct -> download_to_file (link headers, Range resume),
+// classify_link — Direct -> download_to_file (link headers, Range resume),
 // Hls -> download_hls (ffmpeg). Blocking; one transfer at a time is the
 // caller's law.
 [[nodiscard]] Result<Unit, DownloadError> download_link(
@@ -201,14 +208,14 @@ enum class LinkKind {
 // escape the download dir).
 [[nodiscard]] std::string safe_episode_component(std::string_view label);
 
-// The final path for one episode. `resolved_url` picks the extension: an HLS
-// link lands as .mp4 (the ffmpeg arm's -f mp4); a direct link keeps its url
-// extension when it has a sane one, else .mp4.
+// The final path for one episode. The resolved link picks the extension: an
+// HLS link (classify_link) lands as .mp4 (the ffmpeg arm's -f mp4); a direct
+// link keeps its url extension when it has a sane one, else .mp4.
 [[nodiscard]] std::string episode_dest(std::string_view download_dir,
                                        std::int64_t anilist_id,
                                        Translation translation,
                                        std::string_view episode_label,
-                                       std::string_view resolved_url);
+                                       const StreamLink& link);
 
 // mkdir -p the dest's parent chain (0755). Err = Io with the failing errno.
 [[nodiscard]] Result<Unit, DownloadError> ensure_parent_dirs(
