@@ -3,6 +3,7 @@
 
 #include "play_cli.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -258,14 +259,25 @@ struct PlayEnv {
   Store* store = nullptr;
   Translation translation = Translation::Sub;
   Quality quality = Quality::Best;
+  // Where an episode that failed at its source goes next (Reach::fallbacks);
+  // null = nowhere.
+  const Sources* fallbacks = nullptr;
+};
+
+// How an episode failed to play: the class, and the resolve failure's own
+// class when it was one (cli::player_failure_line renders both).
+struct PlayFailure {
+  PlayError::Kind kind;
+  std::optional<ProviderError::Kind> resolve_class;
 };
 
 // One episode, start to finish: resume point, AniSkip adjuncts, a completed
-// download or a resolve, the player, the play record. false = the play
-// failed (the one nonzero exit, said here); true = it ran, a short check
-// included.
-bool play_one(const PlayEnv& env, const BoundShow& show, const std::vector<std::string>& episodes,
-              std::size_t ep_idx) {
+// download or a resolve, the player, the play record. nullopt = it ran, a
+// short check included; a PlayFailure = it never played, unsaid (the caller
+// says it, or tries another source first).
+std::optional<PlayFailure> play_one(const PlayEnv& env, const BoundShow& show,
+                                    const std::vector<std::string>& episodes,
+                                    std::size_t ep_idx) {
   const Config& config = *env.config;
   const Translation translation = env.translation;
   const StreamProvider& provider = *show.provider;
@@ -346,12 +358,9 @@ bool play_one(const PlayEnv& env, const BoundShow& show, const std::vector<std::
   auto outcome = local.has_value() ? player::play_local(opts, *local, on_event)
                                    : player::play(opts, resolve, on_event);
   if (!outcome.has_value()) {
-    // The one nonzero exit (06 §7.4): a play that never yielded a meaningful
-    // watch. Meaningful-watch mpv failures fold into Ok below.
-    std::printf("%s", cli::player_failure_line(outcome.error().kind, provider.display_name(),
-                                               resolve_class)
-                          .c_str());
-    return false;
+    // A play that never yielded a meaningful watch. Meaningful-watch mpv
+    // failures fold into Ok below.
+    return PlayFailure{outcome.error().kind, resolve_class};
   }
 
   // A meaningful watch returns Ok with a position even when mpv then exits
@@ -365,25 +374,116 @@ bool play_one(const PlayEnv& env, const BoundShow& show, const std::vector<std::
                                    pos.duration.value_or(0.0), provider.name(), unix_now());
   }
   std::printf("\n  %s done.\n", g(gl.ok));
-  return true;
+  return std::nullopt;
+}
+
+// The show on another source `p`, found the way the interface's fallback
+// walk finds it: p's key off the show's ids when p keys that way, else p's
+// search by title judged by id agreement, then title. nullopt = p doesn't
+// have it, or couldn't say.
+std::optional<BoundShow> find_on(const StreamProvider& p, const BoundShow& show,
+                                 Translation translation) {
+  Enrichment canonical;
+  if (show.entry.has_value()) {
+    canonical = *show.entry;
+  } else {
+    canonical.anilist_id = show.anilist_id.value_or(0);
+    canonical.mal_id = show.mal_id;
+    canonical.title_romaji = show.title;
+    canonical.total_episodes = show.total_episodes;
+  }
+  BoundShow there = show;
+  there.provider = &p;
+  if (auto key = p.canonical_key(canonical); key.has_value()) {
+    there.provider_id = std::move(*key);
+    return there;
+  }
+  if (!p.supports_search()) return std::nullopt;
+  SearchOptions sopts;
+  sopts.translation = translation;
+  sopts.limit = 20;
+  sopts.page = 1;
+  auto hits = p.search(canonical.title_romaji, sopts);
+  if (!hits.has_value()) return std::nullopt;
+  auto ix = resolver::best_id_match(canonical, *hits);
+  if (!ix.has_value()) ix = resolver::best_provider_match(canonical, *hits);
+  if (!ix.has_value()) return std::nullopt;
+  there.provider_id = (*hits)[*ix].provider_id;
+  return there;
+}
+
+// One episode on the run's source, and when it fails there at the source
+// (player::is_source_failure) the same episode on the next source in
+// `env.fallbacks` that has it — the interface's play hop. The source it
+// plays on becomes the run's: `show`, `episodes` and `idx` name it on
+// return. false = it played nowhere; the last failure is said (the one
+// nonzero exit, 06 §7.4).
+bool play_with_hops(const PlayEnv& env, BoundShow& show, std::vector<std::string>& episodes,
+                    std::size_t& idx) {
+  auto failed = play_one(env, show, episodes, idx);
+  if (!failed.has_value()) return true;
+  const StreamProvider* failed_on = show.provider;
+  if (env.fallbacks != nullptr && player::is_source_failure(failed->kind)) {
+    std::vector<const StreamProvider*> tried{show.provider};
+    bool said = false;
+    for (const StreamProvider* p : *env.fallbacks) {
+      if (std::find(tried.begin(), tried.end(), p) != tried.end()) continue;
+      tried.push_back(p);
+      if (!said) {
+        std::printf("%s", cli::play_hop_note(failed_on->display_name(), failed->kind).c_str());
+        said = true;
+      }
+      std::printf("%s", cli::play_hop_try_note(p->display_name()).c_str());
+      flush_stdout();
+      auto there = find_on(*p, show, env.translation);
+      if (!there.has_value()) continue;
+      auto eps = load_episodes(env.store, *there, env.translation, unix_now());
+      if (!eps.has_value()) continue;
+      const auto at =
+          map_episode_index(*eps, episodes[idx], static_cast<std::uint32_t>(idx + 1));
+      if (!at.has_value()) continue;
+      warm_binding(env.store, *there, unix_now());
+      auto again = play_one(env, *there, *eps, *at);
+      if (!again.has_value()) {
+        show = std::move(*there);
+        episodes = std::move(*eps);
+        idx = *at;
+        return true;
+      }
+      failed = again;
+      failed_on = p;
+      if (!player::is_source_failure(failed->kind)) break;
+      said = false;  // a fresh failure, said before the next try.
+    }
+  }
+  std::printf("%s", cli::player_failure_line(failed->kind, failed_on->display_name(),
+                                             failed->resolve_class)
+                        .c_str());
+  return false;
 }
 
 // The play loop from `start`. With `range_last`, the span plays in order and
 // the run ends after it (exit 0), no questions asked. Without, every played
 // episode ends in the post-play menu through the pick seam: next / replay /
 // previous move `idx`, quit (or EOF, or a pick past the rows) ends the run.
-// A play that fails ends the run with 1 wherever it happens.
-int play_from(const PlayEnv& env, const BoundShow& show, const std::vector<std::string>& episodes,
+// A play that fails, on every source it can move to, ends the run with 1
+// wherever it happens. A move rebinds the run (`show`, `episodes`), so the
+// span's end is kept as a label and found again in the new list.
+int play_from(const PlayEnv& env, BoundShow show, std::vector<std::string> episodes,
               std::size_t start, std::optional<std::size_t> range_last, const PickFn& pick) {
   std::size_t idx = start;
   if (range_last.has_value()) {
-    for (; idx <= *range_last; ++idx) {
-      if (!play_one(env, show, episodes, idx)) return 1;
+    const std::string last_label = episodes[*range_last];
+    const auto last_ordinal = static_cast<std::uint32_t>(*range_last + 1);
+    for (;;) {
+      if (!play_with_hops(env, show, episodes, idx)) return 1;
+      const auto last = map_episode_index(episodes, last_label, last_ordinal);
+      if (!last.has_value() || idx >= *last) return 0;
+      ++idx;
     }
-    return 0;
   }
   for (;;) {
-    if (!play_one(env, show, episodes, idx)) return 1;
+    if (!play_with_hops(env, show, episodes, idx)) return 1;
     const cli::PostPlayMenu menu = cli::post_play_menu(idx, episodes);
     std::printf("\n");
     auto choice = pick("what next", menu.rows);
@@ -511,6 +611,7 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
   env.store = store;
   env.translation = translation;
   env.quality = run_quality(args.quality, config);
+  if (!reach.fallbacks.empty()) env.fallbacks = &reach.fallbacks;
   return play_from(env, show, episodes, start, range_last, pick);
 }
 
@@ -647,7 +748,7 @@ int download_flow(const Sources& sources, const PickFn& pick,
 int continue_flow(const ProviderRegistry& registry, const Sources& sources, const PickFn& pick,
                   Translation translation, const Config& config, const std::string& cache_dir,
                   const std::string& runtime_dir, const std::string& download_dir, Store& store,
-                  const cli::ContinueArgs& args) {
+                  const cli::ContinueArgs& args, const Reach& reach) {
   const std::int64_t now = unix_now();
   const cli::Glyphs& gl = cli::glyphs();
 
@@ -793,6 +894,7 @@ int continue_flow(const ProviderRegistry& registry, const Sources& sources, cons
   env.store = &store;
   env.translation = translation;
   env.quality = run_quality(args.quality, config);
+  if (!reach.fallbacks.empty()) env.fallbacks = &reach.fallbacks;
   return play_from(env, *bound, episodes, *start, std::nullopt, pick);
 }
 

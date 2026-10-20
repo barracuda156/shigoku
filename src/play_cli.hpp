@@ -43,13 +43,22 @@ using CatalogSearch =
     std::function<Result<std::vector<Enrichment>, ProviderError>(std::string_view title)>;
 
 // What a run can reach beyond its search walk. A default Reach is the bare
-// walk.
+// walk: a hit with no id stays play-only, and an episode that fails to play
+// ends the run.
 struct Reach {
   // A hit that carries no id is looked up here by its title, and the entry
   // resolver::best_catalog_match names files the show — its library row,
   // resume, history and downloads key on that id like any other. Unset, or
   // no clear match: the hit stays play-only.
   CatalogSearch catalog;
+  // Every source, in the order an episode that failed at its source tries
+  // them (ProviderRegistry::ordered): the stream never opened past the
+  // retries, or no stream resolved. Each other source is asked for the show
+  // — by its key off the show's ids when it keys that way, else by a title
+  // search judged as the interface's walk judges it — and for the same
+  // episode (label first, then position); the first that plays it serves
+  // the rest of the run. Empty = no such move.
+  Sources fallbacks;
 };
 
 // The search -> pick -> episodes -> pick -> play flow. Returns the raw exit
@@ -65,7 +74,8 @@ struct Reach {
 //
 // After an episode plays, the pick seam offers what comes next (next /
 // replay / previous / quit; cli::post_play_menu) and the run loops until
-// quit, EOF, or a play that fails (exit 1, as for the first episode).
+// quit, EOF, or a play that fails (exit 1, as for the first episode) — on
+// every source `reach.fallbacks` could find it on.
 // `-r` plays its span in order with no menu; `-e` starts at that episode
 // and then asks like a prompted pick would.
 [[nodiscard]] int play_flow(const Sources& sources, const PickFn& pick,
@@ -104,6 +114,7 @@ struct Reach {
                                 const PickFn& pick, Translation translation,
                                 const Config& config, const std::string& cache_dir,
                                 const std::string& runtime_dir, const std::string& download_dir,
-                                Store& store, const cli::ContinueArgs& args);
+                                Store& store, const cli::ContinueArgs& args,
+                                const Reach& reach = {});
 
 }  // namespace shigoku::cli_play

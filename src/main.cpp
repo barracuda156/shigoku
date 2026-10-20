@@ -503,6 +503,15 @@ std::optional<cli_play::Sources> cli_sources(const ProviderRegistry& registry,
   return sources;
 }
 
+// Where an episode that failed at its source goes next: every source, the
+// run's preference first (`-p`, else the config's), then registry order — the
+// interface's fallback walk's order.
+cli_play::Sources fallback_order(const ProviderRegistry& registry, const Config& config,
+                                 const std::optional<std::string>& flag) {
+  const std::string pref = flag.has_value() ? *flag : config.preferred_provider;
+  return registry.ordered(pref);
+}
+
 // The `-q` heads-up: a spelling parse_quality does not know plays best.
 void say_quality_note(const std::optional<std::string>& quality) {
   auto note = cli::quality_note(quality.has_value() ? std::optional<std::string_view>(*quality)
@@ -583,6 +592,7 @@ int run_play_cli(const cli::PlayArgs& args) {
   CliCatalog catalog(config);
   cli_play::Reach reach;
   reach.catalog = catalog.search();
+  reach.fallbacks = fallback_order(*registry, config, args.provider);
   return cli_play::play_flow(*sources, pick, translation, config, paths->cache, paths->runtime,
                              resolve_download_dir(config, *paths), store, args, reach);
 }
@@ -649,9 +659,11 @@ int run_continue_cli(const cli::ContinueArgs& args) {
   if (!sources.has_value()) return 1;
 
   const cli_play::PickFn pick = make_picker(config);
+  cli_play::Reach reach;
+  reach.fallbacks = fallback_order(*registry, config, args.provider);
   return cli_play::continue_flow(*registry, *sources, pick, translation, config, paths->cache,
                                  paths->runtime, resolve_download_dir(config, *paths), *store,
-                                 args);
+                                 args, reach);
 }
 
 // Whether the environment's locale is UTF-8: its codeset (nl_langinfo after

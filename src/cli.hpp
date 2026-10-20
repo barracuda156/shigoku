@@ -321,6 +321,13 @@ struct PostPlayMenu {
                                            std::optional<ProviderError::Kind> failure,
                                            std::string_view next);
 
+// Play-hop notes, in the search-walk note's register. The first says the
+// episode didn't play on `from` — its stream never opened (OpenFailed), or
+// no stream resolved (any other kind reads as that) — and that the run looks
+// for it on the other sources; the second names each source it tries.
+[[nodiscard]] std::string play_hop_note(std::string_view from, PlayError::Kind kind);
+[[nodiscard]] std::string play_hop_try_note(std::string_view next);
+
 // Play-failure copy in the CLI's sentence register, keyed off PlayError::Kind.
 // A Resolve failure delegates to fetch_error_line at the resolve stage — but
 // shigoku's PlayError::Resolve carries only a detail string (the ProviderError

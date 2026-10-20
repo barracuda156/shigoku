@@ -4041,9 +4041,7 @@ void tick(App& app, const Event& ev) {
               // already burned, then relaunches when a sibling grid lands.
               // Player-side failures (mpv missing/crashed) stop it: no
               // sibling fixes a broken player.
-              const bool hop_eligible =
-                  e.cause.kind == PlayError::Kind::Resolve ||
-                  e.cause.kind == PlayError::Kind::OpenFailed;
+              const bool hop_eligible = player::is_source_failure(e.cause.kind);
               if (hop_eligible && app.episode_session &&
                   app.episode_session->has_for_id() &&
                   app.episode_session->for_id() == e.for_id &&

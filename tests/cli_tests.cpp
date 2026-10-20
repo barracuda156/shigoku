@@ -851,13 +851,18 @@ class Fake final : public StreamProvider {
   std::string_view display_ = "Fake";
   bool searchable_ = true;
   bool localized_ = false;
+  // Keys on the show's MAL id without a search (the megaplay shape).
+  bool keyed_ = false;
+  // The provider id the last resolve was asked for.
+  mutable std::string last_resolved_id_;
 
   [[nodiscard]] std::string_view name() const override { return name_; }
   [[nodiscard]] std::string_view display_name() const override { return display_; }
   [[nodiscard]] bool supports_search() const override { return searchable_; }
   [[nodiscard]] bool localized_titles() const override { return localized_; }
-  [[nodiscard]] std::optional<std::string> canonical_key(const Enrichment&) const override {
-    return std::nullopt;
+  [[nodiscard]] std::optional<std::string> canonical_key(const Enrichment& e) const override {
+    if (!keyed_ || !e.mal_id.has_value()) return std::nullopt;
+    return std::to_string(*e.mal_id);
   }
   [[nodiscard]] SearchR search(std::string_view q, const SearchOptions&) const override {
     return search_(q);
@@ -866,8 +871,9 @@ class Fake final : public StreamProvider {
                              std::optional<std::uint32_t>) const override {
     return episodes_();
   }
-  [[nodiscard]] ResolveR resolve(std::string_view, std::string_view, Translation,
+  [[nodiscard]] ResolveR resolve(std::string_view id, std::string_view, Translation,
                                  Quality) const override {
+    last_resolved_id_ = std::string(id);
     return resolve_();
   }
   [[nodiscard]] Result<CoverRequest, ProviderError> cover_request(
@@ -1061,6 +1067,14 @@ TEST_CASE("search_walk_note_reads_per_class_and_for_an_empty_answer") {
     CHECK_MESSAGE(contains(line, "(X "), line);
     CHECK_MESSAGE(contains(line, "; trying Y"), line);
   }
+}
+
+TEST_CASE("play_hop_note_reads_per_failure_and_the_try_note_names_the_source") {
+  CHECK(cli::play_hop_note("HiAnime", PlayError::Kind::OpenFailed) ==
+        "  (HiAnime's stream didn't open; looking for it elsewhere…)\n");
+  CHECK(cli::play_hop_note("HiAnime", PlayError::Kind::Resolve) ==
+        "  (HiAnime couldn't find a stream; looking for it elsewhere…)\n");
+  CHECK(cli::play_hop_try_note("Senshi") == "  (trying Senshi…)\n");
 }
 
 TEST_CASE("registry_searchable_lists_search_capable_sources_preferred_first") {
@@ -1646,4 +1660,177 @@ TEST_CASE("a hit that carries an id never asks the catalogue") {
   CHECK(shigoku::cli_play::play_flow({&p}, pick.fn(), Translation::Sub, Config{}, "", "/tmp", "",
                                      nullptr, play_args(), reach) == 1);
   CHECK_FALSE(asked);
+}
+
+// ── an episode that fails at its source moves to the next source ─────────────
+
+namespace {
+
+int g_a_resolves = 0;
+int g_b_resolves = 0;
+int g_b_searches = 0;
+int g_keyed_searches = 0;
+
+void reset_hop_counts() { g_a_resolves = g_b_resolves = g_b_searches = g_keyed_searches = 0; }
+
+// A url the fetch guard passes (no DNS involved); the stub mpv "plays" it.
+Fake::ResolveR resolves_ok() {
+  StreamLink l;
+  l.url = "https://b.example/1.m3u8";
+  return l;
+}
+
+Fake::EpR two_episodes() { return std::vector<std::string>{"1", "2"}; }
+
+// The run's source: finds the show, lists 1-2, never resolves.
+Fake hop_from() {
+  auto f = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                two_episodes, []() -> Fake::ResolveR {
+                  ++g_a_resolves;
+                  return err(ProviderError::network());
+                });
+  f.name_ = "a";
+  f.display_ = "A";
+  return f;
+}
+
+// Has the show under its own id, both episodes, and resolves.
+Fake hop_to() {
+  auto f = make(
+      [](std::string_view) -> Fake::SearchR {
+        ++g_b_searches;
+        auto h = one_hit();
+        h.provider_id = "b-id";
+        return std::vector<SearchHit>{h};
+      },
+      two_episodes, []() -> Fake::ResolveR {
+        ++g_b_resolves;
+        return resolves_ok();
+      });
+  f.name_ = "b";
+  f.display_ = "B";
+  return f;
+}
+
+Config stub_mpv_config() {
+  Config c;
+  c.mpv_path = write_stub_mpv();
+  return c;
+}
+
+int run_hop(const Fake& from, const shigoku::cli_play::Sources& fallbacks, const Config& config,
+            ScriptedPick& pick, const cli::PlayArgs& args = play_args()) {
+  shigoku::cli_play::Reach reach;
+  reach.fallbacks = fallbacks;
+  return shigoku::cli_play::play_flow({&from}, pick.fn(), Translation::Sub, config,
+                                      /*cache_dir=*/"", /*runtime_dir=*/"/tmp",
+                                      /*download_dir=*/"", /*store=*/nullptr, args, reach);
+}
+
+}  // namespace
+
+TEST_CASE("an episode that won't resolve plays from the next source, which keeps the run") {
+  reset_hop_counts();
+  const Fake a = hop_from();
+  const Fake b = hop_to();
+  ScriptedPick pick;
+  pick.answers = {0, 0, 0};  // the show, ep 1, then "next" (ep 2); EOF quits after it.
+  CHECK(run_hop(a, {&a, &b}, stub_mpv_config(), pick) == 0);
+  CHECK(g_a_resolves == 1);  // ep 2 never went back to A...
+  CHECK(g_b_resolves == 2);  // ...B served both,
+  CHECK(g_b_searches == 1);  // found once.
+  CHECK(b.last_resolved_id_ == "b-id");
+}
+
+TEST_CASE("no fallbacks, or a player-side failure, moves nowhere") {
+  reset_hop_counts();
+  const Fake a = hop_from();
+  const Fake b = hop_to();
+  ScriptedPick bare;
+  bare.answers = {0, 0};
+  CHECK(run_hop(a, {}, stub_mpv_config(), bare) == 1);
+  CHECK(g_b_searches == 0);
+  // A resolves but mpv is missing: no other source fixes the player.
+  Fake a_ok = hop_from();
+  a_ok.resolve_ = resolves_ok;
+  Config broken;
+  broken.mpv_path = "/no/such/mpv";
+  ScriptedPick pick;
+  pick.answers = {0, 0};
+  CHECK(run_hop(a_ok, {&a_ok, &b}, broken, pick) == 1);
+  CHECK(g_b_searches == 0);
+}
+
+TEST_CASE("a source without the show, or without the episode, is passed over") {
+  reset_hop_counts();
+  const Fake a = hop_from();
+  const Fake b = hop_to();
+  // Answers its search with a different show.
+  auto other = make(
+      [](std::string_view) -> Fake::SearchR {
+        auto h = one_hit();
+        h.title = "Naruto";
+        return std::vector<SearchHit>{h};
+      },
+      two_episodes, resolves_ok);
+  other.name_ = "other";
+  // Has the show, lists nothing for this track.
+  auto empty = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                    []() -> Fake::EpR { return std::vector<std::string>{}; }, resolves_ok);
+  empty.name_ = "empty";
+  ScriptedPick pick;
+  pick.answers = {0, 0};
+  CHECK(run_hop(a, {&a, &other, &empty, &b}, stub_mpv_config(), pick) == 0);
+  CHECK(other.last_resolved_id_.empty());
+  CHECK(empty.last_resolved_id_.empty());
+  CHECK(g_b_resolves == 1);
+}
+
+TEST_CASE("a source that keys on the MAL id is reached without a search") {
+  reset_hop_counts();
+  auto a = make(
+      [](std::string_view) -> Fake::SearchR {
+        auto h = one_hit();
+        h.mal_id = 52991;
+        return std::vector<SearchHit>{h};
+      },
+      two_episodes, []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  a.name_ = "a";
+  auto keyed = make(
+      [](std::string_view) -> Fake::SearchR {
+        ++g_keyed_searches;
+        return std::vector<SearchHit>{};
+      },
+      two_episodes, resolves_ok);
+  keyed.name_ = "keyed";
+  keyed.searchable_ = false;
+  keyed.keyed_ = true;
+  ScriptedPick pick;
+  pick.answers = {0, 0};
+  CHECK(run_hop(a, {&a, &keyed}, stub_mpv_config(), pick) == 0);
+  CHECK(keyed.last_resolved_id_ == "52991");
+  CHECK(g_keyed_searches == 0);
+}
+
+TEST_CASE("a -r span moves with the run and still stops at its end") {
+  reset_hop_counts();
+  auto a = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                three_episodes, []() -> Fake::ResolveR {
+                  ++g_a_resolves;
+                  return err(ProviderError::network());
+                });
+  a.name_ = "a";
+  auto b = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                three_episodes, []() -> Fake::ResolveR {
+                  ++g_b_resolves;
+                  return resolves_ok();
+                });
+  b.name_ = "b";
+  cli::PlayArgs args = play_args();
+  args.range = cli::EpisodeRange{"1", std::string("2")};
+  ScriptedPick pick;
+  pick.answers = {0};  // the show; the span asks nothing else.
+  CHECK(run_hop(a, {&a, &b}, stub_mpv_config(), pick, args) == 0);
+  CHECK(g_a_resolves == 1);
+  CHECK(g_b_resolves == 2);  // eps 1 and 2 on B, never 3.
 }

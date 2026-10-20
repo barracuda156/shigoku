@@ -38,6 +38,14 @@ namespace shigoku::player {
 // yet is retry-eligible; each retry re-resolves a fresh url.
 inline constexpr std::uint32_t kMaxPlayAttempts = 3;
 
+// Whether a failed play is the source's doing — no stream resolved, or the
+// stream never opened past the retries — so another source may still play
+// the episode. A player-side failure (mpv missing or crashing) is not: no
+// other source fixes a broken player.
+[[nodiscard]] inline bool is_source_failure(PlayError::Kind kind) {
+  return kind == PlayError::Kind::Resolve || kind == PlayError::Kind::OpenFailed;
+}
+
 // One backoff gap per retry; indexing by attempt-1 is safe only while the
 // length stays kMaxPlayAttempts-1. Keep them in lockstep (player.rs:22).
 inline constexpr std::chrono::seconds kBackoff[kMaxPlayAttempts - 1] = {

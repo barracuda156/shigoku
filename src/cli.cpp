@@ -709,6 +709,17 @@ std::string search_walk_note(std::string_view skipped, std::optional<ProviderErr
   return "  (" + why + "; trying " + std::string(next) + ellipsis() + ")\n";
 }
 
+std::string play_hop_note(std::string_view from, PlayError::Kind kind) {
+  const std::string why = kind == PlayError::Kind::OpenFailed
+                              ? std::string(from) + "'s stream didn't open"
+                              : std::string(from) + " couldn't find a stream";
+  return "  (" + why + "; looking for it elsewhere" + ellipsis() + ")\n";
+}
+
+std::string play_hop_try_note(std::string_view next) {
+  return "  (trying " + std::string(next) + ellipsis() + ")\n";
+}
+
 std::string player_failure_line(PlayError::Kind kind, std::string_view provider,
                                 std::optional<ProviderError::Kind> resolve_class) {
   using K = PlayError::Kind;
