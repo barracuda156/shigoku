@@ -10,9 +10,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <unistd.h>
 #include <optional>
 #include <thread>
 
+#include "../src/auth.hpp"
 #include "../src/provider.hpp"
 #include "../src/store.hpp"
 #include "../src/tui/app.hpp"
@@ -2340,4 +2343,65 @@ TEST_CASE("purge_placements: iterm sends no bytes but still forces repaint") {
   CHECK(purge.empty());
   CHECK(cover.id == 0);
   CHECK(grid.empty());
+}
+
+// ── sync flushed: the MyAnimeList token's month ─────────────────────────────
+
+TEST_CASE("sync flushed: a MyAnimeList token nothing could renew toasts the reconnect") {
+  auto h = HistoryHarness::make();
+  h->app.settings_mal_account = "connected";
+  const std::size_t before = h->app.toasts.size();
+  SyncFlushed refused;
+  refused.outcome = SyncOutcome::Completed;
+  refused.mal_unauthorized = true;
+  tick(h->app, Event{refused});
+  REQUIRE(h->app.toasts.size() == before + 1);
+  CHECK(h->app.toasts.visible().back().text ==
+        "MyAnimeList sign-in expired; reconnect under Settings");
+  // Whatever date the stored token carries, the row says what MAL said.
+  CHECK(h->app.settings_mal_account == "expired");
+  // A plain missed fetch keeps its generic line and leaves the row alone.
+  h->app.settings_mal_account = "connected";
+  SyncFlushed missed;
+  missed.outcome = SyncOutcome::Completed;
+  missed.mal_pull_failed = true;
+  tick(h->app, Event{missed});
+  CHECK(h->app.toasts.visible().back().text == "couldn't pull your MyAnimeList list");
+  CHECK(h->app.settings_mal_account == "connected");
+}
+
+TEST_CASE("sync flushed: a renewed MyAnimeList token is reloaded from the auth file") {
+  auto h = HistoryHarness::make();
+  const std::string path =
+      "/tmp/shigoku-app-test-" + std::to_string(static_cast<long>(::getpid())) + "-rolled.json";
+  std::remove(path.c_str());
+  Auth renewed;
+  renewed.mal.access_token = "renewed-access-token-value";
+  renewed.mal.refresh_token = "renewed-refresh-token-value";
+  renewed.mal.expires_at = test_now_secs() + 2'678'400;
+  REQUIRE(renewed.save(path).has_value());
+  h->app.auth_file = path;
+  h->app.settings_mal_account = "expired";
+
+  SyncFlushed rolled;
+  rolled.outcome = SyncOutcome::Completed;
+  rolled.mal_token_rolled = true;
+  tick(h->app, Event{rolled});
+  CHECK(h->app.auth.mal.access_token == "renewed-access-token-value");
+  CHECK(h->app.settings_mal_account == "connected");
+  CHECK(h->app.toasts.visible().back().text == "renewed MyAnimeList sign-in");
+
+  // Renewed in memory only (the file would not take it): nothing to reload,
+  // and the toast says what went wrong.
+  Auth other;
+  other.mal.access_token = "a-different-token-on-disk-value";
+  REQUIRE(other.save(path).has_value());
+  SyncFlushed unsaved;
+  unsaved.outcome = SyncOutcome::Completed;
+  unsaved.mal_token_rolled = true;
+  unsaved.mal_token_unsaved = true;
+  tick(h->app, Event{unsaved});
+  CHECK(h->app.auth.mal.access_token == "renewed-access-token-value");
+  CHECK(h->app.toasts.visible().back().text == "renewed MyAnimeList sign-in, but saving it failed");
+  std::remove(path.c_str());
 }

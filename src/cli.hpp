@@ -184,8 +184,10 @@ extern const char* const kUsage;
 // a MAL account was connected so the pull was attempted at all.
 struct MalPullCounts {
   bool ran = false;
-  bool failed = false;        // transport/decode miss: nothing adopted.
-  bool unauthorized = false;  // MAL refused the token.
+  bool failed = false;         // transport/decode miss: nothing adopted.
+  bool unauthorized = false;   // MAL refused the token, and a refresh could not mend it.
+  bool renewed = false;        // the month-old token was rolled to a fresh pair first.
+  bool renew_unsaved = false;  // ...which the auth file would not take (served this run only).
   std::uint32_t pulled = 0;
   std::uint32_t imported = 0;
 };

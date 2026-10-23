@@ -100,13 +100,23 @@ Exchanger make_http_exchanger(const http::Client& client) {
 
 namespace {
 
+// What a failed exchange means. MAL answered and turned the grant down
+// (Rejected: the code, verifier or refresh token is no good — the token
+// endpoint says so with a 4xx), or no answer came that could be read
+// (NetworkError: the request died, a 5xx, a throttle, an unparseable body).
+MalConnectResult exchange_failure(const ProviderError& e) {
+  const bool answered =
+      e.kind == ProviderError::Kind::Http || e.kind == ProviderError::Kind::Forbidden;
+  return answered ? MalConnectResult::rejected() : MalConnectResult::network_error();
+}
+
 // Shared tail: verify the exchanged token against the floor, merge it into
 // the CURRENT on-disk Auth's .mal block (never touching .anilist), save, and
 // report a terminal result carrying the still-empty user_name (slice 3's
 // REST client fills that in via a follow-up call — see mal_login.hpp).
 MalConnectResult finish_exchange(const Result<TokenResponse, ProviderError>& exchanged,
                                   const std::string& auth_path, std::int64_t now) {
-  if (!exchanged.has_value()) return MalConnectResult::network_error();
+  if (!exchanged.has_value()) return exchange_failure(exchanged.error());
   const TokenResponse& tok = *exchanged;
   if (tok.access_token.size() < kTokenFloor) return MalConnectResult::rejected();
 
@@ -149,7 +159,7 @@ Result<MalAuth, MalConnectResult> refresh_mal_token(std::string_view client_id,
                       "&refresh_token=" + detail::form_encode(current.refresh_token);
 
   auto exchanged = exchanger(body);
-  if (!exchanged.has_value()) return err(MalConnectResult::network_error());
+  if (!exchanged.has_value()) return err(exchange_failure(exchanged.error()));
   const TokenResponse& tok = *exchanged;
   if (tok.access_token.size() < kTokenFloor) return err(MalConnectResult::rejected());
 

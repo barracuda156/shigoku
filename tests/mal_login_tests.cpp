@@ -250,3 +250,37 @@ TEST_CASE("refresh network error and short token surface distinct kinds") {
   REQUIRE(!short_tok.has_value());
   CHECK(short_tok.error() == MalConnectResult::rejected());
 }
+
+namespace {
+
+Exchanger refusing_exchanger(ProviderError e) {
+  return [e](std::string_view) -> Result<TokenResponse, ProviderError> { return err(e); };
+}
+
+}  // namespace
+
+TEST_CASE("an exchange the token endpoint turns down is rejected, an unanswered one a network error") {
+  MalAuth current;
+  current.refresh_token = kGoodRefresh;
+  // MAL answered and said no: a retired refresh token (its 401 "cannot
+  // decrypt the refresh token"), a 400 invalid_grant, a 403.
+  for (const ProviderError& e :
+       {ProviderError::http(401), ProviderError::http(400), ProviderError::forbidden(403)}) {
+    auto out = refresh_mal_token(kGoodClientId, current, refusing_exchanger(e), 0);
+    REQUIRE(!out.has_value());
+    CHECK(out.error() == MalConnectResult::rejected());
+  }
+  // No usable answer: the endpoint down, throttling, an unreadable body.
+  for (const ProviderError& e :
+       {ProviderError::server(503), ProviderError::rate_limited(), ProviderError::decode("x")}) {
+    auto out = refresh_mal_token(kGoodClientId, current, refusing_exchanger(e), 0);
+    REQUIRE(!out.has_value());
+    CHECK(out.error() == MalConnectResult::network_error());
+  }
+  // The code exchange reads a refusal the same way, and persists nothing.
+  const std::string path = tmp("refused.json");
+  auto login = complete_mal_login(kGoodClientId, "code", "verifier",
+                                  refusing_exchanger(ProviderError::http(400)), path, 0);
+  CHECK(login == MalConnectResult::rejected());
+  CHECK(Auth::load(path) == Auth{});
+}

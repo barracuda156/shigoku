@@ -85,23 +85,59 @@ Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, con
 
 Result<MirrorPullSummary, StoreError> pull_mirror(const MalMirrorClient& client,
                                                   const MalAuth& auth, Store& store, bool enabled,
-                                                  std::int64_t now) {
+                                                  std::int64_t now, const Refresher& refresh) {
   if (!enabled) return MirrorPullSummary::terminal(MirrorOutcome::Disabled);
-  const auto token = auth.bearer();
-  if (!token.has_value()) return MirrorPullSummary::terminal(MirrorOutcome::Disabled);
+  if (!auth.bearer().has_value()) return MirrorPullSummary::terminal(MirrorOutcome::Disabled);
 
-  auto fetched = client.fetch_list(*token);
+  // The pair the run authenticates with: the stored one until a roll
+  // replaces it. Rolled at most once per run — a renewed token that MAL
+  // still refuses is a sign-in problem, not a stale-token one.
+  MalAuth current = auth;
+  bool rolled = false;
+  // Rolls `current` forward through the seam; the summary to return instead
+  // when the run cannot go on. Refused is Unauthorized (only a reconnect
+  // mends it); Unreachable a plain missed pull (nothing adopted, next run
+  // tries again). Both happen before any roll, so neither carries a pair.
+  const auto roll = [&]() -> std::optional<MirrorPullSummary> {
+    const Refresh r = refresh(current, now);
+    if (r.outcome == Refresh::Outcome::Rolled && r.auth.bearer().has_value()) {
+      current = r.auth;
+      rolled = true;
+      return std::nullopt;
+    }
+    if (r.outcome == Refresh::Outcome::Unreachable) {
+      MirrorPullSummary failed;
+      failed.pull_failed = true;
+      return failed;
+    }
+    return MirrorPullSummary::terminal(MirrorOutcome::Unauthorized);
+  };
+  // Every return from here on carries the renewed pair when there is one.
+  const auto finish = [&](MirrorPullSummary s) {
+    if (rolled) s.rolled = current;
+    return s;
+  };
+  const auto is_401 = [](const ProviderError& e) {
+    return e.kind == ProviderError::Kind::Http && e.status == 401;
+  };
+
+  if (refresh && current.is_expired(now)) {
+    if (auto stop = roll(); stop.has_value()) return *stop;
+  }
+  auto fetched = client.fetch_list(*current.bearer());
+  if (!fetched.has_value() && is_401(fetched.error()) && refresh && !rolled) {
+    if (auto stop = roll(); stop.has_value()) return *stop;
+    fetched = client.fetch_list(*current.bearer());
+  }
   if (!fetched.has_value()) {
     const ProviderError& e = fetched.error();
-    if (e.kind == ProviderError::Kind::Http && e.status == 401) {
-      return MirrorPullSummary::terminal(MirrorOutcome::Unauthorized);
-    }
+    if (is_401(e)) return finish(MirrorPullSummary::terminal(MirrorOutcome::Unauthorized));
     if (e.kind == ProviderError::Kind::RateLimited) {
-      return MirrorPullSummary::terminal(MirrorOutcome::RateLimited);
+      return finish(MirrorPullSummary::terminal(MirrorOutcome::RateLimited));
     }
     MirrorPullSummary failed;
     failed.pull_failed = true;
-    return failed;
+    return finish(failed);
   }
 
   std::vector<RemoteEntry> remote;
@@ -120,7 +156,7 @@ Result<MirrorPullSummary, StoreError> pull_mirror(const MalMirrorClient& client,
   if (!out.has_value()) return err(out.error());
   MirrorPullSummary summary;
   summary.pulled = *out;
-  return summary;
+  return finish(summary);
 }
 
 }  // namespace shigoku::mal_mirror

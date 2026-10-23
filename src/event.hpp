@@ -343,10 +343,19 @@ struct SyncFlushed {
   std::uint32_t mal_pushed = 0;
   // The MAL mirror's pull, flattened the same way: what the account's own
   // list brought into the library this run. `mal_pull_failed` = the fetch
-  // itself missed (or MAL refused the token); nothing was adopted.
+  // itself missed (transport, decode, a throttle); nothing was adopted.
   std::uint32_t mal_pulled = 0;
   std::uint32_t mal_imported = 0;
   bool mal_pull_failed = false;
+  // MAL would not take the token and the stored refresh_token did not redeem
+  // a new one (or there was none to redeem): the sign-in is over, and only a
+  // reconnect under Settings mends it. Its own flag so the toast can say so.
+  bool mal_unauthorized = false;
+  // The run renewed the token pair off the refresh_token. Saved to the auth
+  // file unless `mal_token_unsaved`, in which case the renewed pair served
+  // this run only and the next one will likely ask for a reconnect.
+  bool mal_token_rolled = false;
+  bool mal_token_unsaved = false;
   // The Calendar's bulk airing refresh that rides every run: rows stamped
   // or cleared (the History/Schedule copies reload when > 0).
   std::uint32_t airing_refreshed = 0;

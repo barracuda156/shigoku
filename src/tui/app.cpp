@@ -32,6 +32,7 @@
 #include "../mal_login.hpp"
 #include "../mal_catalog.hpp"
 #include "../mal_mirror.hpp"
+#include "../mal_refresh.hpp"
 #include "../player.hpp"
 #include "../provider.hpp"
 #include "../store.hpp"
@@ -763,13 +764,25 @@ void open_connect(App& app) {
 // Authorization Code + PKCE: no verifier callback, the Exchanger POSTs the
 // token endpoint itself; the loopback binds /mal/callback instead of
 // /callback and carries its own minted PKCE pair.
-std::string account_display_mal(const Auth& auth) {
+std::string account_display_mal(const Auth& auth, std::int64_t now) {
   if (!auth.mal.bearer().has_value()) return "not connected";
+  // A dated token past its date. The next sync run renews it off the
+  // refresh_token, so this reads "expired" only until that has happened —
+  // or for good when MAL refused the refresh, and the connect row is the
+  // way back.
+  if (auth.mal.is_expired(now)) return "expired";
   // MAL's token exchange carries no display name (unlike AniList's Viewer
   // query) — slice 3's REST client fills mal.user_name-equivalent via a
   // follow-up /users/@me call; until then "connected" is what disk truth
   // actually holds.
   return "connected";
+}
+
+// The registration MAL calls are made under: the user's own when set, else
+// the app's baked one; empty only with neither, when there is nothing to
+// authorize (or refresh) against.
+std::string mal_registration(const App& app) {
+  return app.config.mal_client_id.empty() ? mal_catalog::kClientId : app.config.mal_client_id;
 }
 
 MalConnectDone to_mal_connect_done(const mal_login::MalConnectResult& r) {
@@ -817,10 +830,7 @@ void open_mal_connect(App& app) {
     app.toasts.push(ToastKind::Error, "connect unavailable", app.tick_count);
     return;
   }
-  // The user's own registration when set, else the app's baked one; only
-  // with neither is there nothing to authorize against.
-  const std::string client_id =
-      app.config.mal_client_id.empty() ? mal_catalog::kClientId : app.config.mal_client_id;
+  const std::string client_id = mal_registration(app);
   if (client_id.empty()) {
     app.toasts.push(ToastKind::Error, "set a mal client id first", app.tick_count);
     return;
@@ -850,7 +860,7 @@ void open_mal_connect(App& app) {
 void on_mal_connect_result(App& app, const MalConnectDone& done) {
   app.connect = std::nullopt;
   if (!app.auth_file.empty()) app.auth = Auth::load(app.auth_file);
-  app.settings_mal_account = account_display_mal(app.auth);
+  app.settings_mal_account = account_display_mal(app.auth, now_epoch_secs());
 
   switch (done.outcome) {
     case MalConnectOutcome::Ok:
@@ -954,7 +964,7 @@ void arm_sync(App& app) {
 // AniList mirror's own quieter outcomes).
 SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed,
                             const mal_mirror::MirrorPullSummary& mal_pull,
-                            std::uint32_t airing_refreshed) {
+                            std::uint32_t airing_refreshed, bool mal_token_unsaved) {
   using K = sync::SyncOutcome;
   SyncOutcome outcome;
   switch (s.outcome) {
@@ -977,10 +987,14 @@ SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed
     out.mal_pulled = mal_pull.pulled.reconciled;
     out.mal_imported = mal_pull.pulled.imported;
   } else {
-    // Disabled (no MAL account) is silence; a refused or rate-limited pull is
-    // a failed one for the toast's purposes.
-    out.mal_pull_failed = mal_pull.outcome != M::Disabled;
+    // Disabled (no MAL account) is silence; a rate-limited pull is a failed
+    // one for the toast's purposes; a token MAL would not take, with no
+    // refresh to mend it, is its own word.
+    out.mal_unauthorized = mal_pull.outcome == M::Unauthorized;
+    out.mal_pull_failed = mal_pull.outcome == M::RateLimited;
   }
+  out.mal_token_rolled = mal_pull.rolled.has_value();
+  out.mal_token_unsaved = out.mal_token_rolled && mal_token_unsaved;
   out.airing_refreshed = airing_refreshed;
   return out;
 }
@@ -992,15 +1006,18 @@ SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed
 // to reference from a detached worker), but never AppDeps::store: the sync
 // worker's whole reason to exist is running off a connection the UI thread
 // isn't touching.
-void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path, Auth auth,
-                bool enabled, bool pull_only, std::int64_t now) {
-  spawn_detached([&queue, &http, db_path = std::move(db_path), auth = std::move(auth), enabled,
+void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path,
+                std::string auth_path, std::string mal_client_id, Auth auth, bool enabled,
+                bool pull_only, std::int64_t now) {
+  spawn_detached([&queue, &http, db_path = std::move(db_path), auth_path = std::move(auth_path),
+                  mal_client_id = std::move(mal_client_id), auth = std::move(auth), enabled,
                   pull_only, now]() mutable {
     sync::SyncSummary summary = sync::SyncSummary::terminal(sync::SyncOutcome::Failed);
     std::uint32_t mal_pushed = 0;
     std::uint32_t airing_refreshed = 0;
     mal_mirror::MirrorPullSummary mal_pull =
         mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled);
+    bool mal_token_unsaved = false;
     auto store = Store::open(db_path);
     if (store.has_value()) {
       // The MAL mirror rides this same worker/store connection, no drain
@@ -1013,8 +1030,20 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
       // ridden every run.
       const mal_mirror::HttpMalMirrorClient mal_client(http);
       const bool mal_on = auth.mal.bearer().has_value();
-      auto p = mal_mirror::pull_mirror(mal_client, auth.mal, *store, mal_on, now);
-      if (p.has_value()) mal_pull = *p;
+      // A MAL token lives about a month: the pull renews one past its date
+      // (or one MAL has retired) off the refresh_token, and the renewed pair
+      // goes to the auth file at once and carries the push below. The UI
+      // thread's own Auth copy follows via the event (on_sync_flushed).
+      const mal_mirror::Refresher refresh = mal_mirror::make_http_refresher(http, mal_client_id);
+      auto p = mal_mirror::pull_mirror(mal_client, auth.mal, *store, mal_on, now, refresh);
+      if (p.has_value()) {
+        mal_pull = *p;
+        if (mal_pull.rolled.has_value()) {
+          auth.mal = *mal_pull.rolled;
+          mal_token_unsaved = auth_path.empty() || !mal_mirror::save_rolled(auth_path, auth.mal);
+          if (mal_token_unsaved) debug_log("mal refresh: renewed the token but couldn't save it");
+        }
+      }
       const sync::HttpAniListSync ani(http);
       auto r = sync::run_sync(ani, auth, *store, now, enabled, pull_only, sync::thread_sleep);
       if (r.has_value()) summary = *r;
@@ -1029,7 +1058,8 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
       auto refreshed = sync::refresh_airing(fetch, *store, now);
       if (refreshed.has_value()) airing_refreshed = *refreshed;
     }
-    queue.try_post(Event{to_sync_flushed(summary, mal_pushed, mal_pull, airing_refreshed)});
+    queue.try_post(
+        Event{to_sync_flushed(summary, mal_pushed, mal_pull, airing_refreshed, mal_token_unsaved)});
   });
 }
 
@@ -1049,8 +1079,8 @@ void flush_sync(App& app, bool pull_only) {
       app.db_file.empty()) {
     return;  // nothing to Store::open / no client (demo_mode, no-persist tests).
   }
-  spawn_sync(*app.queue, *app.deps->http, app.db_file, app.auth,
-             app.config.anilist_sync_enabled, pull_only, now_epoch_secs());
+  spawn_sync(*app.queue, *app.deps->http, app.db_file, app.auth_file, mal_registration(app),
+             app.auth, app.config.anilist_sync_enabled, pull_only, now_epoch_secs());
   app.syncing = true;
 }
 
@@ -1058,6 +1088,18 @@ void flush_sync(App& app, bool pull_only) {
 // 4.10 up/down rows). Failures and no-ops are silent by design.
 void on_sync_flushed(App& app, const SyncFlushed& s) {
   app.syncing = false;
+  if (s.mal_token_rolled) {
+    if (s.mal_token_unsaved) {
+      app.toasts.push(ToastKind::Error, "renewed MyAnimeList sign-in, but saving it failed",
+                      app.tick_count);
+    } else {
+      // The worker saved the renewed pair: follow it, so the account row and
+      // mal_connected() read the new date rather than the old one's.
+      if (!app.auth_file.empty()) app.auth = Auth::load(app.auth_file);
+      app.settings_mal_account = account_display_mal(app.auth, now_epoch_secs());
+      app.toasts.push(ToastKind::Info, "renewed MyAnimeList sign-in", app.tick_count);
+    }
+  }
   if (s.imported > 0) {
     app.toasts.push(ToastKind::Info, "+ " + std::to_string(s.imported) + " added from AniList",
                      app.tick_count);
@@ -1083,7 +1125,12 @@ void on_sync_flushed(App& app, const SyncFlushed& s) {
     app.toasts.push(ToastKind::Info, "\xE2\x86\x93 " + std::to_string(s.mal_pulled) + " from MyAnimeList",
                     app.tick_count);
   }
-  if (s.mal_pull_failed) {
+  if (s.mal_unauthorized) {
+    // Whatever the stored date says, MAL is done with this sign-in.
+    app.settings_mal_account = "expired";
+    app.toasts.push(ToastKind::Warning, "MyAnimeList sign-in expired; reconnect under Settings",
+                    app.tick_count);
+  } else if (s.mal_pull_failed) {
     app.toasts.push(ToastKind::Warning, "couldn't pull your MyAnimeList list", app.tick_count);
   }
   // A first import lands in an empty History that check_schedule_notices
@@ -4678,6 +4725,7 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   app.auth_file = std::move(auth_file);
   if (!app.auth_file.empty()) app.auth = Auth::load(app.auth_file);
   app.settings_account = account_display(app.auth);
+  app.settings_mal_account = account_display_mal(app.auth, now_epoch_secs());
   app.db_file = std::move(db_file);
 
   if (demo_mode) {

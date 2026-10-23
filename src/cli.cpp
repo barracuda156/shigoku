@@ -314,14 +314,20 @@ namespace {
 // account was connected (`ran`).
 std::string render_mal_pull(const MalPullCounts& m) {
   if (!m.ran) return {};
+  std::string out;
+  if (m.renewed) {
+    out += m.renew_unsaved ? "  renewed the MyAnimeList sign-in, but couldn't save it; the next "
+                             "run may ask you to reconnect.\n"
+                           : "  renewed the MyAnimeList sign-in.\n";
+  }
   if (m.unauthorized) {
-    return "  MyAnimeList rejected the token; reconnect it under Settings.\n";
+    return out + "  MyAnimeList sign-in has expired; reconnect it under Settings.\n";
   }
   if (m.failed) {
-    return "  pull failed: couldn't fetch your MyAnimeList list; re-run with --debug for "
+    return out +
+           "  pull failed: couldn't fetch your MyAnimeList list; re-run with --debug for "
            "details.\n";
   }
-  std::string out;
   if (m.pulled > 0) {
     out += "  pulled " + std::to_string(m.pulled) + " update(s) from MyAnimeList.\n";
   }

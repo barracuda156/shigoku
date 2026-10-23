@@ -13,6 +13,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "../src/auth.hpp"
@@ -66,13 +67,28 @@ class FakeMal final : public MalMirrorClient {
     return *this;
   }
 
+  // Per-call list answers, consumed in order; `with_list`'s single answer
+  // serves once these run out.
+  FakeMal& with_lists(
+      std::vector<Result<std::vector<mal_catalog::UserListEntry>, ProviderError>> lists) {
+    lists_.assign(lists.begin(), lists.end());
+    return *this;
+  }
+
   [[nodiscard]] Result<std::vector<mal_catalog::UserListEntry>, ProviderError> fetch_list(
-      std::string_view) const override {
+      std::string_view token) const override {
     ++list_calls;
+    list_tokens.emplace_back(token);
+    if (!lists_.empty()) {
+      auto answer = lists_.front();
+      lists_.pop_front();
+      return answer;
+    }
     return list_;
   }
 
   mutable std::vector<std::int64_t> guard_calls;
+  mutable std::vector<std::string> list_tokens;  // the bearer each fetch_list carried.
   mutable std::vector<
       std::tuple<std::int64_t, ListStatus, std::uint32_t, std::optional<std::uint32_t>>>
       push_calls;
@@ -83,7 +99,10 @@ class FakeMal final : public MalMirrorClient {
   mutable std::deque<GuardAnswer> guards_;
   Result<std::vector<mal_catalog::UserListEntry>, ProviderError> list_ =
       std::vector<mal_catalog::UserListEntry>{};
+  mutable std::deque<Result<std::vector<mal_catalog::UserListEntry>, ProviderError>> lists_;
 };
+
+using ListAnswer = Result<std::vector<mal_catalog::UserListEntry>, ProviderError>;
 
 mal_catalog::UserListEntry list_entry(std::int64_t mal_id, std::int64_t anilist_id,
                                       std::string title, ListStatus status,
@@ -105,6 +124,45 @@ MalAuth connected_mal() {
   a.user_id = 9;
   return a;
 }
+
+// A pair whose access token is past its date, with a refresh_token to redeem.
+constexpr std::int64_t kAfterExpiry = 200;
+MalAuth expired_mal() {
+  MalAuth a = connected_mal();
+  a.refresh_token = "mal-refresh-value";
+  a.expires_at = kAfterExpiry - 100;
+  return a;
+}
+
+// What the token endpoint hands back for expired_mal()'s refresh_token.
+MalAuth renewed_pair() {
+  MalAuth a;
+  a.access_token = "mal-token-renewed";
+  a.refresh_token = "mal-refresh-renewed";
+  a.expires_at = kAfterExpiry + 2'678'400;
+  a.user_id = 9;
+  return a;
+}
+
+// A scripted refresh seam: every call gets `answer`; the spy counts calls and
+// keeps what it was handed.
+struct RefreshSpy {
+  explicit RefreshSpy(Refresh a) : answer(std::move(a)) {}
+
+  Refresh answer;
+  int calls = 0;
+  std::string redeemed;
+  std::int64_t at = -1;
+
+  Refresher fn() {
+    return [this](const MalAuth& current, std::int64_t now) {
+      ++calls;
+      redeemed = current.refresh_token;
+      at = now;
+      return answer;
+    };
+  }
+};
 
 // Library row with a linked mal_id, dirty against the mirror's own snapshot
 // (never mirrored yet).
@@ -593,4 +651,155 @@ TEST_CASE("mal_mirror_snapshot_is_independent_of_the_anilist_sync_snapshot") {
   auto ani_dirty = store->list_dirty_for_sync();
   REQUIRE(ani_dirty.has_value());
   CHECK(ani_dirty->empty());
+}
+
+// ── pull_mirror: token renewal ──────────────────────────────────────────────
+
+TEST_CASE("pull_renews_a_token_past_its_date_before_asking_for_the_list") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  FakeMal client({});
+  client.with_list(std::vector<mal_catalog::UserListEntry>{
+      list_entry(610, 10, "A", ListStatus::Watching, 3, 8)});
+  RefreshSpy spy{Refresh::rolled(renewed_pair())};
+  auto out = pull_mirror(client, expired_mal(), *store, true, kAfterExpiry, spy.fn());
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(!out->pull_failed);
+  CHECK(out->pulled.imported == 1);
+  CHECK(spy.calls == 1);
+  CHECK(spy.redeemed == "mal-refresh-value");
+  CHECK(spy.at == kAfterExpiry);
+  // The list went out under the renewed bearer, and the pair comes back for
+  // the caller to save.
+  REQUIRE(client.list_tokens.size() == 1);
+  CHECK(client.list_tokens[0] == "mal-token-renewed");
+  REQUIRE(out->rolled.has_value());
+  CHECK(*out->rolled == renewed_pair());
+}
+
+TEST_CASE("pull_leaves_a_live_token_alone_and_without_a_seam_an_expired_one_goes_out_as_is") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  {
+    FakeMal client({});
+    RefreshSpy spy{Refresh::rolled(renewed_pair())};
+    // Undated, and dated but not reached: no roll either way.
+    auto undated = pull_mirror(client, connected_mal(), *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(undated.has_value());
+    MalAuth dated = expired_mal();
+    dated.expires_at = kAfterExpiry + 1;
+    auto live = pull_mirror(client, dated, *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(live.has_value());
+    CHECK(spy.calls == 0);
+    CHECK(!undated->rolled.has_value());
+    CHECK(!live->rolled.has_value());
+    REQUIRE(client.list_tokens.size() == 2);
+    CHECK(client.list_tokens[1] == "mal-token-value");
+  }
+  {
+    FakeMal client({});
+    client.with_list(ListAnswer(err(http_401())));
+    auto out = pull_mirror(client, expired_mal(), *store, true, kAfterExpiry);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(!out->rolled.has_value());
+    CHECK(client.list_calls == 1);
+  }
+}
+
+TEST_CASE("pull_renews_after_a_401_and_asks_once_more_under_the_new_bearer") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  FakeMal client({});
+  client.with_lists({ListAnswer(err(http_401())),
+                     ListAnswer(std::vector<mal_catalog::UserListEntry>{
+                         list_entry(610, 10, "A", ListStatus::Watching, 3, 8)})});
+  RefreshSpy spy{Refresh::rolled(renewed_pair())};
+  MalAuth live = connected_mal();  // undated: MAL retired it early.
+  live.refresh_token = "mal-refresh-value";
+  auto out = pull_mirror(client, live, *store, true, kAfterExpiry, spy.fn());
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(out->pulled.imported == 1);
+  CHECK(spy.calls == 1);
+  REQUIRE(client.list_tokens.size() == 2);
+  CHECK(client.list_tokens[0] == "mal-token-value");
+  CHECK(client.list_tokens[1] == "mal-token-renewed");
+  REQUIRE(out->rolled.has_value());
+  CHECK(out->rolled->access_token == "mal-token-renewed");
+}
+
+TEST_CASE("pull_refused_refresh_is_unauthorized_and_the_list_is_not_asked_for") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  {
+    FakeMal client({});
+    RefreshSpy spy{Refresh::refused()};
+    auto out = pull_mirror(client, expired_mal(), *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(!out->rolled.has_value());
+    CHECK(spy.calls == 1);
+    CHECK(client.list_calls == 0);
+  }
+  {
+    // A live-dated token MAL retired early: the one 401, one refusal, done.
+    FakeMal client({});
+    client.with_list(ListAnswer(err(http_401())));
+    RefreshSpy spy{Refresh::refused()};
+    MalAuth live = connected_mal();
+    live.refresh_token = "mal-refresh-value";
+    auto out = pull_mirror(client, live, *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(!out->rolled.has_value());
+    CHECK(spy.calls == 1);
+    CHECK(client.list_calls == 1);
+  }
+}
+
+TEST_CASE("pull_unreachable_refresh_is_a_missed_pull_not_a_lost_sign_in") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  FakeMal client({});
+  RefreshSpy spy{Refresh::unreachable()};
+  auto out = pull_mirror(client, expired_mal(), *store, true, kAfterExpiry, spy.fn());
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(out->pull_failed);
+  CHECK(!out->rolled.has_value());
+  CHECK(client.list_calls == 0);
+}
+
+TEST_CASE("pull_rolls_at_most_once_and_keeps_the_pair_when_the_new_bearer_is_refused_too") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  {
+    // Expired: rolled before the fetch; the renewed bearer's 401 ends it.
+    FakeMal client({});
+    client.with_list(ListAnswer(err(http_401())));
+    RefreshSpy spy{Refresh::rolled(renewed_pair())};
+    auto out = pull_mirror(client, expired_mal(), *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(spy.calls == 1);
+    CHECK(client.list_calls == 1);
+    REQUIRE(out->rolled.has_value());
+    CHECK(out->rolled->access_token == "mal-token-renewed");
+  }
+  {
+    // Live: the 401 rolls, the retry's 401 ends it; the pair is still kept.
+    FakeMal client({});
+    client.with_list(ListAnswer(err(http_401())));
+    RefreshSpy spy{Refresh::rolled(renewed_pair())};
+    MalAuth live = connected_mal();
+    live.refresh_token = "mal-refresh-value";
+    auto out = pull_mirror(client, live, *store, true, kAfterExpiry, spy.fn());
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(spy.calls == 1);
+    CHECK(client.list_calls == 2);
+    REQUIRE(out->rolled.has_value());
+  }
 }

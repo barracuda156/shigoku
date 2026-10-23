@@ -41,6 +41,7 @@
 #include "login.hpp"
 #include "loopback.hpp"
 #include "mal_mirror.hpp"
+#include "mal_refresh.hpp"
 #include "megaplay.hpp"
 #include "paths.hpp"
 #include "picker.hpp"
@@ -265,7 +266,9 @@ int run_sync_cli() {
     std::printf("  sync: couldn't open the local library (%s)\n", store.error().detail.c_str());
     return 0;
   }
-  const Auth auth = Auth::load(auth_file_path(*paths));
+  const std::string auth_path = auth_file_path(*paths);
+  Auth auth = Auth::load(auth_path);
+  const Config config = Config::load(config_file_path(*paths));
   auto client = http::Client::create();
   if (!client.has_value()) {
     std::printf("  sync: couldn't set up the AniList client\n");
@@ -289,10 +292,22 @@ int run_sync_cli() {
   cli::MalPullCounts mal_pull;
   if (mal_on) {
     mal_pull.ran = true;
-    auto pulled = mal_mirror::pull_mirror(mal_client, auth.mal, *store, /*enabled=*/true, now);
+    // A token past its month is renewed off the refresh_token (the same
+    // rollover the interface's worker runs); the renewed pair goes to the
+    // auth file and carries the push below.
+    const std::string client_id =
+        config.mal_client_id.empty() ? mal_catalog::kClientId : config.mal_client_id;
+    const mal_mirror::Refresher refresh = mal_mirror::make_http_refresher(*client, client_id);
+    auto pulled =
+        mal_mirror::pull_mirror(mal_client, auth.mal, *store, /*enabled=*/true, now, refresh);
     if (!pulled.has_value()) {
       mal_pull.failed = true;
     } else {
+      if (pulled->rolled.has_value()) {
+        auth.mal = *pulled->rolled;
+        mal_pull.renewed = true;
+        mal_pull.renew_unsaved = !mal_mirror::save_rolled(auth_path, auth.mal);
+      }
       using M = mal_mirror::MirrorOutcome;
       mal_pull.unauthorized = pulled->outcome == M::Unauthorized;
       mal_pull.failed = pulled->pull_failed || pulled->outcome == M::RateLimited;

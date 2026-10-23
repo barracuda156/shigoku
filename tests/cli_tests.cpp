@@ -543,12 +543,30 @@ TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilis
   refused.ran = true;
   refused.unauthorized = true;
   CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, refused),
-                 "MyAnimeList rejected the token"));
+                 "MyAnimeList sign-in has expired; reconnect it under Settings"));
   cli::MalPullCounts missed;
   missed.ran = true;
   missed.failed = true;
   CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, missed),
                  "couldn't fetch your MyAnimeList list"));
+  // A renewed sign-in says so ahead of what the pull then did.
+  cli::MalPullCounts renewed;
+  renewed.ran = true;
+  renewed.renewed = true;
+  const std::string rolled =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, renewed);
+  CHECK_MESSAGE(contains(rolled, "renewed the MyAnimeList sign-in."), rolled);
+  CHECK_MESSAGE(contains(rolled, "MyAnimeList list already up to date"), rolled);
+  CHECK(rolled.find("renewed") < rolled.find("MyAnimeList list already up to date"));
+  cli::MalPullCounts unsaved;
+  unsaved.ran = true;
+  unsaved.renewed = true;
+  unsaved.renew_unsaved = true;
+  unsaved.pulled = 1;
+  const std::string kept =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, unsaved);
+  CHECK_MESSAGE(contains(kept, "renewed the MyAnimeList sign-in, but couldn't save it"), kept);
+  CHECK_MESSAGE(contains(kept, "pulled 1 update(s) from MyAnimeList"), kept);
   // No MAL account: not a word about it, and the one-line verdict stays one line.
   const std::string none = cli::render_sync_summary(summary(sync::SyncOutcome::NoToken));
   CHECK(!contains(none, "MyAnimeList"));

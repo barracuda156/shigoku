@@ -33,8 +33,11 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string_view>
 #include <tuple>
+#include <utility>
 
 #include "auth.hpp"
 #include "domain.hpp"
@@ -100,11 +103,38 @@ class HttpMalMirrorClient final : public MalMirrorClient {
   const http::Client& client_;
 };
 
+// A MAL access token lives about a month; the refresh_token stored beside it
+// redeems a new pair. The refresh seam, a callable so tests fake the token
+// endpoint the way FakeMal fakes the list calls: handed the stored pair and
+// the clock, it answers with the fresh pair (Rolled), with MAL's refusal of
+// the refresh token (Refused: the sign-in is over, only a reconnect mends
+// it), or with a request that never completed (Unreachable: transient, and
+// says nothing about the sign-in).
+struct Refresh {
+  enum class Outcome { Rolled, Refused, Unreachable };
+  Outcome outcome = Outcome::Unreachable;
+  MalAuth auth;  // Rolled only.
+
+  static Refresh rolled(MalAuth a) {
+    Refresh r;
+    r.outcome = Outcome::Rolled;
+    r.auth = std::move(a);
+    return r;
+  }
+  static Refresh refused() {
+    Refresh r;
+    r.outcome = Outcome::Refused;
+    return r;
+  }
+  static Refresh unreachable() { return Refresh{}; }
+};
+using Refresher = std::function<Refresh(const MalAuth& current, std::int64_t now)>;
+
 // Terminal reason for a mirror run.
 enum class MirrorOutcome {
   Completed,
-  Disabled,      // no usable MAL token: signed out, expired, or bearer refused.
-  Unauthorized,  // 401 during push; run stopped, rest stay dirty.
+  Disabled,      // no usable MAL token: signed out, or bearer refused.
+  Unauthorized,  // 401 (for the pull: one a refresh could not mend); run stopped, rest stay dirty.
   RateLimited,   // 429 during push; run stopped, rest stay dirty (retried next run).
 };
 
@@ -145,6 +175,11 @@ struct MirrorPullSummary {
   MirrorOutcome outcome = MirrorOutcome::Completed;
   bool pull_failed = false;
   PullOutcome pulled;
+  // The pair the run rolled the token to, when it did (the stored one was
+  // past its date, or MAL met it with 401): the caller saves it over the
+  // auth file's .mal block and pushes with it. Set whatever the list fetch
+  // then did; a renewed pair is worth keeping even when the pull missed.
+  std::optional<MalAuth> rolled;
 
   static MirrorPullSummary terminal(MirrorOutcome outcome) {
     MirrorPullSummary s;
@@ -153,8 +188,14 @@ struct MirrorPullSummary {
   }
 };
 
+// `refresh` renews the token before the fetch when it is dated-expired, and
+// once more after a 401 (a token MAL retired early); a refusal there is
+// Unauthorized without touching the list, an unreachable endpoint a failed
+// pull. Without one (tests), an expired or refused token is plain
+// Unauthorized, as the push reports it.
 [[nodiscard]] Result<MirrorPullSummary, StoreError> pull_mirror(const MalMirrorClient& client,
                                                                  const MalAuth& auth, Store& store,
-                                                                 bool enabled, std::int64_t now);
+                                                                 bool enabled, std::int64_t now,
+                                                                 const Refresher& refresh = {});
 
 }  // namespace shigoku::mal_mirror
