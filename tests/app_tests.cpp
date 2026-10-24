@@ -1391,6 +1391,69 @@ TEST_CASE("schedule countdown text boundary table (P37 DoD)") {
   CHECK(countdown_text(9 * 24 * 3600) == "9d 0h");
 }
 
+TEST_CASE("Calendar: dated headers from today, local clock times, countdown inside a day") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Schedule;
+  h->app.win = WinSize{80, 30, 0, 0};
+  const std::int64_t now = 1'766'232'000;  // Sat 2025-12-20 12:00 UTC
+  auto show = [](std::int64_t aid, const char* title, std::int64_t at, std::uint32_t ep) {
+    Show s;
+    s.enrichment.anilist_id = aid;
+    s.enrichment.title_romaji = title;
+    s.enrichment.next_airing_at = at;
+    s.enrichment.next_airing_episode = ep;
+    s.list_status = ListStatus::Watching;
+    return s;
+  };
+  h->app.schedule.rows = {
+      show(1, "Monday Show", now + 2 * 86400 - 3 * 3600, 4),  // Mon 22 09:00
+      show(2, "Today Show", now + 3 * 3600 + 12 * 60, 16),    // today 15:12
+      show(3, "Premiere Show", 1'767'983'400, 1),             // Fri 2026-01-09 18:30
+  };
+  h->app.clock_epoch_secs = now;
+  h->app.schedule.rebuild(now);
+
+  CellBuffer buf;
+  draw(h->app, buf);
+  auto row_text = [&](int y) {
+    std::string s;
+    for (int x = 0; x < buf.width(); ++x) s += static_cast<char>(buf.at(x, y).glyph & 0x7F);
+    return s;
+  };
+  auto find_row = [&](std::string_view needle) {
+    for (int y = 0; y < buf.height(); ++y) {
+      if (row_text(y).find(needle) != std::string::npos) return y;
+    }
+    return -1;
+  };
+
+  const int today = find_row("sat 20 dec");
+  const int monday = find_row("mon 22 dec");
+  const int later = find_row("later (1)");
+  REQUIRE(today >= 0);
+  REQUIRE(monday > today);
+  REQUIRE(later > monday);
+  CHECK(row_text(today).find("today") != std::string::npos);
+  CHECK(buf.at(2, today).fg == theme::hot);   // today stands out
+  CHECK(buf.at(2, monday).fg == theme::fg);
+
+  const std::string today_row = row_text(find_row("Today Show"));
+  CHECK(today_row.find("15:12") != std::string::npos);
+  CHECK(today_row.find("ep 16") != std::string::npos);
+  CHECK(today_row.find("in 3h 12m") != std::string::npos);
+
+  // Two days out: the time and the date say it, no countdown.
+  const std::string monday_row = row_text(find_row("Monday Show"));
+  CHECK(monday_row.find("09:00") != std::string::npos);
+  CHECK(monday_row.find("ep 4") != std::string::npos);
+  CHECK(monday_row.find("in ") == std::string::npos);
+
+  // Past the week: each row carries its own date.
+  const std::string later_row = row_text(find_row("Premiere Show"));
+  CHECK(later_row.find("fri 9 jan  18:30") != std::string::npos);
+  CHECK(later_row.find("premiere") != std::string::npos);
+}
+
 TEST_CASE("Browse P adds the selected row to the watchlist (05 §4)") {
   auto h = HistoryHarness::make();
   h->app.view = View::Browse;

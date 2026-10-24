@@ -101,7 +101,7 @@ TEST_CASE("current_cour pre-epoch clamps to 1970 winter") {
   CHECK(current_cour(-1) == Cour{Season::Winter, 1970});
 }
 
-// --- weekday_of + schedule (P37 slice 1) ------------------------------------
+// --- weekday_of + schedule --------------------------------------------------
 
 TEST_CASE("weekday_of: epoch is Thursday, known dates check out") {
   CHECK(weekday_of(0) == Weekday::Thursday);              // 1970-01-01
@@ -131,10 +131,10 @@ Show schedule_show(std::int64_t aid, std::optional<std::int64_t> next_airing_at,
 
 }  // namespace
 
-TEST_CASE("schedule: groups by weekday, drops past/absent airings") {
-  const std::int64_t now = 1'765'756'800;  // 2025-12-15 (Monday)
+TEST_CASE("schedule: groups by day from today, drops past/absent airings") {
+  const std::int64_t now = 1'765'792'800;  // 2025-12-15 10:00 UTC (Monday)
   const std::vector<Show> shows{
-      schedule_show(1, now + 3600, 5),           // +1h, same day (Monday)
+      schedule_show(1, now + 3600, 5),           // +1h, today 11:00
       schedule_show(2, now - 3600, 5),            // already aired: excluded
       schedule_show(3, std::nullopt, std::nullopt),  // unknown: excluded
       schedule_show(4, now + 86400 * 2, 8),       // +2d (Wednesday)
@@ -142,13 +142,112 @@ TEST_CASE("schedule: groups by weekday, drops past/absent airings") {
   };
   const auto groups = schedule(shows, now);
   REQUIRE(groups.size() == 2);
-  CHECK(groups[0].weekday == Weekday::Monday);
-  CHECK(groups[0].entries.size() == 1);
+  CHECK(groups[0].days_from_today == 0);
+  CHECK_FALSE(groups[0].later);
+  CHECK(groups[0].date == CalendarDate{2025, 12, 15, Weekday::Monday});
+  REQUIRE(groups[0].entries.size() == 1);
   CHECK(groups[0].entries[0].show_index == 0);
   CHECK(groups[0].entries[0].episode == 5);
   CHECK(groups[0].entries[0].seconds_until == 3600);
-  CHECK(groups[1].weekday == Weekday::Wednesday);
+  CHECK(groups[0].entries[0].minute_of_day == 11 * 60);
+  CHECK(groups[0].entries[0].date == groups[0].date);
+  CHECK(groups[1].days_from_today == 2);
+  CHECK(groups[1].date == CalendarDate{2025, 12, 17, Weekday::Wednesday});
   CHECK(groups[1].entries[0].show_index == 3);
+}
+
+TEST_CASE("schedule: the week starts today, the same weekday next week included") {
+  const std::int64_t now = 1'766'232'000;  // 2025-12-20 12:00 UTC (Saturday)
+  const std::int64_t day = 86400;
+  const std::vector<Show> shows{
+      schedule_show(1, now + 2 * day - 3 * 3600, 4),  // Mon 22 09:00
+      schedule_show(2, now + 6 * 3600, 7),            // today 18:00
+      schedule_show(3, now + 13 * 3600 + 1800, 2),    // Sun 21 01:30
+      schedule_show(4, now + 7 * day - 4 * 3600, 9),  // next Sat 27 08:00
+      schedule_show(5, 1'767'983'400, 1),             // Fri 2026-01-09 18:30
+      schedule_show(6, now + 8 * day - 11 * 3600, 3), // Sun 28 01:00
+  };
+  const auto groups = schedule(shows, now);
+  REQUIRE(groups.size() == 5);
+  CHECK(groups[0].days_from_today == 0);
+  CHECK(groups[0].date == CalendarDate{2025, 12, 20, Weekday::Saturday});
+  CHECK(groups[0].entries[0].show_index == 1);
+  CHECK(groups[1].days_from_today == 1);
+  CHECK(groups[1].date == CalendarDate{2025, 12, 21, Weekday::Sunday});
+  CHECK(groups[1].entries[0].minute_of_day == 90);
+  CHECK(groups[2].days_from_today == 2);
+  CHECK(groups[2].date.weekday == Weekday::Monday);
+  CHECK(groups[3].days_from_today == 7);
+  CHECK(groups[3].date == CalendarDate{2025, 12, 27, Weekday::Saturday});
+  CHECK(groups[3].entries[0].show_index == 3);
+  // Past the eighth day: one trailing group, soonest first, each row dated.
+  REQUIRE(groups[4].later);
+  REQUIRE(groups[4].entries.size() == 2);
+  CHECK(groups[4].entries[0].show_index == 5);
+  CHECK(groups[4].entries[0].date == CalendarDate{2025, 12, 28, Weekday::Sunday});
+  CHECK(groups[4].entries[1].show_index == 4);
+  CHECK(groups[4].entries[1].date == CalendarDate{2026, 1, 9, Weekday::Friday});
+  CHECK(groups[4].entries[1].minute_of_day == 18 * 60 + 30);
+}
+
+namespace {
+
+std::int64_t utc_plus_9(std::int64_t) { return 9 * 3600; }
+std::int64_t utc_minus_5(std::int64_t) { return -5 * 3600; }
+
+// Central European time: summer time ends 2026-10-25 01:00 UTC.
+std::int64_t central_europe_2026(std::int64_t unix_secs) {
+  return unix_secs < 1'792'890'000 ? 2 * 3600 : 3600;
+}
+
+}  // namespace
+
+TEST_CASE("schedule: days and times are read in the local zone") {
+  const std::int64_t now = 1'765'792'800;  // Mon 10:00 UTC
+  const std::vector<Show> shows{schedule_show(1, now + 6 * 3600, 3)};  // Mon 16:00 UTC
+
+  // UTC: later today.
+  auto groups = schedule(shows, now);
+  REQUIRE(groups.size() == 1);
+  CHECK(groups[0].days_from_today == 0);
+  CHECK(groups[0].entries[0].minute_of_day == 16 * 60);
+
+  // UTC+9: now is Mon 19:00, the airing Tue 01:00 — tomorrow.
+  groups = schedule(shows, now, utc_plus_9);
+  REQUIRE(groups.size() == 1);
+  CHECK(groups[0].days_from_today == 1);
+  CHECK(groups[0].date == CalendarDate{2025, 12, 16, Weekday::Tuesday});
+  CHECK(groups[0].entries[0].minute_of_day == 60);
+
+  // UTC-5: now is Sun 22:00 the day before, the airing Mon 01:00 — tomorrow.
+  const std::vector<Show> early{schedule_show(1, now - 7 * 3600 + 3 * 3600, 3)};
+  groups = schedule(early, now - 7 * 3600, utc_minus_5);
+  REQUIRE(groups.size() == 1);
+  CHECK(groups[0].days_from_today == 1);
+  CHECK(groups[0].date == CalendarDate{2025, 12, 15, Weekday::Monday});
+  CHECK(groups[0].entries[0].minute_of_day == 60);
+  // The seconds left never depend on the zone.
+  CHECK(groups[0].entries[0].seconds_until == 3 * 3600);
+}
+
+TEST_CASE("schedule: a clock change inside the week moves only the airings past it") {
+  const std::int64_t now = 1'792'836'000;  // Sat 2026-10-24 10:00 UTC, 12:00 summer time
+  const std::vector<Show> shows{
+      schedule_show(1, 1'792'877'400, 1),  // Sat 21:30 UTC: 23:30 summer time
+      schedule_show(2, 1'792'967'400, 1),  // Sun 22:30 UTC: 23:30 winter time
+      schedule_show(3, 1'793'057'400, 1),  // Mon 23:30 UTC: Tue 00:30 winter time
+  };
+  const auto groups = schedule(shows, now, central_europe_2026);
+  REQUIRE(groups.size() == 3);
+  CHECK(groups[0].days_from_today == 0);
+  CHECK(groups[0].entries[0].minute_of_day == 23 * 60 + 30);
+  // One offset for the whole week would put this one on Monday at 00:30.
+  CHECK(groups[1].days_from_today == 1);
+  CHECK(groups[1].date == CalendarDate{2026, 10, 25, Weekday::Sunday});
+  CHECK(groups[1].entries[0].minute_of_day == 23 * 60 + 30);
+  CHECK(groups[2].days_from_today == 3);
+  CHECK(groups[2].date == CalendarDate{2026, 10, 27, Weekday::Tuesday});
+  CHECK(groups[2].entries[0].minute_of_day == 30);
 }
 
 TEST_CASE("schedule: only Watching and Planning rows make the calendar") {
@@ -179,7 +278,7 @@ TEST_CASE("schedule: only Watching and Planning rows make the calendar") {
   CHECK(!calendar_status(ListStatus::Completed));
 }
 
-TEST_CASE("schedule: entries within a weekday are airing-time ordered") {
+TEST_CASE("schedule: entries within a day are airing-time ordered") {
   const std::int64_t now = 1'765'756'800;  // 2025-12-15 00:00 UTC (Monday)
   const std::vector<Show> shows{
       schedule_show(1, now + 86400 * 3, 1),       // Thursday 00:00, middle
@@ -189,8 +288,8 @@ TEST_CASE("schedule: entries within a weekday are airing-time ordered") {
   };
   const auto groups = schedule(shows, now);
   REQUIRE(groups.size() == 2);
-  CHECK(groups[0].weekday == Weekday::Wednesday);
-  REQUIRE(groups[1].weekday == Weekday::Thursday);
+  CHECK(groups[0].date.weekday == Weekday::Wednesday);
+  REQUIRE(groups[1].date.weekday == Weekday::Thursday);
   REQUIRE(groups[1].entries.size() == 3);
   CHECK(groups[1].entries[0].show_index == 0);  // now+3d exactly, earliest
   CHECK(groups[1].entries[1].show_index == 3);

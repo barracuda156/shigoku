@@ -50,9 +50,10 @@ void draw_detail_zoom(const App& app, CellBuffer& buf, int y0, int y1);
 // draw_browse uses, reusing the same detail column renderer.
 void draw_history(const App& app, CellBuffer& buf, int y0, int y1);
 
-// Render the Schedule view's content region (P37): the weekday-grouped
-// countdown list, full-width, no detail pane — a read-only lens over the
-// same library rows History shows, so it needs no two-pane/cover geometry.
+// Render the Schedule view's content region: the day-grouped airing list
+// (local time, dated headers, a countdown inside the next day), full-width,
+// no detail pane — a read-only lens over the same library rows History
+// shows, so it needs no two-pane/cover geometry.
 void draw_schedule(const App& app, CellBuffer& buf, int y0, int y1);
 
 // Render the Discover view's content region (P17, DESIGN §3.8): the axis bar

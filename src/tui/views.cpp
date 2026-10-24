@@ -222,7 +222,7 @@ const Show* ScheduleState::selected() const {
 }
 
 void ScheduleState::rebuild(std::int64_t now_secs) {
-  groups = shigoku::schedule(rows, now_secs);
+  groups = shigoku::schedule(rows, now_secs, offset_at);
   const std::size_t total = count();
   if (total == 0) {
     cursor = 0;
@@ -261,12 +261,12 @@ std::vector<ScheduleState::Line> ScheduleState::layout() const {
   for (std::size_t g = 0; g < groups.size(); ++g) {
     const ScheduleGroup& grp = groups[g];
     if (grp.entries.empty()) continue;
-    if (any) lines.push_back(Line{Line::Kind::Blank, {}, 0, 0, 0, 0});
+    if (any) lines.push_back(Line{Line::Kind::Blank, 0, 0, 0, 0});
     any = true;
-    lines.push_back(Line{Line::Kind::Header, grp.weekday, grp.entries.size(), 0, 0, 0});
-    lines.push_back(Line{Line::Kind::Rule, {}, 0, 0, 0, 0});
+    lines.push_back(Line{Line::Kind::Header, grp.entries.size(), g, 0, 0});
+    lines.push_back(Line{Line::Kind::Rule, 0, 0, 0, 0});
     for (std::size_t e = 0; e < grp.entries.size(); ++e) {
-      lines.push_back(Line{Line::Kind::Entry, {}, 0, g, e, ord});
+      lines.push_back(Line{Line::Kind::Entry, 0, g, e, ord});
       ++ord;
     }
   }
@@ -1234,25 +1234,57 @@ void draw_history(const App& app, CellBuffer& buf, int y0, int y1) {
 
 namespace {
 
-const char* weekday_label(Weekday w) {
+const char* weekday_abbr(Weekday w) {
   switch (w) {
-    case Weekday::Monday:    return "monday";
-    case Weekday::Tuesday:   return "tuesday";
-    case Weekday::Wednesday: return "wednesday";
-    case Weekday::Thursday:  return "thursday";
-    case Weekday::Friday:    return "friday";
-    case Weekday::Saturday:  return "saturday";
-    case Weekday::Sunday:    return "sunday";
+    case Weekday::Monday:    return "mon";
+    case Weekday::Tuesday:   return "tue";
+    case Weekday::Wednesday: return "wed";
+    case Weekday::Thursday:  return "thu";
+    case Weekday::Friday:    return "fri";
+    case Weekday::Saturday:  return "sat";
+    case Weekday::Sunday:    return "sun";
   }
   return "";  // unreachable.
 }
 
-// "2d 4h" / "4h 12m" / "37m" style countdown (03 §-adjacent format, no
-// PORT_PARITY table to mirror — v0's own rendering, P37). Always non-empty:
-// a sub-minute countdown renders "<1m" rather than "0m". `secs` is always
-// > 0 here (schedule() already filtered non-future rows).
+const char* month_abbr(std::uint32_t month) {
+  static const char* const kMonths[12] = {"jan", "feb", "mar", "apr", "may", "jun",
+                                          "jul", "aug", "sep", "oct", "nov", "dec"};
+  return month >= 1 && month <= 12 ? kMonths[month - 1] : "";
+}
+
+// "sat 24 oct".
+std::string date_text(const CalendarDate& d) {
+  return std::string(weekday_abbr(d.weekday)) + " " + std::to_string(d.day) + " " +
+         month_abbr(d.month);
+}
+
+// "today · sat 24 oct", "tomorrow · sun 25 oct", "mon 26 oct", "later".
+std::string schedule_header_text(const ScheduleGroup& g) {
+  if (g.later) return "later";
+  const std::string date = date_text(g.date);
+  if (g.days_from_today == 0) return "today \xC2\xB7 " + date;
+  if (g.days_from_today == 1) return "tomorrow \xC2\xB7 " + date;
+  return date;
+}
+
+// 24-hour "18:05".
+std::string clock_text(std::uint32_t minute_of_day) {
+  auto two = [](std::uint32_t n) { return (n < 10 ? "0" : "") + std::to_string(n); };
+  return two(minute_of_day / 60 % 24) + ":" + two(minute_of_day % 60);
+}
+
+// A row counts down only inside this window; past it the date and time say it.
+constexpr std::int64_t kCountdownSecs = 24 * 3600;
+
+// The widest date_text ("wed 31 dec"): `later` rows pad to it so titles align.
+constexpr int kDateCols = 10;
+
 }  // namespace
 
+// "4h 12m" / "37m" style countdown. Always non-empty: a sub-minute countdown
+// renders "<1m" rather than "0m"; a day or more renders "2d 4h". `secs` is
+// always > 0 here (schedule() already filtered non-future rows).
 // In detail:: (not the anon namespace) so the DoD's countdown table test can
 // pin the boundary strings (P37 review).
 std::string detail::countdown_text(std::int64_t secs) {
@@ -1300,8 +1332,11 @@ void draw_schedule(const App& app, CellBuffer& buf, int y0, int y1) {
         break;
       }
       case ScheduleState::Line::Kind::Header: {
+        const ScheduleGroup& grp = ss.groups[li.group_ix];
+        const bool today = !grp.later && grp.days_from_today == 0;
         int x = 2;
-        x = buf.put_str(x, y, weekday_label(li.weekday), theme::fg, theme::bg, Style::Bold);
+        x = buf.put_str(x, y, schedule_header_text(grp), today ? theme::hot : theme::fg,
+                        theme::bg, Style::Bold);
         buf.put_str(x, y, " (" + std::to_string(li.count) + ")", theme::fg2, theme::bg);
         break;
       }
@@ -1314,13 +1349,27 @@ void draw_schedule(const App& app, CellBuffer& buf, int y0, int y1) {
         buf.fill(Rect{2, y, list_w, 1}, bg);
         const Rgb title_col = selected ? theme::focus : theme::fg;
         const Style st = selected ? Style::Bold : Style::None;
-        const std::string countdown = detail::countdown_text(entry.seconds_until);
-        const std::string ep_tag = entry.episode > 0
-                                       ? ("ep " + std::to_string(entry.episode) + " \xC2\xB7 ")
-                                       : std::string{};
-        const std::string tail = ep_tag + countdown;
+        // Left: the local airing time, `later` rows led by their date.
+        std::string lead;
+        if (ss.groups[li.group_ix].later) {
+          lead = date_text(entry.date);
+          lead.append(static_cast<std::size_t>(std::max(0, kDateCols - str_width(lead))), ' ');
+          lead += ' ';
+        }
+        lead += clock_text(entry.minute_of_day);
+        // Right: "ep 16 · in 3h 12m", "ep 1 · premiere".
+        std::string tail;
+        auto add = [&tail](const std::string& part) {
+          if (!tail.empty()) tail += " \xC2\xB7 ";
+          tail += part;
+        };
+        if (entry.episode > 0) add("ep " + std::to_string(entry.episode));
+        if (entry.episode == 1) add("premiere");
+        if (entry.seconds_until < kCountdownSecs) {
+          add("in " + detail::countdown_text(entry.seconds_until));
+        }
         const int tail_w = str_width(tail);
-        int x = 3;
+        int x = buf.put_str(3, y, lead, theme::fg2, bg) + 2;
         const std::string title = truncate_to_cols(row_title(show.enrichment, title_pref),
                                                     (2 + list_w - 1) - x - tail_w - 1);
         buf.put_str(x, y, title, title_col, bg, st);

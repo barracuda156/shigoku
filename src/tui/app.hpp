@@ -244,16 +244,18 @@ struct HistoryState {
   void scroll_into_view(int visible);
 };
 
-// Schedule nav state (P37): a read-only weekday-grouped countdown list over
-// `rows` (the same library Show set History loads — Schedule keeps its own
-// copy rather than sharing History's live one, since the two views filter
-// independently). `groups` is `shigoku::schedule(rows, now_secs)` rebuilt
-// whenever `rows` reloads or the boot/tick clock advances a weekday boundary;
+// Schedule nav state: a read-only day-grouped airing list over `rows`
+// (the same library Show set History loads — Schedule keeps its own copy
+// rather than sharing History's live one, since the two views filter
+// independently). `groups` is `shigoku::schedule(rows, now_secs, offset_at)`
+// rebuilt whenever `rows` reloads or the tick clock advances a second;
 // `now_secs` is threaded in from App's own clock stamp (draw stays pure, no
 // wall clock in this file or views.cpp — same discipline as HistoryState).
 struct ScheduleState {
   std::vector<Show> rows;          // store order, as loaded (load_schedule).
   std::vector<ScheduleGroup> groups;  // rebuilt by rebuild(); airing-time order.
+  // The local zone's reader; run() sets it, so tests left at null read UTC.
+  UtcOffsetAt offset_at = nullptr;
   std::size_t cursor = 0;          // index into the flattened entry walk.
   std::size_t scroll = 0;          // first visible flattened line.
   bool load_failed = false;
@@ -276,15 +278,14 @@ struct ScheduleState {
   void nav(int dy, int visible);
   void jump(bool top, int visible);
 
-  // The flattened line layout: one Header + Rule per non-empty weekday, one
-  // Entry line per schedule row, one Blank between groups (never inside one)
-  // — same discipline as HistoryState::layout(), single source for nav
+  // The flattened line layout: one Header + Rule per group, one Entry line
+  // per schedule row, one Blank between groups (never inside one) — same
+  // discipline as HistoryState::layout(), single source for nav
   // (scroll_into_view) and draw so they can never disagree.
   struct Line {
     enum class Kind { Header, Rule, Entry, Blank } kind = Kind::Blank;
-    Weekday weekday = Weekday::Monday;  // Header only.
     std::size_t count = 0;              // Header only.
-    std::size_t group_ix = 0;           // Entry: index into groups.
+    std::size_t group_ix = 0;           // Header, Entry: index into groups.
     std::size_t entry_ix = 0;           // Entry: index into groups[group_ix].entries.
     std::size_t ord = 0;                // Entry: flattened ordinal (== cursor space).
   };

@@ -508,17 +508,16 @@ std::optional<std::size_t> map_episode_index(const std::vector<std::string>& epi
 // RELEASING, HIATUS, NOT_YET_RELEASED, unknown, or absent — is still airing.
 bool is_still_airing(std::optional<std::string_view> status);
 
-// --- Schedule (P37 slice 1) -------------------------------------------------
-// Pure weekday-grouping + countdown lens over the watchlist's next_airing_*
-// columns (already stored per-show, P21). No wall clock in here: `now_secs`
-// is a caller-supplied stamp (boot/tick, never sampled inside this file).
+// --- Schedule ----------------------------------------------------------------
+// Pure day-grouping + countdown lens over the watchlist's next_airing_*
+// columns (already stored per-show). No wall clock and no time zone in
+// here: `now_secs` is a caller-supplied stamp (boot/tick, never sampled
+// inside this file) and the zone comes in as a UtcOffsetAt reader.
 
-// ISO-ish weekday of a `next_airing_at` instant, in UTC (the store's
-// next_airing_at is UTC unix secs). KNOWN LIMITATION, not a plan mandate: no
-// local-tz conversion in v1, so a JST-evening airing can group under the
-// wrong local weekday for non-UTC users — localtime_r plumbing is a welcome
-// follow-up. Monday-first to match ISO 8601; `weekday_of` is exposed for
-// tests.
+// ISO weekday of a unix instant read as UTC (the store's next_airing_at is
+// UTC unix secs). An instant already shifted by a zone's UTC offset yields
+// that zone's weekday. Monday-first to match ISO 8601; `weekday_of` is
+// exposed for tests.
 enum class Weekday {
   Monday,
   Tuesday,
@@ -530,34 +529,62 @@ enum class Weekday {
 };
 [[nodiscard]] Weekday weekday_of(std::int64_t unix_secs);
 
+// Seconds east of UTC in effect at a unix instant, daylight saving included.
+// schedule() asks once per airing rather than once per call, so a clock
+// change inside the week puts each airing on its own side of the change.
+// A null reader reads every instant as UTC.
+using UtcOffsetAt = std::int64_t (*)(std::int64_t unix_secs);
+
+// A calendar date with its weekday.
+struct CalendarDate {
+  std::int64_t year = 1970;
+  std::uint32_t month = 1;  // 1..12
+  std::uint32_t day = 1;    // 1..31
+  Weekday weekday = Weekday::Thursday;
+  friend bool operator==(const CalendarDate&, const CalendarDate&) = default;
+};
+
 // One watchlist row with a future airing: the show's identity/title (via the
-// Show's own enrichment — this struct just carries the derived fields) plus
-// the countdown split at `now_secs`. `seconds_until` is always > 0 (schedule()
-// filters out past/absent airings); render formats it into e.g. "2d 4h".
+// Show's own enrichment — this struct just carries the derived fields), the
+// countdown split at `now_secs`, and the airing's local date and time of day.
+// `seconds_until` is always > 0 (schedule() filters out past/absent
+// airings); render formats it into e.g. "4h 12m".
 struct ScheduleEntry {
   std::size_t show_index = 0;  // index into the input `shows` vector.
-  Weekday weekday = Weekday::Monday;
   std::int64_t airing_at = 0;
   std::uint32_t episode = 0;
   std::int64_t seconds_until = 0;
+  CalendarDate date;                // local date of the airing.
+  std::uint32_t minute_of_day = 0;  // local time of the airing, 0..1439.
   friend bool operator==(const ScheduleEntry&, const ScheduleEntry&) = default;
 };
 
-// One weekday's schedule rows, airing-time ordered.
+// Local days, today first, that get a group of their own. Eight rather than
+// seven so the same weekday next week still has one: a weekly episode that
+// aired this morning has its next one there. Airings past the last of them
+// share the trailing `later` group.
+inline constexpr std::int64_t kScheduleDays = 8;
+
+// One day's schedule rows (or the `later` rows), airing-time ordered.
 struct ScheduleGroup {
-  Weekday weekday = Weekday::Monday;
+  std::int64_t days_from_today = 0;  // 0 today, 1 tomorrow, ...; unused when `later`.
+  bool later = false;
+  CalendarDate date;  // the day's local date; unused when `later`.
   std::vector<ScheduleEntry> entries;
 };
 
-// schedule() (P37 slice 1): watchlist rows with a future next_airing_at,
-// grouped by weekday (Monday..Sunday, only non-empty weekdays present),
-// entries within a group airing-time ordered. Rows with no next_airing_at, or
-// with next_airing_at <= now_secs, are excluded (already aired / unknown), as
+// schedule(): watchlist rows with a future next_airing_at, grouped by local
+// date from today on — a group per day for the next kScheduleDays days (only
+// non-empty days present), then one `later` group — entries within a group
+// airing-time ordered. Dates and times are read through `offset_at` (null:
+// UTC). Rows with no next_airing_at, or with
+// next_airing_at <= now_secs, are excluded (already aired / unknown), as
 // are rows whose list status is not Watching or Planning — a calendar is for
 // what you follow or plan to, not what you dropped or finished.
 // Pure and total; `shows` is read-only (indices into it feed ScheduleEntry).
 [[nodiscard]] std::vector<ScheduleGroup> schedule(const std::vector<Show>& shows,
-                                                  std::int64_t now_secs);
+                                                  std::int64_t now_secs,
+                                                  UtcOffsetAt offset_at = nullptr);
 
 // The statuses the Calendar (and its notices) follow: Watching and Planning.
 [[nodiscard]] bool calendar_status(ListStatus s);

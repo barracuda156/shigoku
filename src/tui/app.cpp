@@ -4,6 +4,7 @@
 
 #include <signal.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -64,6 +65,15 @@ void flush_sync(App& app, bool pull_only);  // P20; on_connect_result fires it p
 // store only compares these for ordering (latest_resume, History sort), so a
 // coarse epoch second is enough; keep it in one place so every writer agrees.
 std::int64_t now_epoch_secs() { return static_cast<std::int64_t>(::time(nullptr)); }
+
+// The local zone's UTC offset at `unix_secs`, daylight saving included — the
+// Calendar's dates and times. A failed conversion reads as UTC.
+std::int64_t local_utc_offset(std::int64_t unix_secs) {
+  const time_t t = static_cast<time_t>(unix_secs);
+  struct tm local {};
+  if (::localtime_r(&t, &local) == nullptr) return 0;
+  return static_cast<std::int64_t>(local.tm_gmtoff);
+}
 
 // Persistent-toast topic for AniList reachability (app.rs ANILIST_TOPIC, §8.5):
 // an enrich transport failure raises it; any AniList success (enrich hit or
@@ -4709,6 +4719,7 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // Schedule's clock stamp (P37): unlike discover_cour, re-stamped every Tick
   // too (the countdown column visibly counts down) — see tick()'s Tick arm.
   app.clock_epoch_secs = now_epoch_secs();
+  app.schedule.offset_at = local_utc_offset;
 
   // P18: config lands before anything reads it (landing-view decision below,
   // the title chain, resume offset, ...). null (demo_mode / most tests) keeps

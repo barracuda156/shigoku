@@ -314,32 +314,62 @@ bool calendar_status(ListStatus s) {
   return s == ListStatus::Watching || s == ListStatus::Planning;
 }
 
+namespace {
+
+std::int64_t floor_div(std::int64_t a, std::int64_t b) {
+  const std::int64_t q = a / b;
+  return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q;
+}
+
+CalendarDate calendar_date(std::int64_t days) {
+  const Ymd ymd = civil_from_days(days);
+  return CalendarDate{ymd.year, ymd.month, ymd.day, weekday_of(days * 86400)};
+}
+
+}  // namespace
+
 std::vector<ScheduleGroup> schedule(const std::vector<Show>& shows,
-                                    std::int64_t now_secs) {
-  // One bucket per weekday, Monday..Sunday, populated only where non-empty.
-  std::array<std::vector<ScheduleEntry>, 7> buckets;
+                                    std::int64_t now_secs, UtcOffsetAt offset_at) {
+  auto local_secs = [offset_at](std::int64_t unix_secs) {
+    return unix_secs + (offset_at != nullptr ? offset_at(unix_secs) : 0);
+  };
+  const std::int64_t today = floor_div(local_secs(now_secs), 86400);
+  // One bucket per day from today, then the `later` one; only non-empty
+  // buckets are returned.
+  std::array<std::vector<ScheduleEntry>, static_cast<std::size_t>(kScheduleDays) + 1> buckets;
   for (std::size_t i = 0; i < shows.size(); ++i) {
     const Enrichment& e = shows[i].enrichment;
     if (!calendar_status(shows[i].list_status)) continue;
     if (!e.next_airing_at.has_value()) continue;
     const std::int64_t at = *e.next_airing_at;
     if (at <= now_secs) continue;  // already aired, or unknown-past.
+    const std::int64_t local = local_secs(at);
+    const std::int64_t day = floor_div(local, 86400);
     ScheduleEntry entry;
     entry.show_index = i;
-    entry.weekday = weekday_of(at);
     entry.airing_at = at;
     entry.episode = e.next_airing_episode.value_or(0);
     entry.seconds_until = at - now_secs;
-    buckets[static_cast<std::size_t>(entry.weekday)].push_back(entry);
+    entry.date = calendar_date(day);
+    entry.minute_of_day = static_cast<std::uint32_t>((local - day * 86400) / 60);
+    // A future instant reads as an earlier local day only across a clock
+    // change at midnight; it still belongs to today.
+    const std::int64_t ahead = std::max<std::int64_t>(0, day - today);
+    buckets[static_cast<std::size_t>(std::min(ahead, kScheduleDays))].push_back(entry);
   }
   std::vector<ScheduleGroup> out;
-  for (std::size_t w = 0; w < 7; ++w) {
-    if (buckets[w].empty()) continue;
-    std::sort(buckets[w].begin(), buckets[w].end(),
-              [](const ScheduleEntry& a, const ScheduleEntry& b) {
-                return a.airing_at < b.airing_at;
-              });
-    out.push_back(ScheduleGroup{static_cast<Weekday>(w), std::move(buckets[w])});
+  for (std::size_t b = 0; b < buckets.size(); ++b) {
+    if (buckets[b].empty()) continue;
+    std::stable_sort(buckets[b].begin(), buckets[b].end(),
+                     [](const ScheduleEntry& x, const ScheduleEntry& y) {
+                       return x.airing_at < y.airing_at;
+                     });
+    ScheduleGroup group;
+    group.days_from_today = static_cast<std::int64_t>(b);
+    group.later = group.days_from_today == kScheduleDays;
+    if (!group.later) group.date = calendar_date(today + group.days_from_today);
+    group.entries = std::move(buckets[b]);
+    out.push_back(std::move(group));
   }
   return out;
 }
