@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.2.2 LANGUAGES CXX C)
+project(shigoku VERSION 0.2.3 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)
@@ -126,7 +126,7 @@ endif()  # WITH_TUI
 # --- Dependency detection: prefer pkg-config, fall back to find_library. ---
 find_package(PkgConfig QUIET)
 
-# libcurl (A5) — built with nghttp2 (HTTP/2 is load-bearing, §3). Required.
+# libcurl — built with nghttp2 (HTTP/2 is load-bearing). Required.
 if(PkgConfig_FOUND)
   pkg_check_modules(CURL IMPORTED_TARGET libcurl)
 endif()
@@ -345,7 +345,7 @@ endif()
 # ---------------------------------------------------------------------------
 # shigoku_anilist (+ sync/GraphQL list ops): public GraphQL search plus
 # the AniList list pull/push. JSON via the vendored nlohmann header;
-# depends on http for the POST and, since P20, on store for the RemoteEntry
+# depends on http for the POST and on store for the RemoteEntry
 # wire-shape it builds (store.hpp is sqlite-only/curl-free, so this is the one
 # new link edge rather than a third shared header — RemoteEntry lives where
 # reconcile_pull, its only non-anilist consumer, already needs ListStatus).
