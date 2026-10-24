@@ -134,9 +134,16 @@ matches or five pages have come back empty.
 
 ## Calendar (key `C`)
 
-Shows upcoming episodes for the shows you are Watching or Planning, grouped
-by weekday and sorted soonest-first, with a countdown (`2d 4h`, `37m`,
-`<1m`). Airing times come from AniList's public schedule and are refreshed
+Shows upcoming episodes for the shows you are Watching or Planning, one
+group per day starting today (`today · sat 24 oct`, `tomorrow · sun 25 oct`,
+`mon 26 oct`, …), with today's heading highlighted and days with nothing
+airing left out. The week runs through the same weekday next week; anything
+further off, such as a season premiere, sits in a final `later` group with
+its date on the row. Each row leads with the local airing time (24-hour)
+and ends with the episode number — `premiere` for an episode 1 — and, for
+anything airing within the next 24 hours, a countdown such as `in 3h 12m`.
+Dates and times follow your computer's time zone, daylight saving
+included. Airing times come from AniList's public schedule and are refreshed
 on every launch and after every sync for any followed show that lacks one
 or whose last one has passed — no account needed, and a show that reached
 your list through MyAnimeList is looked up by its MAL id.
