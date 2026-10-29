@@ -365,10 +365,10 @@ episode list, its streams). Only when every source fails does the
 command exit with an error; a source that answered "nothing" makes it a plain
 "no results".
 
-A result from a source that names no catalogue id (HiAnime) is looked up
-in the catalogue by its title and filed under the entry that clearly
-matches it, so it resumes and joins your history like any other; when none
-clearly does, that run plays without joining the library.
+A result from a source that names no catalogue id (HiAnime, AnimeHub) is
+looked up in the catalogue by its title and filed under the entry that
+clearly matches it, so it resumes and joins your history like any other;
+when none clearly does, that run plays without joining the library.
 
 An episode that won't play on the run's source — its stream never opens
 (after the three tries), or none can be found — is looked for on the other

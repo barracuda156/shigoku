@@ -567,6 +567,18 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_animehub: 123animehub.cc StreamProvider — no canonical key (tier-C
+# search binds it), an HTML/JSON scrape chain ending in a plain HLS master on
+# the player host's CDN. No crypto, no fingerprinting; needs only http.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_animehub STATIC src/animehub.cpp)
+  target_include_directories(shigoku_animehub PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_animehub
+    PUBLIC shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_anilibria: AniLibria (AniLiberty API v1) StreamProvider — no
 # canonical key (the API carries no MAL/AniList ids; tier-C search binds it),
 # pure JSON chain with DIRECT per-quality HLS urls in the release object. No
@@ -974,7 +986,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   endif()
   target_link_libraries(shigoku PRIVATE
     shigoku_picker shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
-    shigoku_anilibria shigoku_hianime
+    shigoku_anilibria shigoku_hianime shigoku_animehub
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
     shigoku_loopback shigoku_mal_login shigoku_mal_loopback
@@ -1888,6 +1900,30 @@ if(SHIGOKU_HAVE_CURL)
   add_executable(hianime_live_smoke tests/hianime_live_smoke.cpp)
   target_link_libraries(hianime_live_smoke PRIVATE
     shigoku_hianime shigoku_http shigoku_crypto shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# animehub_tests: pure parsers/guards offline (search cards scoped off the
+# sidebar, dub-twin folding, query sanitising, the episode-grid envelope,
+# label order, zrpart2, the sources JSON) plus transport cases over loopback
+# fixture servers. Fixtures under tests/fixtures/animehub/.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(animehub_tests tests/animehub_tests.cpp)
+  target_compile_definitions(animehub_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(animehub_tests PRIVATE
+    shigoku_animehub shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME animehub_tests COMMAND animehub_tests)
+endif()
+
+# animehub_live_smoke: real search -> episodes -> resolve -> master fetch,
+# gated on SHIGOKU_LIVE=1 (not a ctest — driven by hand, and picked up by
+# scripts/provider_canary.sh).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(animehub_live_smoke tests/animehub_live_smoke.cpp)
+  target_link_libraries(animehub_live_smoke PRIVATE
+    shigoku_animehub shigoku_http shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 

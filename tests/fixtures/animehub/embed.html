@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>PlayerCDN - Sousou No Frieren | Episode 1</title>
+<link href="/assets/ban_ico.png" type="image/x-icon" rel="shortcut icon">
+<style>body{margin:0;height:100vh;overflow:hidden;position:relative;background:#000;font-family:system-ui}a{text-decoration:none}.sidebar{width: 150px;margin: 70px 0;position: absolute;transition: transform 0.3s ease;z-index: 2;border-radius: 3px 0 0 3px;background: #000000b8;left:0}.sidebar.hidden{transform: translateX(-100%)}.sidebar a{display: block;border-radius: 4px;margin-bottom: 4px;padding: 8px 0;text-align: center;color: #fff}.sidebar a:hover{background:#ffffff3d}.sidebar a.active{background:#ffffff3d}.toggle-btn{position: absolute;top: 20px;left: 20px;cursor: pointer;z-index: 3;width: 60px;}iframe{width: 100%;height: 100%;border: none;position: absolute;top: 0;left: 0}@keyframes pulse{0%{opacity: 1;transform: scale(1)}50%{opacity: .6;transform: scale(.9)}100%{opacity: 1;transform: scale(1)}}@-webkit-keyframes pulsate{0%{-webkit-transform: scale(0.1, 0.1);opacity: 0.0}50%{opacity: .4}100%{-webkit-transform: scale(1.2, 1.2);opacity: 0.0}}.pulsate{animation: pulse 1.5s infinite}.switchPlayers { background: #ffffffde; z-index: 1; position: relative; left: 90px; float: left; top: 20px; padding: 5px 10px; color: #000000; cursor: pointer; border-radius: 5px; } .switchPlayers:hover { background: #fff; }.switchPlayers img { position: relative; top: 2px; }</style>
+</head><body>
+
+<img class="toggle-btn pulsate" onclick="toggleSidebar()" src="/assets/cloud.png" />
+<div class="switchPlayers" data-text="JW Player">
+<img src="/assets/play.png" />
+  <span> Legacy Player</span>
+</div>
+<div class="sidebar hidden" id="sidebar"></div>
+    <div class="content">
+        <iframe id="playerIframe" src="" frameborder="0" scrolling="no" referrerpolicy="strict-origin" allow="autoplay; fullscreen; geolocation; display-capture; picture-in-picture" webkitallowfullscreen="" mozallowfullscreen="" allowfullscreen="true"></iframe>
+    </div>
+<script>
+var zlangSnd = 'sub';
+var zrpart2  = 'QUJDREVGR0hJSktMTU5PUA==';
+function setActiveLink(t) {
+    document.querySelectorAll(".sidebar a").forEach((t => t.classList.remove("active"))),
+    t.classList.add("active")
+}
+function setIframeSrc(t) {
+    t.preventDefault();
+    const e = t.currentTarget.getAttribute("data-link"),
+    n = document.getElementById("playerIframe"),
+    s = "1" === localStorage.getItem("pl_usn");
+    n.src = s ? e + "?pl_usn=1" : e,
+    document.querySelector(".sidebar").classList.toggle("hidden"),
+    setActiveLink(t.currentTarget)
+}
+function toggleSidebar() {
+    document.querySelector(".sidebar").classList.toggle("hidden")
+}
+document.addEventListener("DOMContentLoaded", (function () {
+        const t = zlangSnd,
+        e = zrpart2,
+        n = document.getElementById("sidebar"),
+        s = [];
+        "dub" === t ? s.push({
+            text: "SV-1",
+            link: `/hs/${e}`,
+            identf: "bunny_hs"
+        }, {
+            text: "SV-2",
+            link: `/sbv2/${e}`,
+            identf: "bunny_ss"
+        }) : s.push({
+            text: "Hard Sub",
+            link: `/hs/${e}`,
+            identf: "bunny_hs"
+        }, {
+            text: "Soft Sub-1",
+            link: `/sbv2/${e}`,
+            identf: "bunny_ss"
+        }),
+        s.forEach((({
+                    text: t,
+                    link: e,
+                    identf: s
+                }) => {
+                const a = document.createElement("a");
+                a.href = "#",
+                a.textContent = t,
+                a.dataset.link = e,
+                a.dataset.identf = s,
+                a.onclick = setIframeSrc,
+                n.appendChild(a)
+            }))
+    })), document.addEventListener("DOMContentLoaded", (function () {
+        const t = document.querySelector(".switchPlayers"),
+        e = document.getElementById("playerIframe"),
+        n = "1" === localStorage.getItem("pl_usn");
+        n && t && (t.querySelector("span").textContent = t.getAttribute("data-text"), t.setAttribute("data-legacy", "true")),
+        t && t.addEventListener("click", (function () {
+                const t = this.querySelector("span"),
+                n = (e.getAttribute("src") || "").split("?")[0];
+                "1" === localStorage.getItem("pl_usn") ? (localStorage.removeItem("pl_usn"), t.textContent = "Legacy Player", e.src = n, this.removeAttribute("data-legacy")) : (localStorage.setItem("pl_usn", "1"), t.textContent = this.getAttribute("data-text"), e.src = n + "?pl_usn=1", this.setAttribute("data-legacy", "true"))
+            }));
+        const s = document.querySelector(".sidebar a");
+        if (s && e) {
+            const t = s.getAttribute("data-link");
+            e.src = n ? t + "?pl_usn=1" : t,
+            setActiveLink(s)
+        }
+    }));
+
+</script>
+
+<div style="display:none;">
+<script id="_waun1r">
+var _wau = _wau || []; _wau.push(["small", "a6alve779q", "n1r"]);</script>
+<script async src="//waust.at/s.js"></script>
+</div></body>
+</html>
