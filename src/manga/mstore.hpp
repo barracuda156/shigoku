@@ -90,7 +90,7 @@ struct ChapterProgress {
 
 // A followed manga plus the counters the library list renders.
 struct LibraryEntry {
-  std::string source_key;         // "md"/"wc"/"dy"/"nh" — the id's prefix.
+  std::string source_key;         // "md"/"wc"/"dy"/"mh"/"nh" — the id's prefix.
   MdManga manga;                  // manga.id is the NATIVE id (unscoped).
   std::int64_t added_at = 0;
   std::int64_t last_read_at = 0;  // newest progress stamp; 0 = never opened.

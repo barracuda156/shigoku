@@ -20,7 +20,7 @@ struct MangaConfig {
   bool rtl = false;                // right-to-left page order default.
   bool data_saver = false;         // MangaDex compressed page variant.
   std::string chapter_lang = "en";
-  // Registry-lite: the active source key ("md"/"wc"/"dy"/"nh"; an unknown
+  // Registry-lite: the active source key ("md"/"wc"/"dy"/"mh"/"nh"; an unknown
   // key degrades to the first eligible source via pick_source) and the nsfw
   // gate (off = nsfw sources are invisible everywhere).
   std::string source = "md";

@@ -2,8 +2,8 @@
 // mangadex.hpp and became the app-wide model the moment the source seam
 // landed; the "Md" prefix is historical, kept to avoid churning every
 // consumer. Every source's parsers produce these; ids
-// inside are the source's NATIVE ids (uuid for md, ULID for wc, slug for dy,
-// numeric for nh) — anything crossing into store space rides scoped_id
+// inside are the source's NATIVE ids (uuid for md, ULID for wc, slug for dy and
+// mh, numeric for nh) — anything crossing into store space rides scoped_id
 // (source.hpp).
 
 #pragma once

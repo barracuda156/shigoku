@@ -58,7 +58,7 @@ class MangaSource {
  public:
   virtual ~MangaSource() = default;
 
-  // Id prefix ("md", "wc", "dy", "nh") — stable forever, it is the store
+  // Id prefix ("md", "wc", "dy", "mh", "nh") — stable forever, it is the store
   // scoping (scoped_id below) and never shown to the user.
   [[nodiscard]] virtual std::string_view key() const = 0;
   // Display name for status bars / hints ("MangaDex").

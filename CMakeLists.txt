@@ -690,6 +690,17 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_mangahub: the MangaHub source — GraphQL over the impersonate seam
+# (the API edge refuses a plain TLS handshake), plain image/cover GETs.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_mangahub STATIC src/manga/mangahub.cpp)
+  target_include_directories(shigoku_mangahub PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_mangahub
+    PUBLIC shigoku_mangadex shigoku_http shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_manga_flow: the read flow's mechanism half —
 # chapter fetch-to-cache (pages.cpp: fetch_to_sink + .part/.complete + node
 # rotation), the ViewerBackend seam (viewer.cpp: argv table + spawn/wait),
@@ -957,7 +968,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   target_compile_definitions(shigoku_manga_bin PRIVATE SHIGOKU_VERSION="${PROJECT_VERSION}")
   target_link_libraries(shigoku_manga_bin PRIVATE
     shigoku_manga_app shigoku_tui shigoku_paths shigoku_http shigoku_mangadex
-    shigoku_weebcentral shigoku_dynasty shigoku_nhentai
+    shigoku_weebcentral shigoku_dynasty shigoku_nhentai shigoku_mangahub
     shigoku_manga_flow shigoku_mstore shigoku_manga_sync shigoku_auth
     shigoku_login shigoku_loopback shigoku_flags shigoku_thirdparty
     shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
@@ -1778,6 +1789,18 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME manga_nhentai_tests COMMAND manga_nhentai_tests)
 endif()
 
+# manga_mangahub_tests: the vets, request bodies, and the three parsers over
+# tests/fixtures/mangahub/. Fully offline.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(manga_mangahub_tests tests/manga_mangahub_tests.cpp)
+  target_compile_definitions(manga_mangahub_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(manga_mangahub_tests PRIVATE
+    shigoku_mangahub shigoku_http shigoku_flags shigoku_thirdparty
+    shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME manga_mangahub_tests COMMAND manga_mangahub_tests)
+endif()
+
 # mstore_tests: the manga.db ladder (fresh create,
 # idempotent re-open, foreign-file refusal), the library query's ordering +
 # counters, progress round-trips incl. the exact-undo pair, the chapter cache,
@@ -1808,6 +1831,15 @@ if(SHIGOKU_HAVE_CURL)
   add_executable(manga_nhentai_live_smoke tests/manga_nhentai_live_smoke.cpp)
   target_link_libraries(manga_nhentai_live_smoke PRIVATE
     shigoku_nhentai shigoku_http shigoku_flags shigoku_thirdparty
+    shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# manga_mangahub_live_smoke: real MangaHub API through the impersonate seam
+# plus a page and cover fetch, gated on SHIGOKU_LIVE=1 at runtime (not ctest).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(manga_mangahub_live_smoke tests/manga_mangahub_live_smoke.cpp)
+  target_link_libraries(manga_mangahub_live_smoke PRIVATE
+    shigoku_mangahub shigoku_http shigoku_flags shigoku_thirdparty
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 

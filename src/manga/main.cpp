@@ -15,6 +15,7 @@
 #include "../tui/covers.hpp"
 #include "dynasty.hpp"
 #include "mangadex.hpp"
+#include "mangahub.hpp"
 #include "mapp.hpp"
 #include "mconfig.hpp"
 #include "mstore.hpp"
@@ -98,12 +99,18 @@ int main(int argc, char** argv) {
 
   shigoku::manga::MgDeps deps;
   deps.config = shigoku::manga::load_manga_config(config_path);
+  // MangaHub hides titles the site marks unsafe unless the nsfw gate is on.
+  auto mangahub = shigoku::manga::MangaHub::create(deps.config.nsfw_sources);
+  if (!mangahub.has_value()) {
+    std::fprintf(stderr, "shigoku-manga: http client init failed\n");
+    return 1;
+  }
   // Registry-lite: every compiled-in source, config picks the active one
   // (unknown key degrades to the first eligible; nsfw gated). The eligible
   // list rides into deps so `s` can cycle it.
   const std::vector<const shigoku::manga::MangaSource*> sources = {
       &mangadex.value(), &weebcentral.value(), &dynasty.value(),
-      &nhentai.value()};
+      &mangahub.value(), &nhentai.value()};
   deps.source = shigoku::manga::pick_source(sources, deps.config.source,
                                             deps.config.nsfw_sources);
   if (deps.source == nullptr) {
