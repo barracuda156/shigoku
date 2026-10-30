@@ -100,7 +100,7 @@ TEST_CASE("argv_full_house_matches_the_table") {
       "--sub-file=https://sub.example/s.vtt",
       "--sub-pos=92",
       "--sub-bold=yes",
-      "--demuxer-lavf-o=allowed_extensions=ALL",
+      "--demuxer-lavf-o=allowed_extensions=ALL,extension_picky=0",
       "--force-media-title=Frieren 冒険",
       "--title=shigoku - ${media-title}",
       "--input-ipc-server=/run/user/1000/shigoku/s.sock",

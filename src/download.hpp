@@ -145,9 +145,11 @@ enum class LinkKind {
 //   -nostdin -y -loglevel error
 //   [-allowed_extensions ALL]            (link.cloaked_segments, as mpv's
 //                                         --demuxer-lavf-o allowed_extensions)
+//   [-extension_picky 0]                 (link.cloaked_segments AND
+//                                         extension_picky_off)
 //   [-headers "Referer: <referer>\r\n"]  (link.referer)
 //   [-user_agent <ua>]                   (link.user_agent)
-//   -i <input_url> -c copy -f mp4 <out_path>
+//   -f hls -i <input_url> -c copy -f mp4 <out_path>
 // `input_url` is the positional the caller resolved (variant pick / decloak
 // loopback / the link url itself); like build_argv's play_url it must not
 // start with '-'. `out_path` is app-constructed (the .part), unvetted like
@@ -155,7 +157,15 @@ enum class LinkKind {
 // stream as-is, softsubs stay a streaming feature.
 [[nodiscard]] Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
-    std::string_view out_path);
+    std::string_view out_path, bool extension_picky_off = false);
+
+// Whether this ffmpeg's hls demuxer has `extension_picky`. From 7.1.1 it
+// defaults on and refuses segment names that don't match their format (the
+// cloaked `.jpg` and extensionless ones); an older ffmpeg treats the unknown
+// option as fatal, so the flag goes out only on a yes. Asked once per path via
+// `-h demuxer=hls`; a yes or no is remembered, a failed ask is retried next
+// time.
+[[nodiscard]] bool ffmpeg_has_extension_picky(const std::string& ffmpeg_path);
 
 // Spawn ffmpeg (posix_spawnp, null stdio — the mpv shape) and wait, polling
 // `cancel` at ~5 Hz: a tripped flag SIGTERMs the child (SIGKILL escalation
@@ -255,6 +265,9 @@ void move_show_downloads(std::string_view download_dir, std::int64_t old_id,
 
 // --- Internals, exposed for the golden tests -------------------------------
 namespace detail {
+
+// The `-h demuxer=hls` text lists the extension_picky option.
+[[nodiscard]] bool help_lists_extension_picky(std::string_view help);
 
 // Master-playlist text -> the variant url for `quality` (the P23 cap policy
 // via hls::select_variant), joined against `base` (senshi::cap_variant's

@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -391,7 +392,7 @@ TEST_CASE("ffmpeg argv: minimal table") {
   REQUIRE(argv.has_value());
   const std::vector<std::string> want = {
       "-nostdin", "-y", "-loglevel", "error",
-      "-i", "https://cdn.example/m.m3u8",
+      "-f", "hls", "-i", "https://cdn.example/m.m3u8",
       "-c", "copy", "-f", "mp4", "/dl/1/sub/1.mp4.part"};
   CHECK(*argv == want);
 }
@@ -409,9 +410,28 @@ TEST_CASE("ffmpeg argv: full table — cloaked + referer + user_agent") {
       "-allowed_extensions", "ALL",
       "-headers", "Referer: https://site.example/\r\n",
       "-user_agent", "Mozilla/5.0 (X11) Chrome/126",
-      "-i", "https://cdn.example/v720.m3u8",
+      "-f", "hls", "-i", "https://cdn.example/v720.m3u8",
       "-c", "copy", "-f", "mp4", "/dl/1/sub/2.mp4.part"};
   CHECK(*argv == want);
+}
+
+TEST_CASE("ffmpeg argv: extension_picky off rides only with cloaked segments") {
+  StreamLink l = plain_link("https://cdn.example/m.m3u8");
+  l.cloaked_segments = true;
+  const auto on = build_ffmpeg_argv(l, l.url, "/o.part", /*extension_picky_off=*/true);
+  REQUIRE(on.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-allowed_extensions", "ALL", "-extension_picky", "0",
+      "-f", "hls", "-i", "https://cdn.example/m.m3u8",
+      "-c", "copy", "-f", "mp4", "/o.part"};
+  CHECK(*on == want);
+
+  // A plain link never carries it, whatever the ffmpeg can do.
+  const StreamLink plain = plain_link("https://cdn.example/m.m3u8");
+  const auto off = build_ffmpeg_argv(plain, plain.url, "/o.part", true);
+  REQUIRE(off.has_value());
+  CHECK(std::find(off->begin(), off->end(), "-extension_picky") == off->end());
 }
 
 TEST_CASE("ffmpeg argv: banned bytes rejected per field (ROD-92/435)") {
@@ -525,16 +545,49 @@ TEST_CASE("choose_from_master: a media playlist yields nothing") {
 
 namespace {
 
-std::string write_stub(const char* name, const std::string& body) {
+std::string write_script(const char* name, const std::string& body) {
   const std::string path = tmp_dest(name);
   write_file(path, "#!/bin/sh\n" + body);
   ::chmod(path.c_str(), 0755);
   return path;
 }
 
+// A fake ffmpeg answers the extension_picky probe like one without the option
+// (exit 0, nothing listed), so the probe never reaches the body below.
+std::string write_stub(const char* name, const std::string& body) {
+  return write_script(name, "[ \"$2\" = -h ] && exit 0\n" + body);
+}
+
 std::atomic<bool> g_never_cancel{false};
 
 }  // namespace
+
+TEST_CASE("ffmpeg_has_extension_picky: read from the hls demuxer help") {
+  CHECK(detail::help_lists_extension_picky(
+      "  -extension_picky   <boolean>    .D......... Be picky (default true)\n"));
+  CHECK_FALSE(detail::help_lists_extension_picky(
+      "  -allowed_extensions <string>   .D......... List of file extensions\n"));
+
+  const std::string new_ff = write_script(
+      "stub_ffmpeg_help_new.sh",
+      "[ \"$1\" = -hide_banner ] && [ \"$2\" = -h ] && [ \"$3\" = demuxer=hls ] || exit 9\n"
+      "printf '%s\\n' 'Demuxer hls [Apple HTTP Live Streaming]:'\n"
+      "printf '%s\\n' '  -allowed_extensions <string> .D....... List'\n"
+      "printf '%s\\n' '  -extension_picky   <boolean>    .D......... Be picky'\n");
+  CHECK(ffmpeg_has_extension_picky(new_ff));
+  CHECK(ffmpeg_has_extension_picky(new_ff));  // the cached answer.
+
+  const std::string old_ff = write_script(
+      "stub_ffmpeg_help_old.sh",
+      "printf '%s\\n' 'Demuxer hls [Apple HTTP Live Streaming]:'\n"
+      "printf '%s\\n' '  -allowed_extensions <string> .D....... List'\n");
+  CHECK_FALSE(ffmpeg_has_extension_picky(old_ff));
+
+  const std::string broken_ff = write_script(
+      "stub_ffmpeg_help_fail.sh", "echo '  -extension_picky   <boolean>'; exit 1\n");
+  CHECK_FALSE(ffmpeg_has_extension_picky(broken_ff));
+  CHECK_FALSE(ffmpeg_has_extension_picky(tmp_dest("no_such_ffmpeg")));
+}
 
 TEST_CASE("run_ffmpeg: argv reaches the child; exit 0 is Ok") {
   const std::string argv_out = tmp_dest("ffmpeg_argv.txt");

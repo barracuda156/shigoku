@@ -16,10 +16,13 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <thread>
 
 #include "hls.hpp"
 #include "proxy.hpp"
+#include "subprocess.hpp"
 
 extern char** environ;
 
@@ -229,7 +232,7 @@ LinkKind classify_link(const StreamLink& link) {
 
 Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
-    std::string_view out_path) {
+    std::string_view out_path, bool extension_picky_off) {
   // Positional: any leading '-' reads as a flag (player.rs:232 shape).
   if (!arg_clean(input_url) ||
       (!input_url.empty() && input_url.front() == '-')) {
@@ -242,6 +245,10 @@ Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     // spelling of mpv's --demuxer-lavf-o=allowed_extensions=ALL.
     argv.push_back("-allowed_extensions");
     argv.push_back("ALL");
+    if (extension_picky_off) {
+      argv.push_back("-extension_picky");
+      argv.push_back("0");
+    }
   }
   if (link.referer) {
     if (!arg_clean(*link.referer)) {
@@ -257,6 +264,11 @@ Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     argv.push_back("-user_agent");
     argv.push_back(*link.user_agent);
   }
+  // The input is always a playlist here. Saying so skips ffmpeg's probe, which
+  // since 6.1 refuses one with neither an m3u8 name nor a playlist mime type
+  // (AnimeHub's variants are extensionless and served as image/jpeg).
+  argv.push_back("-f");
+  argv.push_back("hls");
   argv.push_back("-i");
   argv.push_back(std::string(input_url));
   argv.push_back("-c");
@@ -267,6 +279,22 @@ Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
   argv.push_back("mp4");
   argv.push_back(std::string(out_path));
   return argv;
+}
+
+bool ffmpeg_has_extension_picky(const std::string& ffmpeg_path) {
+  static std::mutex mu;
+  static std::map<std::string, bool> known;
+  {
+    const std::lock_guard<std::mutex> lock(mu);
+    if (const auto it = known.find(ffmpeg_path); it != known.end()) return it->second;
+  }
+  auto help = subprocess::run({ffmpeg_path, "-hide_banner", "-h", "demuxer=hls"}, "",
+                              /*timeout_ms=*/10000, std::size_t{1} << 20);
+  if (!help.has_value() || help->exit_code != 0) return false;
+  const bool yes = detail::help_lists_extension_picky(help->out);
+  const std::lock_guard<std::mutex> lock(mu);
+  known.emplace(ffmpeg_path, yes);
+  return yes;
 }
 
 Result<Unit, DownloadError> run_ffmpeg(const std::string& ffmpeg_path,
@@ -352,6 +380,10 @@ Result<Unit, DownloadError> run_ffmpeg(const std::string& ffmpeg_path,
 
 namespace detail {
 
+bool help_lists_extension_picky(std::string_view help) {
+  return help.find("-extension_picky ") != std::string_view::npos;
+}
+
 std::optional<std::string> choose_from_master(std::string_view playlist,
                                               std::string_view base,
                                               Quality quality) {
@@ -423,7 +455,8 @@ Result<Unit, DownloadError> download_hls(const http::Client& client,
   }
 
   const std::string part = part_path(dest);
-  auto argv = build_ffmpeg_argv(link, input, part);
+  const bool picky_off = link.cloaked_segments && ffmpeg_has_extension_picky(ffmpeg_path);
+  auto argv = build_ffmpeg_argv(link, input, part, picky_off);
   if (!argv.has_value()) return err(std::move(argv.error()));
 
   if (auto ran = run_ffmpeg(ffmpeg_path, *argv, cancel, child_pid_out);

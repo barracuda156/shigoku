@@ -125,7 +125,9 @@ Result<std::vector<std::string>, PlayError> build_argv(
     argv.push_back("--sub-bold=yes");
   }
   if (link.cloaked_segments) {
-    argv.push_back("--demuxer-lavf-o=allowed_extensions=ALL");
+    // mpv 0.40+ sets extension_picky=0 for HLS itself; older mpv needs it on
+    // an ffmpeg from 7.1.1, and an older ffmpeg leaves the key unset.
+    argv.push_back("--demuxer-lavf-o=allowed_extensions=ALL,extension_picky=0");
   }
   // mpv renders this in its own window title / OSD with no framework backstop,
   // so the full ROD-435 strip applies (bidi / zero-width included).
