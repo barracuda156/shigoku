@@ -8,7 +8,9 @@ local watchlist that can optionally sync to your AniList and MyAnimeList
 accounts. It's built to run comfortably on old hardware too, PowerPC Macs
 included. The screen is deliberately kept sparse — a handful of focused
 views rather than one crowded dashboard — so this manual exists to make sure
-nothing useful stays hidden behind a key you never happened to try.
+nothing useful stays hidden behind a key you never happened to try. A
+companion app, `shigoku-manga`, does the same for manga (see
+[shigoku-manga](#shigoku-manga-the-manga-reader)).
 
 ## Quick start
 
@@ -23,8 +25,11 @@ nothing useful stays hidden behind a key you never happened to try.
 (the default player — alternates are covered under [Playback](#playback));
 a network connection for searching and streaming (an episode you've already
 downloaded plays with no network at all). Cover art needs a terminal that
-speaks the Kitty graphics protocol — everything else shows a plain
-placeholder box instead and works exactly the same otherwise.
+can draw images: the Kitty graphics protocol (kitty, WezTerm, Konsole),
+iTerm2's inline images (iTerm2, mintty), or SIXEL (mlterm, foot, xterm with
+SIXEL on). shigoku asks the terminal at startup and picks the best one it
+answers to; any other terminal shows a plain placeholder box instead and
+works exactly the same otherwise.
 
 ## How the screen is organized
 
@@ -78,7 +83,7 @@ Your watchlist, grouped by status.
 | `j`/`k`, arrows, wheel | Move through the list |
 | `g`/`G` | Jump to the first/last entry |
 | `/` | Filter the list in place by title — local and instant, no network |
-| `f` / `F` | Narrow the list to one status — Watching → Planning → Paused → Completed → Dropped → all — and back to all. The group header says when a filter is on |
+| `f` / `F` | Narrow the list — Watching → Planning → Paused → Completed → Dropped → *behind* (Watching shows with aired episodes you haven't watched) → all — and back to all. The group header says when a filter is on |
 | `l`, `Enter`, double-click | Open the detail preview pane on a wide terminal, or the full page directly on a narrow one |
 | `Space` | Open the full page directly, from any width |
 | `w` / `p` / `c` / `x` / `P` | Set status: Watching / Paused / Completed / Dropped / Planning |
@@ -95,6 +100,14 @@ that comes from). Your score is stored as a plain 0–10 number and converted
 automatically to whatever scale your AniList account actually uses
 (100-point, 10-point, 5-star, etc.) whenever it syncs — you never need to
 think about the conversion yourself.
+
+A Watching show with episodes out that you haven't watched yet carries an
+amber `+2 aired` tag, and its progress bar shades those episodes (`▓`) a
+step darker than the ones you've seen (`█`), so the bar reads watched /
+aired / still to come. Both go by the airing times the Calendar keeps, so
+they cover the shows you're Watching or Planning, and they clear by
+themselves as you catch up — unlike `NEW`, which clears when you open the
+show. The *behind* stop of the `f` filter lists just those shows.
 
 ## Discover (key `D`)
 
@@ -236,6 +249,13 @@ show as chapters on mpv's seek bar (Opening / Episode / Ending), so you can
 see where they are and jump with mpv's chapter keys even with auto-skip
 off.
 
+A play counts as a watch — the show joins History, moves to Watching, and
+reaches your AniList and MAL lists — only once at least half of the episode
+has played (the same half-way rule music scrobblers use). A shorter play,
+such as a quick check that a stream works, keeps its resume point and
+changes nothing else. The episode itself is marked as watched, advancing
+your progress, once it reaches its natural end (about 80%).
+
 Two alternate backends exist for machines where `mpv` itself is
 impractical, chosen via Settings → Player backend → *player*:
 
@@ -248,6 +268,17 @@ impractical, chosen via Settings → Player backend → *player*:
 "Player path" in Settings sets the binary for whichever *alternate* backend
 is chosen; `mpv` always uses its own "mpv path" row instead. Only one
 playback can be in flight at a time.
+
+### Senshi needs Node.js
+
+The Senshi source hands out its streams through the site's own player
+script, so shigoku runs that script under Node.js (18 or newer) for the
+moment it takes to fetch the stream URL; nothing from npm is involved, and
+the other sources need nothing extra. Node is looked up as `node` on PATH,
+or at the path in the `senshi_node` key of `config.json`; set that key to
+`""` to turn the step off. Without Node, Senshi is skipped for playback and
+the walk moves on to the next source — its search results and episode
+lists still show.
 
 ## Downloads
 
@@ -308,6 +339,10 @@ client id*. Once connected:
   downloads, and mirrors like any other; it joins AniList sync once AniList
   can name it.
 
+A MyAnimeList sign-in expires after about a month; shigoku renews it by
+itself at the next sync after that. Only if the renewal is refused does it
+ask you to connect again under Settings.
+
 An edit made on the MAL site after your last push wins over shigoku's
 older copy; an edit made here since then wins over MAL's (it pushes up on
 the next sync), the same rule AniList sync uses.
@@ -326,7 +361,11 @@ A show found through MyAnimeList behaves like any other — it can be added
 to the watchlist, played, downloaded, and mirrored to MAL — with a few
 gaps MAL's API simply has no data for: no character list on the show
 page, no next-episode countdown in the Calendar, and it stays out of
-AniList sync until AniList is reachable again.
+AniList sync until AniList is reachable again. Once it is, the first time
+the show is selected shigoku asks AniList for its entry and moves the
+show onto it: progress, watchlist status, downloads and source choices
+come along, and from then on it syncs like any other show. A show that is
+playing or downloading at that moment moves the next time it is selected.
 
 ## Command line
 
@@ -336,18 +375,77 @@ terminal:
 
 | Command | Does |
 |---|---|
-| `shigoku <title> [--dub\|--sub] [--quality <q>]` | Search, then pick a result and an episode from numbered lists, then play it |
-| `shigoku download <title> [<episode>] [--dub\|--sub]` | Same search-and-pick flow, but downloads instead of playing; giving `<episode>` skips that last prompt (it matches an exact episode label first, then falls back to a 1-based position) |
+| `shigoku <title> [--dub\|--sub] [-q <quality>] [-S <n>] [-e <episode> \| -r <a>-<b>] [-p <source>]` | Search, then pick a result and an episode from numbered lists, then play it — and after each episode, choose next / replay / previous / quit. The flags skip the prompts (below) |
+| `shigoku continue [<title>] [--dub\|--sub] [-q <quality>] [-S <n>] [-p <source>]` | Pick a show from your history back up where you left it: the freshest half-watched episode, or the one after the last you finished. Without `<title>` the whole history is offered, most recently watched first; with one, only the shows whose title contains it (a single match plays straight away) |
+| `shigoku download <title> [<episode>] [--dub\|--sub] [-q <quality>] [-S <n>] [-p <source>]` | Same search-and-pick flow, but downloads instead of playing; giving `<episode>` (or `-e`) skips that last prompt (it matches an exact episode label first, then falls back to a 1-based position) |
 | `shigoku login [--paste]` | Sign in to AniList from the terminal — a successful sign-in immediately runs a sync too. `--paste` swaps the automatic browser-and-listener flow for manually pasting the redirect URL |
 | `shigoku sync` | Pull your MyAnimeList list and push edits back if connected, then pull and push your AniList list once, then exit — this always runs, even if Settings' *sync enabled* is switched off (that toggle only gates the interface's own automatic sync) |
 | `shigoku update` | Check GitHub for a newer release — shigoku never updates itself; reinstall via your package manager |
 | `shigoku --paths` | Print where config, database, cache, and `mpv` currently resolve to |
 | `shigoku --version` / `-V` | Print the version and exit |
 | `shigoku --debug` | Add to any command above for verbose diagnostics (stderr on the command line, a log file when running the interface) |
+| `shigoku --ascii` | Add to any command above to keep its output to plain ASCII — automatic when the locale is not UTF-8 |
 
-`--quality` is accepted but not actually wired up yet — every command
-currently plays the best direct stream available regardless of what you ask
-for.
+The flags that skip a prompt, for scripts and for when you know what you
+want (each has a long form too: `--quality`, `--show`, `--episode`,
+`--range`, `--provider`, with or without `=`):
+
+- `-q <quality>` — `best` (the default), `1080`, `720`, `480`, or `worst`,
+  for this run instead of the `default_quality` in `config.json`. Sources
+  that offer one stream ignore it, as ever, and so does a stream whose
+  audio comes as a separate track (Senshi's do): one picture size alone
+  would play silent, so the player gets the whole ladder and picks the
+  tracks itself. A spelling shigoku does not know plays best and says so.
+- `-S <n>` — take the nth search result instead of asking.
+- `-e <episode>` — play that episode: its label as the list shows it, or
+  its position in the list. After it, the usual next / replay / previous /
+  quit question follows.
+- `-r <a>-<b>` — play the span from `<a>` through `<b>` (labels or
+  positions) one after another, no questions asked between or after; leave
+  `<b>` off (`-r 4-`) for "through the end". An episode that fails to play
+  on every source (below) ends the run there, exit 1, like a single episode
+  would.
+- `-p <source>` — ask this source first (its short name: `senshi`,
+  `hianime`, `animehub`, `anilibria`, `anidbapp`; `shigoku --paths` lists
+  the ones a search can walk, in order), for this run instead of
+  `preferred_provider`.
+  A name shigoku does not know is said and the run walks as if unset.
+
+```
+shigoku frieren -S 1 -e 7        # the first result, episode 7, no prompts
+shigoku frieren -r 1-4           # episodes 1 through 4 in a row
+shigoku continue                 # pick up where you left off
+shigoku continue frieren -q 720  # this show, at 720p if the source has it
+```
+
+After an episode plays, the same picker that chose it asks what next:
+*next*, *replay*, *previous* (only when such an episode exists) or *quit*.
+Enter a number, or `q` — or, piped from a script, let stdin's end answer:
+it reads as quit, so `shigoku frieren -S 1 -e 7 </dev/null` plays the one
+episode and exits.
+
+`shigoku continue` reads the library `shigoku` keeps for its History view.
+A show joins it the same way from the command line as from the interface:
+once you have watched past the middle of an episode (a shorter look leaves
+only its resume point, and counts for nothing), or when you add it to your
+watchlist in the interface — a source that names shows by their
+MyAnimeList id files them under the matching AniList entry, like the
+interface's MAL catalogue does, and one whose results carry no id at all
+(HiAnime, AnimeHub) is looked up in the catalogue by its title and filed
+under the entry that clearly matches it; when none clearly does, that run plays
+without joining the library. It asks the
+source the show was last streamed from for its episode list — `-p` names
+another, when the show is known there too — and, if that source is down or
+no longer lists the show, searches for the title again and takes the result
+that carries the show's AniList or MyAnimeList id without asking. All
+episodes watched is a plain "you're caught up".
+
+On a terminal or in a locale that has no UTF-8 — a serial console, an
+`xterm` under `LANG=C`, an old Terminal.app whose font lacks the marks — the
+command line's few glyphs (✓ ✗ ▶ ↺ · …) come out as plain ASCII (`+ x > < -
+...`) instead of mojibake. That switch is automatic from the locale's
+codeset; `--ascii` forces it, and `shigoku --paths` says which you get and
+why.
 
 Both pick steps use a numbered prompt by default. If an fzf-compatible
 picker is installed — `fzf`, or `fzf++`, the C++ reimplementation that
@@ -356,19 +454,22 @@ instead: type to filter, Enter selects, Esc backs out (that is the "bye"
 the prompt's `q` gives). Two keys in `config.json` steer this: `cli_picker`
 (`auto`, the default; `prompt`; or `fzf`) and `picker_path` (the binary, when
 it is not simply `fzf` on your PATH). A piped or scripted run always gets
-the prompt.
+the prompt. `shigoku --paths` shows which of the two a run from your shell
+would use — and, when it is the prompt, why (no `fzf` on the PATH shigoku
+sees, not at a terminal, or the config). A picker that fails to start,
+exits with an error or crashes hands that pick, and the rest of the run, to
+the numbered prompt with a note saying so; Esc in the picker is still just
+"bye".
 
 A command-line search walks the streaming sources that can search, your
-preferred one first: a source that fails or finds nothing is noted on the
-spot and the next one is tried, and the first that answers serves the run (its
-episode list, its streams). Only when every source fails does the
-command exit with an error; a source that answered "nothing" makes it a plain
-"no results".
-
-A result from a source that names no catalogue id (HiAnime, AnimeHub) is
-looked up in the catalogue by its title and filed under the entry that
-clearly matches it, so it resumes and joins your history like any other;
-when none clearly does, that run plays without joining the library.
+preferred one first (`-p` for one run, `preferred_provider` in `config.json`
+otherwise): a source that fails or finds nothing is noted on the spot and
+the next one is tried, and the first that answers serves the run (its
+episode list, its streams). AniLibria, whose titles come back in Russian, is
+always the last source tried — unless it is your preferred one — and its
+results show the romaji or English title alongside, in parentheses. Only
+when every source fails does the command exit with an error; a source that
+answered "nothing" makes it a plain "no results".
 
 An episode that won't play on the run's source — its stream never opens
 (after the three tries), or none can be found — is looked for on the other
@@ -383,6 +484,127 @@ error.
 A shigoku built with `-DWITH_TUI=OFF` has only this command line — no
 interface, no `shigoku-manga` — and running a bare `shigoku` there prints the
 usage.
+
+## shigoku-manga (the manga reader)
+
+`shigoku-manga` is a separate app for manga, built alongside `shigoku`
+whenever the interface is. It looks and moves like `shigoku`, but keeps its
+own settings, library and sign-in, so the two never touch each other's
+data. Search a source, follow titles into a library, and read chapters in
+[shigoku-view](#shigoku-view-the-page-viewer). A chapter is downloaded in
+full before it opens, so anything you have read stays readable offline.
+
+| Source | Notes |
+|---|---|
+| MangaDex | The default. Chapters in the `chapter_lang` language; the only source whose titles sync to AniList |
+| WeebCentral | |
+| Dynasty Reader | |
+| MangaHub | Needs libcurl-impersonate installed (loaded only when used). Titles the site marks adult stay hidden unless `nsfw_sources` is on |
+| nhentai | Hidden entirely unless `nsfw_sources` is on |
+
+| Key | Action |
+|---|---|
+| `/` | Search the active source |
+| `s` | Switch to the next source (remembered for next time) |
+| `Enter` | On a result: load its chapters. On a chapter: read it |
+| `l` / `h`, `Esc` | Move into the chapter list / back to the results |
+| `j`/`k`, `g`/`G`, `PgUp`/`PgDn`, wheel | Move through the list |
+| `f` | Follow or unfollow the selected title |
+| `L` | Switch between your library (followed titles, with unread counts) and the search results |
+| `r` | Continue: open the first chapter after the last one you read |
+| `D` | Download every unread chapter of the title in the background |
+| `U` | Check every followed title for new chapters |
+| `u` | Undo the last "marked read" |
+| `A` / `S` | Connect AniList / push this title's progress to AniList now |
+| `q` | Quit |
+
+Clicks and the wheel work as in `shigoku`. Reading a chapter to its last
+page marks it read; closing the viewer earlier remembers the page, and the
+chapter opens there next time. Once AniList is connected (the same account
+as `shigoku`'s, signed in separately with `A`), finishing a chapter of a
+MangaDex title also moves your AniList progress up to it. It never moves
+the entry backwards and leaves your score alone.
+
+There is no Settings view yet: the app writes
+`~/.config/shigoku-manga/config.json` with these defaults on its first run,
+and you edit it there.
+
+| Key | Default | What it does |
+|---|---|---|
+| `source` | `md` | The source to start in: `md`, `wc`, `dy`, `mh`, or `nh` |
+| `chapter_lang` | `en` | MangaDex chapter language |
+| `data_saver` | `false` | MangaDex's compressed pages, for slow links |
+| `viewer` | `builtin` | `builtin` (shigoku-view), `preview` (macOS Preview), or `custom` |
+| `viewer_path` | `""` | The program `custom` runs, handed the chapter's folder |
+| `rtl` | `false` | Turn pages right to left |
+| `nsfw_sources` | `false` | Show nhentai, and MangaHub's adult titles |
+| `anilist_sync` | `true` | Send read progress to AniList when connected |
+
+Only the built-in viewer reports where you stopped. With `preview` or a
+custom viewer, chapters open but are not marked read and do not resume.
+Chapters are stored as numbered images under
+`~/.local/share/shigoku-manga/library/<title>/<chapter>/`, so the library is
+browsable from a file manager too.
+
+## shigoku-view (the page viewer)
+
+`shigoku-view` is the SDL page viewer `shigoku-manga` reads chapters in. It
+also works on its own, launched from the command line, for any folder of
+images or a document. It opens:
+
+- a directory or list of image files (`.jpg`/`.jpeg`/`.png`/`.webp`),
+  sorted in natural order (`page2.png` before `page10.png`);
+- a single PDF, EPUB, FB2, or XPS/OXPS document — only in a build with
+  libmupdf (on by default; auto-off if the library isn't found at build
+  time, or with `-DWITH_MUPDF=OFF`);
+- a single CBZ, CBR, or CBT comic archive — only in a build with libarchive
+  (same auto-off behaviour, `-DWITH_LIBARCHIVE=OFF`); the archive is
+  extracted once into a temp directory of images and read like any other
+  page list.
+
+A build missing one of the two libraries still opens everything else
+exactly as normal — only the unsupported format prints an error naming
+which flag or missing library to fix.
+
+```
+shigoku-view [--rtl] [--start-page N] [--report-file PATH]
+             [--fit page|width] [--title S]
+             <dir | file... | doc.pdf/.epub/.fb2/.xps | comic.cbz/.cbr/.cbt>
+```
+
+`--rtl` mirrors the left/right page-turn direction (manga reading order);
+`--start-page` opens at a given 1-based page, clamped to the document's
+actual count; `--fit` picks the initial fit mode, `page` (default) or
+`width`; `--title` sets the window title; `--report-file` writes the last
+page viewed (`LAST_PAGE=<N>`) to a file on quit instead of stdout — this is
+how `shigoku-manga` reads back where you left off.
+
+| Key | Action |
+|---|---|
+| `space` / `PgDn` / `j` | Next page |
+| `backspace` / `PgUp` / `k` | Previous page |
+| `left` / `right` | Page (pans first when zoomed in) |
+| `up` / `down` | Scroll |
+| `home` / `end` | First / last page |
+| `f` | Fit page ↔ fit width |
+| `+` / `-` / `0` | Zoom in / out / reset (`Cmd +`/`-`/`0` on macOS) |
+| `shift+f` / `F11` | Fullscreen (View menu on macOS) |
+| `p` | Page-number overlay |
+| `q` | Quit (`Esc` leaves fullscreen first) |
+
+Two things worth knowing:
+
+- **Reflowable books renumber.** An EPUB or FB2 relayouts its text on every
+  resize and fullscreen toggle, so the page count — and which page a given
+  spot in the book lands on — can change. `shigoku-view` tries to keep your
+  place across a relayout (by chapter and fractional position within it),
+  but the page number itself isn't stable the way a PDF's or an image's is.
+- **Password-protected PDFs are refused**, with a clear error — there's no
+  password prompt in v1.
+
+The document and archive formats above don't change how `shigoku-manga`
+uses the viewer, since a manga chapter is never a PDF, EPUB, or comic
+archive.
 
 ## Files on disk
 
@@ -400,7 +622,9 @@ Paths respect `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` /
 | `mpv` IPC socket (while playing) | `$XDG_RUNTIME_DIR/shigoku` (or `/tmp/shigoku`) |
 
 Run `shigoku --paths` at any time to see these resolved for your own
-machine.
+machine. `shigoku-manga` keeps its own set in the same places under
+`shigoku-manga` instead of `shigoku`: `config.json` and `auth.json`, then
+`manga.db` and the chapter `library/` under the data directory.
 
 ## Key appendix
 
@@ -434,7 +658,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | Key | Action |
 |---|---|
 | `/` | Filter the list (local) |
-| `f` / `F` | Status filter: next / clear |
+| `f` / `F` | Status filter (the last stop is *behind*): next / clear |
 | `j`/`k`, `g`/`G` | Move / jump the list |
 | `l`, `Enter`, double-click | Open detail preview (wide) or full page (narrow) |
 | `Space` | Open full page (any width) |
