@@ -196,6 +196,27 @@ std::string search_url(std::string_view host, std::string_view query,
   return url;
 }
 
+std::optional<std::string> ranking_url(std::string_view host, FeedKind kind,
+                                       std::uint32_t limit, std::uint32_t offset) {
+  const char* sort = nullptr;
+  switch (kind) {
+    case FeedKind::Popular: sort = "Popularity"; break;
+    case FeedKind::Latest: sort = "Latest+Updates"; break;
+    case FeedKind::Newest: sort = "Recently+Added"; break;
+    case FeedKind::TopRated: break;
+  }
+  if (sort == nullptr) return std::nullopt;
+  std::string url(host);
+  url += "/search/data?limit=";
+  url += std::to_string(limit);
+  url += "&offset=";
+  url += std::to_string(offset);
+  url += "&text=&sort=";
+  url += sort;
+  url += "&order=Descending&official=Any&display_mode=Full+Display";
+  return url;
+}
+
 std::string chapter_list_url(std::string_view host, std::string_view series_id) {
   std::string url(host);
   url += "/series/";
@@ -404,6 +425,26 @@ Result<std::vector<MdManga>, ProviderError> WeebCentral::search(
   const std::string_view text(reinterpret_cast<const char*>(body->data()),
                               body->size());
   return wc::parse_search(text);
+}
+
+std::vector<FeedKind> WeebCentral::feeds() const {
+  return {FeedKind::Popular, FeedKind::Latest, FeedKind::Newest};
+}
+
+Result<FeedPage, ProviderError> WeebCentral::feed(FeedKind kind, std::uint32_t page,
+                                                  std::string_view /*lang: EN-only site*/) const {
+  if (page == 0) page = 1;
+  const auto url = wc::ranking_url(host_, kind, kWcSearchLimit, (page - 1) * kWcSearchLimit);
+  if (!url.has_value()) return err(ProviderError::unsupported());
+  auto body = get(*url);
+  if (!body.has_value()) return err(body.error());
+  const std::string_view text(reinterpret_cast<const char*>(body->data()), body->size());
+  auto rows = wc::parse_search(text);
+  if (!rows.has_value()) return err(rows.error());
+  FeedPage out;
+  out.has_next = rows->size() >= kWcSearchLimit;
+  out.rows = std::move(*rows);
+  return out;
 }
 
 Result<std::vector<MdChapter>, ProviderError> WeebCentral::chapters(

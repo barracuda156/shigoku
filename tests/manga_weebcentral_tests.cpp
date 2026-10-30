@@ -301,3 +301,25 @@ TEST_CASE("weebcentral_attrs_scoped_id_and_cover_thumb") {
   m.id = "not-a-ulid";
   CHECK(wc->cover_thumb_url(m).empty());
 }
+
+TEST_CASE("ranking_url_sorts_by_the_site_spelling") {
+  CHECK(ranking_url(kWcHost, FeedKind::Popular, 32, 0) ==
+        std::optional<std::string>(
+            "https://weebcentral.com/search/data?limit=32&offset=0&text=&sort=Popularity"
+            "&order=Descending&official=Any&display_mode=Full+Display"));
+  CHECK(ranking_url(kWcHost, FeedKind::Latest, 32, 64)->find(
+            "offset=64&text=&sort=Latest+Updates&") != std::string::npos);
+  CHECK(ranking_url(kWcHost, FeedKind::Newest, 32, 0)->find("sort=Recently+Added") !=
+        std::string::npos);
+  CHECK_FALSE(ranking_url(kWcHost, FeedKind::TopRated, 32, 0).has_value());
+}
+
+TEST_CASE("weebcentral_feeds_and_top_rated_unsupported") {
+  auto wcs = WeebCentral::create();
+  REQUIRE(wcs.has_value());
+  CHECK(wcs->feeds() ==
+        std::vector<FeedKind>{FeedKind::Popular, FeedKind::Latest, FeedKind::Newest});
+  const auto top = wcs->feed(FeedKind::TopRated, 1, "en");
+  REQUIRE_FALSE(top.has_value());
+  CHECK(top.error().kind == ProviderError::Kind::Unsupported);
+}

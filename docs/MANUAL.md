@@ -517,9 +517,14 @@ full before it opens, so anything you have read stays readable offline.
 | MangaHub | Needs libcurl-impersonate installed (loaded only when used). Titles the site marks adult stay hidden unless `nsfw_sources` is on |
 | nhentai | Hidden entirely unless `nsfw_sources` is on |
 
+MangaDex has all four rankings (`1`–`4` below); WeebCentral and MangaHub
+have the first three; Dynasty Reader and nhentai have none.
+
 | Key | Action |
 |---|---|
 | `/` | Search the active source |
+| `1`–`4` | Browse the active source's rankings instead: Popular / Latest updates / New / Top rated. Scrolling to the end loads more |
+| `[` / `]` | Step to the previous / next ranking the source has |
 | `s` | Switch to the next source (remembered for next time) |
 | `Enter` | On a result: load its chapters. On a chapter: read it |
 | `l` / `h`, `Esc` | Move into the chapter list / back to the results |

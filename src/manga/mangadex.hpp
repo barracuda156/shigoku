@@ -52,6 +52,8 @@ inline constexpr std::uint32_t kFeedLimit = 500;
 inline constexpr std::uint32_t kMaxFeedPages = 20;
 // Search result page size (one screen of results; no pagination).
 inline constexpr std::uint32_t kSearchLimit = 25;
+// One page of a ranked listing (feed()).
+inline constexpr std::uint32_t kRankingLimit = 30;
 
 // --- Types (pinned) -----------------------------------------------------------
 // MdManga / MdChapter moved to model.hpp with the multi-source seam (they
@@ -103,6 +105,14 @@ namespace detail {
                                    std::string_view lang, std::uint32_t limit,
                                    std::uint32_t offset);
 [[nodiscard]] std::string at_home_url(std::string_view host, std::string_view chapter_id);
+// A ranked listing: {host}/manga?limit={n}&offset={o}&includes%5B%5D=cover_art
+//   &hasAvailableChapters=true&availableTranslatedLanguage%5B%5D={lang}
+//   &order%5B{followedCount|latestUploadedChapter|createdAt|rating}%5D=desc
+[[nodiscard]] std::string ranking_url(std::string_view host, FeedKind kind,
+                                      std::string_view lang, std::uint32_t limit,
+                                      std::uint32_t offset);
+// A list response's `total` (0 when absent or not a number).
+[[nodiscard]] std::uint32_t list_total(std::string_view raw);
 [[nodiscard]] std::string cover_url(std::string_view uploads_host,
                                     std::string_view manga_id,
                                     std::string_view filename);
@@ -219,6 +229,11 @@ class MangaDex final : public MangaSource {
   // Absolute .512.jpg thumb URL for the shared Covers::load path (nullptr
   // provider arm — the URL is absolute). "" when the manga has no cover.
   [[nodiscard]] std::string cover_thumb_url(const MdManga& m) const override;
+
+  // All four, ranked over titles with chapters in `lang`.
+  [[nodiscard]] std::vector<FeedKind> feeds() const override;
+  [[nodiscard]] Result<FeedPage, ProviderError> feed(FeedKind kind, std::uint32_t page,
+                                                     std::string_view lang) const override;
 
  private:
   MangaDex(http::Client client, std::string api_host)

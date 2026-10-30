@@ -1427,3 +1427,166 @@ TEST_CASE("A with no auth file wired is a toast, not a half-open modal") {
   CHECK_FALSE(app.connect.has_value());
   CHECK(last_toast(app).find("connect unavailable") != std::string::npos);
 }
+
+// --- Ranked feeds (`1`-`4`, `[` / `]`) -----------------------------------------
+
+namespace {
+
+struct FeedSource final : MangaSource {
+  std::vector<FeedKind> kinds = {FeedKind::Popular, FeedKind::Latest};
+  [[nodiscard]] std::string_view key() const override { return "fs"; }
+  [[nodiscard]] std::string_view name() const override { return "FeedSource"; }
+  [[nodiscard]] Result<std::vector<MdManga>, ProviderError> search(
+      std::string_view) const override {
+    return std::vector<MdManga>{};
+  }
+  [[nodiscard]] Result<std::vector<MdChapter>, ProviderError> chapters(
+      std::string_view, std::string_view) const override {
+    return std::vector<MdChapter>{};
+  }
+  [[nodiscard]] Result<PageSet, ProviderError> pages(std::string_view, bool) const override {
+    return PageSet{};
+  }
+  [[nodiscard]] std::string cover_thumb_url(const MdManga&) const override { return {}; }
+  [[nodiscard]] std::vector<FeedKind> feeds() const override { return kinds; }
+};
+
+MgFeedDone feed_page(Generation gen, FeedKind kind, std::uint32_t page,
+                     std::vector<MdManga> rows, bool has_next) {
+  MgFeedDone d;
+  d.gen = gen;
+  d.kind = kind;
+  d.page = page;
+  d.rows = std::move(rows);
+  d.has_next = has_next;
+  return d;
+}
+
+std::vector<MdManga> rows_from(int first, int n) {
+  std::vector<MdManga> out;
+  for (int i = first; i < first + n; ++i) {
+    out.push_back(manga_row(("m" + std::to_string(i)).c_str(), "T"));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("1 opens the Popular feed; its page lands in the results list") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  app.view = MgView::Library;
+  app.last_query = "old";
+
+  tick(app, MgEvent{key_char(U'1')});
+  REQUIRE(app.feed.has_value());
+  CHECK(*app.feed == FeedKind::Popular);
+  CHECK(app.searching);
+  CHECK(app.view == MgView::Search);
+  CHECK(app.last_query.empty());
+
+  tick(app, MgEvent{feed_page(app.search_gen.current(), FeedKind::Popular, 1,
+                              rows_from(0, 20), true)});
+  CHECK_FALSE(app.searching);
+  CHECK(app.results.size() == 20);
+  CHECK(app.feed_page == 1);
+  CHECK(app.feed_has_next);
+}
+
+TEST_CASE("nearing the end pages the feed; repeats are dropped") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U'2')});
+  tick(app, MgEvent{feed_page(app.search_gen.current(), FeedKind::Latest, 1,
+                              rows_from(0, 10), true)});
+  const Generation before = app.search_gen.current();
+
+  tick(app, MgEvent{key_char(U'G')});  // to the end: within the prefetch rows.
+  CHECK(app.searching);
+  CHECK(app.search_gen.current() != before);
+
+  auto more = rows_from(8, 6);  // m8, m9 already held.
+  tick(app, MgEvent{feed_page(app.search_gen.current(), FeedKind::Latest, 2, more, false)});
+  CHECK(app.results.size() == 14);
+  CHECK(app.feed_page == 2);
+  CHECK_FALSE(app.feed_has_next);
+
+  // Exhausted: the end of the list asks for nothing more.
+  tick(app, MgEvent{key_char(U'G')});
+  CHECK_FALSE(app.searching);
+}
+
+TEST_CASE("a stale or out-of-order feed page is discarded") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U'1')});
+  const Generation first = app.search_gen.current();
+  tick(app, MgEvent{key_char(U'2')});
+  tick(app, MgEvent{feed_page(first, FeedKind::Popular, 1, rows_from(0, 5), false)});
+  CHECK(app.results.empty());
+  CHECK(app.searching);  // the Latest fetch is still the live one.
+  tick(app, MgEvent{feed_page(app.search_gen.current(), FeedKind::Latest, 2,
+                              rows_from(0, 5), false)});
+  CHECK(app.results.empty());  // page 2 before page 1.
+}
+
+TEST_CASE("a feed the source lacks, or a source without feeds, only says so") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U'4')});
+  CHECK_FALSE(app.feed.has_value());
+  CHECK_FALSE(app.searching);
+  CHECK_FALSE(app.toasts.empty());
+
+  fs.kinds.clear();
+  tick(app, MgEvent{key_char(U']')});
+  CHECK_FALSE(app.feed.has_value());
+}
+
+TEST_CASE("[ and ] step through the source's feeds, wrapping") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U']')});
+  REQUIRE(app.feed.has_value());
+  CHECK(*app.feed == FeedKind::Popular);
+  tick(app, MgEvent{key_char(U']')});
+  CHECK(*app.feed == FeedKind::Latest);
+  tick(app, MgEvent{key_char(U']')});
+  CHECK(*app.feed == FeedKind::Popular);
+  tick(app, MgEvent{key_char(U'[')});
+  CHECK(*app.feed == FeedKind::Latest);
+}
+
+TEST_CASE("a source switch leaves the feed") {
+  FeedSource fs;
+  FakeSource md("md", "MangaDex");
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.sources = {&fs, &md};
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U'1')});
+  REQUIRE(app.feed.has_value());
+  const Generation inflight = app.search_gen.current();
+  tick(app, MgEvent{key_char(U's')});
+  CHECK_FALSE(app.feed.has_value());
+  CHECK(app.feed_page == 0);
+  // The old source's page dies by generation.
+  tick(app, MgEvent{feed_page(inflight, FeedKind::Popular, 1, rows_from(0, 5), false)});
+  CHECK(app.results.empty());
+}

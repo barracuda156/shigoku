@@ -472,3 +472,32 @@ TEST_CASE("cover_thumb_url_absolute_or_blank_without_a_cover") {
   no_cover.id = "a77742b1-befd-49a4-bff5-1ad4e6b0ef7b";
   CHECK(p->cover_thumb_url(no_cover).empty());
 }
+
+TEST_CASE("ranking_url_orders_each_feed_over_readable_titles") {
+  CHECK(ranking_url(kApiHost, FeedKind::Popular, "en", 30, 0) ==
+        "https://api.mangadex.org/manga?limit=30&offset=0&includes%5B%5D=cover_art"
+        "&hasAvailableChapters=true&availableTranslatedLanguage%5B%5D=en"
+        "&order%5BfollowedCount%5D=desc");
+  CHECK(ranking_url(kApiHost, FeedKind::Latest, "pt-br", 30, 60).find(
+            "offset=60&") != std::string::npos);
+  CHECK(ranking_url(kApiHost, FeedKind::Latest, "pt-br", 30, 60).find(
+            "availableTranslatedLanguage%5B%5D=pt-br&order%5BlatestUploadedChapter%5D=desc") !=
+        std::string::npos);
+  CHECK(ranking_url(kApiHost, FeedKind::Newest, "en", 30, 0).ends_with(
+      "order%5BcreatedAt%5D=desc"));
+  CHECK(ranking_url(kApiHost, FeedKind::TopRated, "en", 30, 0).ends_with(
+      "order%5Brating%5D=desc"));
+}
+
+TEST_CASE("list_total_reads_the_server_count") {
+  CHECK(list_total(R"({"result":"ok","data":[],"total":49328})") == 49328);
+  CHECK(list_total(R"({"data":[]})") == 0);
+  CHECK(list_total(R"({"total":"many"})") == 0);
+  CHECK(list_total("not json") == 0);
+}
+
+TEST_CASE("mangadex_ranks_all_four_feeds") {
+  auto md = MangaDex::create();
+  REQUIRE(md.has_value());
+  CHECK(md->feeds().size() == 4);
+}

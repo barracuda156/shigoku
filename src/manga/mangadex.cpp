@@ -157,6 +157,38 @@ std::string search_url(std::string_view host, std::string_view query, std::uint3
   return out;
 }
 
+std::string ranking_url(std::string_view host, FeedKind kind, std::string_view lang,
+                        std::uint32_t limit, std::uint32_t offset) {
+  const char* order = "followedCount";
+  switch (kind) {
+    case FeedKind::Popular: order = "followedCount"; break;
+    case FeedKind::Latest: order = "latestUploadedChapter"; break;
+    case FeedKind::Newest: order = "createdAt"; break;
+    case FeedKind::TopRated: order = "rating"; break;
+  }
+  std::string out;
+  out.append(host);
+  out.append("/manga?limit=");
+  out.append(std::to_string(limit));
+  out.append("&offset=");
+  out.append(std::to_string(offset));
+  out.append("&includes%5B%5D=cover_art&hasAvailableChapters=true");
+  out.append("&availableTranslatedLanguage%5B%5D=");
+  out.append(url_encode(lang));
+  out.append("&order%5B");
+  out.append(order);
+  out.append("%5D=desc");
+  return out;
+}
+
+std::uint32_t list_total(std::string_view raw) {
+  const json j = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+  if (j.is_discarded() || !j.is_object() || !j.contains("total")) return 0;
+  const json& t = j.at("total");
+  if (!t.is_number_unsigned()) return 0;
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>(t.get<std::uint64_t>(), UINT32_MAX));
+}
+
 std::string feed_url(std::string_view host, std::string_view manga_id, std::string_view lang,
                      std::uint32_t limit, std::uint32_t offset) {
   std::string out;
@@ -481,6 +513,28 @@ Result<std::vector<MdManga>, ProviderError> MangaDex::search(std::string_view qu
   if (!body.has_value()) return err(body.error());
   const std::string_view text(reinterpret_cast<const char*>(body->data()), body->size());
   return detail::parse_search(text);
+}
+
+std::vector<FeedKind> MangaDex::feeds() const {
+  return {kFeedKinds.begin(), kFeedKinds.end()};
+}
+
+Result<FeedPage, ProviderError> MangaDex::feed(FeedKind kind, std::uint32_t page,
+                                               std::string_view lang) const {
+  if (page == 0) page = 1;
+  const std::uint32_t offset = (page - 1) * kRankingLimit;
+  auto body = get(detail::ranking_url(api_host_, kind, lang, kRankingLimit, offset));
+  if (!body.has_value()) return err(body.error());
+  const std::string_view text(reinterpret_cast<const char*>(body->data()), body->size());
+  auto rows = detail::parse_search(text);
+  if (!rows.has_value()) return err(rows.error());
+  // MangaDex refuses offset + limit past 10000 on list endpoints.
+  constexpr std::uint32_t kListWindow = 10000;
+  const std::uint32_t next = offset + kRankingLimit;
+  FeedPage out;
+  out.rows = std::move(*rows);
+  out.has_next = next < detail::list_total(text) && next + kRankingLimit <= kListWindow;
+  return out;
 }
 
 Result<std::vector<MdChapter>, ProviderError> MangaDex::chapters(std::string_view manga_id,

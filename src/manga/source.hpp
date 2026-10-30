@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -43,6 +45,28 @@ struct PageUnit {
   std::string referer;
   std::string name_hint;
   friend bool operator==(const PageUnit&, const PageUnit&) = default;
+};
+
+// A ranked listing a source can serve in place of search results. The order
+// is the key order: `1` Popular … `4` Top rated, the same on every source.
+enum class FeedKind { Popular, Latest, Newest, TopRated };
+inline constexpr std::array<FeedKind, 4> kFeedKinds = {FeedKind::Popular, FeedKind::Latest,
+                                                       FeedKind::Newest, FeedKind::TopRated};
+
+[[nodiscard]] constexpr const char* feed_label(FeedKind k) {
+  switch (k) {
+    case FeedKind::Popular: return "Popular";
+    case FeedKind::Latest: return "Latest updates";
+    case FeedKind::Newest: return "New";
+    case FeedKind::TopRated: return "Top rated";
+  }
+  return "Popular";
+}
+
+// One page of a feed and whether another follows.
+struct FeedPage {
+  std::vector<MdManga> rows;
+  bool has_next = false;
 };
 
 // A chapter's worth of pages, in reading order.
@@ -82,6 +106,16 @@ class MangaSource {
 
   // Absolute cover-thumb URL for the shared Covers::load path; "" = none.
   [[nodiscard]] virtual std::string cover_thumb_url(const MdManga& m) const = 0;
+
+  // The feeds this source ranks (none by default), and one 1-indexed page of
+  // one. `lang` is the chapter language the reader asked for; a source that
+  // can rank by it keeps to titles readable in it.
+  [[nodiscard]] virtual std::vector<FeedKind> feeds() const { return {}; }
+  [[nodiscard]] virtual Result<FeedPage, ProviderError> feed(FeedKind /*kind*/,
+                                                             std::uint32_t /*page*/,
+                                                             std::string_view /*lang*/) const {
+    return err(ProviderError::unsupported());
+  }
 };
 
 // "{key}:{native_id}" — the only id spelling that may enter store space. The

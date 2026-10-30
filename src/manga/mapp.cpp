@@ -265,6 +265,21 @@ void spawn_search(MgApp& app, const MangaSource* source, std::string query) {
   });
 }
 
+void spawn_feed(MgApp& app, const MangaSource* source, FeedKind kind, std::uint32_t page) {
+  const Generation gen = app.search_gen.bump();
+  auto* queue = app.queue;
+  if (queue == nullptr) return;  // bare test frames: the state alone is the point.
+  std::string lang = app.deps != nullptr ? app.deps->config.chapter_lang : std::string("en");
+  tui::spawn_detached([queue, source, gen, kind, page, lang = std::move(lang)]() {
+    auto r = source->feed(kind, page, lang);
+    if (r.has_value()) {
+      queue->try_post(MgEvent{MgFeedDone{gen, kind, page, std::move(r->rows), r->has_next}});
+    } else {
+      queue->try_post(MgEvent{MgFeedFailed{gen, r.error()}});
+    }
+  });
+}
+
 void spawn_chapters(MgApp& app, const MangaSource* source, std::string manga_id) {
   const Generation gen = app.chapters_gen.bump();
   auto* queue = app.queue;
@@ -524,18 +539,81 @@ void spawn_cover(MgApp& app, std::int64_t for_id, std::string url,
 
 int visible_rows(const MgApp& app) { return tui::content_height(app.win.rows); }
 
+// The next page of the held feed, once the cursor is within a few rows of
+// the end and nothing is loading.
+void maybe_page_feed(MgApp& app) {
+  constexpr int kPrefetchRows = 3;
+  if (!app.feed.has_value() || !app.feed_has_next || app.searching) return;
+  if (app.cursor + kPrefetchRows < static_cast<int>(app.results.size())) return;
+  const MangaSource* src = active_source(app);
+  if (src == nullptr) return;
+  app.searching = true;
+  spawn_feed(app, src, *app.feed, app.feed_page + 1);
+}
+
 void move_cursor(MgApp& app, int delta) {
   if (app.results.empty()) return;
   const int last = static_cast<int>(app.results.size()) - 1;
   int c = app.cursor + delta;
   if (c < 0) c = 0;
   if (c > last) c = last;
-  if (c == app.cursor) return;
-  app.cursor = c;
-  const int vis = visible_rows(app);
-  if (app.cursor < app.scroll) app.scroll = app.cursor;
-  if (vis > 0 && app.cursor >= app.scroll + vis) app.scroll = app.cursor - vis + 1;
+  if (c != app.cursor) {
+    app.cursor = c;
+    const int vis = visible_rows(app);
+    if (app.cursor < app.scroll) app.scroll = app.cursor;
+    if (vis > 0 && app.cursor >= app.scroll + vis) app.scroll = app.cursor - vis + 1;
+    app.dirty = true;
+  }
+  maybe_page_feed(app);
+}
+
+// `1`-`4`: the active source's ranked feed of that kind, page 1, in the
+// results list.
+void open_feed(MgApp& app, FeedKind kind) {
+  const MangaSource* src = active_source(app);
+  if (src == nullptr) return;
+  const std::vector<FeedKind> kinds = src->feeds();
+  if (std::find(kinds.begin(), kinds.end(), kind) == kinds.end()) {
+    const std::string name(source_name(app));
+    app.toasts.push(tui::ToastKind::Info,
+                    kinds.empty() ? name + " has no feeds"
+                                  : std::string(feed_label(kind)) + " isn't on " + name,
+                    app.tick_count);
+    app.dirty = true;
+    return;
+  }
+  app.feed = kind;
+  app.feed_page = 0;
+  app.feed_has_next = false;
+  app.last_query.clear();
+  app.searching = true;
+  app.view = MgView::Search;
+  app.focus = MgFocus::Results;
+  app.continue_pending = false;
+  spawn_feed(app, src, kind, 1);
   app.dirty = true;
+}
+
+// `[` / `]`: the previous / next feed the active source has, wrapping.
+void step_feed(MgApp& app, int delta) {
+  const MangaSource* src = active_source(app);
+  if (src == nullptr) return;
+  const std::vector<FeedKind> kinds = src->feeds();
+  if (kinds.empty()) {
+    app.toasts.push(tui::ToastKind::Info, std::string(source_name(app)) + " has no feeds",
+                    app.tick_count);
+    app.dirty = true;
+    return;
+  }
+  const int n = static_cast<int>(kinds.size());
+  int idx = delta > 0 ? -1 : 0;
+  if (app.feed.has_value()) {
+    for (int i = 0; i < n; ++i) {
+      if (kinds[static_cast<std::size_t>(i)] == *app.feed) idx = i;
+    }
+  }
+  const int next = ((idx + delta) % n + n) % n;
+  open_feed(app, kinds[static_cast<std::size_t>(next)]);
 }
 
 // Library list motion (same keep-visible law as move_cursor; its own cursor
@@ -643,6 +721,9 @@ void cycle_source(MgApp& app) {
   app.scroll = 0;
   app.searching = false;
   app.last_query.clear();
+  app.feed.reset();
+  app.feed_page = 0;
+  app.feed_has_next = false;
   app.search_gen.bump();
   app.chapters_for.clear();
   app.chapters_pending_for.clear();
@@ -1041,6 +1122,7 @@ void on_key(MgApp& app, const KeyEvent& k) {
       if (!app.prompt.empty() && active_source(app) != nullptr) {
         app.last_query = app.prompt;
         app.searching = true;
+        app.feed.reset();
         app.view = MgView::Search;  // results have nowhere else to land.
         spawn_search(app, active_source(app), app.prompt);
       }
@@ -1102,6 +1184,16 @@ void on_key(MgApp& app, const KeyEvent& k) {
   // `s` cycles the active source (no-op with fewer than two wired).
   if (k.codepoint == U's') {
     cycle_source(app);
+    return;
+  }
+  // `1`-`4` open the active source's ranked feeds; `[` / `]` step through
+  // the ones it has.
+  if (k.codepoint >= U'1' && k.codepoint <= U'4') {
+    open_feed(app, kFeedKinds[static_cast<std::size_t>(k.codepoint - U'1')]);
+    return;
+  }
+  if (k.codepoint == U'[' || k.codepoint == U']') {
+    step_feed(app, k.codepoint == U']' ? 1 : -1);
     return;
   }
   // `u` undoes the last mark-read (one-deep undo), in the store and on
@@ -1376,7 +1468,7 @@ void draw_top_bar(const MgApp& app, CellBuffer& buf) {
   const bool lib = app.view == MgView::Library;
   const std::string wide =
       lib ? "/ search  Enter open  r continue  D download  U updates  f unfollow  S sync  L search  q quit"
-          : "/ search  Enter open  r continue  D download  f follow  s source  S sync  L library  q quit";
+          : "/ search  1-4 feeds  Enter open  r continue  D download  f follow  s source  S sync  L library  q quit";
   const std::string narrow =
       lib ? "Enter open  r read  D get  U check  f unfollow  L search"
           : "/ search  Enter open  r read  f follow  L library  q quit";
@@ -1428,11 +1520,15 @@ void draw_library(MgApp& app, CellBuffer& buf, int x, int w, int y0, int y1) {
 
 void draw_list(MgApp& app, CellBuffer& buf, int x, int w, int y0, int y1) {
   if (app.results.empty()) {
+    const MangaSource* src = active_source(app);
+    const bool has_feeds = src != nullptr && !src->feeds().empty();
     const std::string copy =
-        app.searching ? "searching…"
-        : app.last_query.empty()
-            ? "press / to search " + std::string(source_name(app))
-            : "no results";
+        app.searching ? (app.feed.has_value() ? "loading…" : "searching…")
+        : !app.last_query.empty() || app.feed.has_value()
+            ? "no results"
+        : has_feeds ? "press / to search " + std::string(source_name(app)) +
+                          ", or 1-4 for its feeds"
+                    : "press / to search " + std::string(source_name(app));
     buf.put_str(x + 2, y0 + 1, copy, th::fg2, th::bg);
     return;
   }
@@ -1680,11 +1776,18 @@ void draw_bottom(const MgApp& app, CellBuffer& buf) {
     status = std::string(spinner_frame(app.tick_count)) + " checking " +
              std::to_string(app.sweep_done) + "/" + std::to_string(app.sweep_total) +
              " series…";
+  } else if (app.searching && app.feed.has_value()) {
+    status = std::string(spinner_frame(app.tick_count)) + " loading " +
+             feed_label(*app.feed) + "…";
   } else if (app.searching) {
     status = std::string(spinner_frame(app.tick_count)) + " searching \"" +
              app.last_query + "\"…";
   } else if (app.view == MgView::Library) {
     status = "library — " + std::to_string(app.library.size()) + " followed";
+  } else if (app.feed.has_value() && !app.results.empty()) {
+    status = std::string(feed_label(*app.feed)) + " on " + std::string(source_name(app)) +
+             " — " + std::to_string(app.results.size()) + " titles" +
+             (app.feed_has_next ? ", more below" : "");
   } else if (!app.results.empty()) {
     status = std::to_string(app.results.size()) + " results for \"" +
              app.last_query + "\"";
@@ -1865,6 +1968,44 @@ void tick(MgApp& app, const MgEvent& ev) {
             app.searching = false;
             app.toasts.push(tui::ToastKind::Error,
                             error_text(f.cause, source_name(app)),
+                            app.tick_count);
+            app.dirty = true;
+          },
+          [&](const MgFeedDone& d) {
+            if (!app.search_gen.is_current(d.gen)) return;
+            app.searching = false;
+            if (!app.feed.has_value() || *app.feed != d.kind || d.page != app.feed_page + 1) {
+              return;
+            }
+            if (d.page == 1) {
+              app.results = d.rows;
+              app.cursor = 0;
+              app.scroll = 0;
+              app.chapters_for.clear();
+              app.chapters_pending_for.clear();
+              app.chapters.clear();
+              app.chapters_loading = false;
+              app.focus = MgFocus::Results;
+              app.chapter_cursor = 0;
+              app.chapter_scroll = 0;
+              if (app.results.empty()) {
+                app.toasts.push(tui::ToastKind::Info, "nothing listed", app.tick_count);
+              }
+            } else {
+              for (const MdManga& m : d.rows) {
+                const bool held = std::any_of(app.results.begin(), app.results.end(),
+                                              [&](const MdManga& r) { return r.id == m.id; });
+                if (!held) app.results.push_back(m);
+              }
+            }
+            app.feed_page = d.page;
+            app.feed_has_next = d.has_next;
+            app.dirty = true;
+          },
+          [&](const MgFeedFailed& f) {
+            if (!app.search_gen.is_current(f.gen)) return;
+            app.searching = false;
+            app.toasts.push(tui::ToastKind::Error, error_text(f.cause, source_name(app)),
                             app.tick_count);
             app.dirty = true;
           },

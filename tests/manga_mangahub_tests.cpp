@@ -325,3 +325,24 @@ TEST_CASE("mangahub_transport_revets_ids_before_any_request") {
   REQUIRE_FALSE(pg2.has_value());
   CHECK(pg2.error().kind == ProviderError::Kind::Decode);
 }
+
+TEST_CASE("ranking_body_and_count") {
+  CHECK(ranking_body(FeedKind::Popular, 30) ==
+        std::optional<std::string>(
+            R"({"query":"query($o:Int){search(x:m01,mod:POPULAR,count:true,offset:$o){rows{title,slug,image,status,isSafe},count}}","variables":{"o":30}})"));
+  CHECK(ranking_body(FeedKind::Latest, 0)->find("mod:LATEST") != std::string::npos);
+  CHECK(ranking_body(FeedKind::Newest, 0)->find("mod:NEW,") != std::string::npos);
+  CHECK_FALSE(ranking_body(FeedKind::TopRated, 0).has_value());
+
+  CHECK(ranking_count(R"({"data":{"search":{"rows":[],"count":79479}}})") == 79479);
+  CHECK(ranking_count(R"({"data":{"search":{"rows":[]}}})") == 0);
+  CHECK(ranking_count(R"({"errors":[{"message":"x"}]})") == 0);
+
+  // The rows parse like search's, isSafe gate included.
+  const auto rows = parse_search(
+      R"({"data":{"search":{"rows":[{"title":"A","slug":"a-1","isSafe":true},)"
+      R"({"title":"B","slug":"b-2","isSafe":false}],"count":2}}})",
+      false);
+  REQUIRE(rows.has_value());
+  CHECK(rows->size() == 1);
+}

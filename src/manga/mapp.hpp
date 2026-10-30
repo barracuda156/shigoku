@@ -145,6 +145,11 @@ struct MgApp {
   bool searching = false;
   std::string last_query;
   tui::GenCounter search_gen;
+  // Set while the results list holds a ranked feed (`1`-`4`) instead of a
+  // search; the next page loads when the cursor nears the end.
+  std::optional<FeedKind> feed;
+  std::uint32_t feed_page = 0;
+  bool feed_has_next = false;
 
   // Library list (left pane in MgView::Library) — the store's followed rows,
   // reloaded whenever something that changes them lands.

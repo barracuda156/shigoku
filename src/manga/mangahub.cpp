@@ -186,6 +186,33 @@ std::string chapter_body(std::string_view slug, std::string_view number) {
                  json{{"s", std::string(slug)}, {"n", std::move(n)}});
 }
 
+std::optional<std::string> ranking_body(FeedKind kind, std::uint32_t offset) {
+  const char* mod = nullptr;
+  switch (kind) {
+    case FeedKind::Popular: mod = "POPULAR"; break;
+    case FeedKind::Latest: mod = "LATEST"; break;
+    case FeedKind::Newest: mod = "NEW"; break;
+    case FeedKind::TopRated: break;
+  }
+  if (mod == nullptr) return std::nullopt;
+  return body_of(std::string("query($o:Int){search(x:m01,mod:") + mod +
+                     ",count:true,offset:$o){rows{title,slug,image,status,isSafe},count}}",
+                 json{{"o", offset}});
+}
+
+std::uint32_t ranking_count(std::string_view raw) {
+  const json j = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+  if (j.is_discarded() || !j.is_object() || !j.contains("data") || !j.at("data").is_object()) {
+    return 0;
+  }
+  const json& data = j.at("data");
+  if (!data.contains("search") || !data.at("search").is_object()) return 0;
+  const json& search = data.at("search");
+  if (!search.contains("count") || !search.at("count").is_number_unsigned()) return 0;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(search.at("count").get<std::uint64_t>(), UINT32_MAX));
+}
+
 std::string page_url(std::string_view image_host, std::string_view prefix,
                      std::string_view file) {
   std::string url(image_host);
@@ -351,6 +378,27 @@ Result<PageSet, ProviderError> MangaHub::pages(std::string_view chapter_id,
   return mh::parse_chapter(
       std::string_view(reinterpret_cast<const char*>(body->data()), body->size()),
       kMhImageHost);
+}
+
+std::vector<FeedKind> MangaHub::feeds() const {
+  return {FeedKind::Popular, FeedKind::Latest, FeedKind::Newest};
+}
+
+Result<FeedPage, ProviderError> MangaHub::feed(FeedKind kind, std::uint32_t page,
+                                               std::string_view /*lang: English only*/) const {
+  if (page == 0) page = 1;
+  const std::uint32_t offset = (page - 1) * kMhRankingPage;
+  auto body_text = mh::ranking_body(kind, offset);
+  if (!body_text.has_value()) return err(ProviderError::unsupported());
+  auto body = post(std::move(*body_text));
+  if (!body.has_value()) return err(body.error());
+  const std::string_view text(reinterpret_cast<const char*>(body->data()), body->size());
+  auto rows = mh::parse_search(text, allow_unsafe_);
+  if (!rows.has_value()) return err(rows.error());
+  FeedPage out;
+  out.rows = std::move(*rows);
+  out.has_next = offset + kMhRankingPage < mh::ranking_count(text);
+  return out;
 }
 
 std::string MangaHub::cover_thumb_url(const MdManga& m) const {

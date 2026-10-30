@@ -40,6 +40,23 @@ struct MgSearchFailed {
   friend bool operator==(const MgSearchFailed&, const MgSearchFailed&) = default;
 };
 
+// One page of a ranked feed (`1`-`4`); same generation as search, so either
+// supersedes the other.
+struct MgFeedDone {
+  Generation gen = 0;
+  FeedKind kind = FeedKind::Popular;
+  std::uint32_t page = 1;
+  std::vector<MdManga> rows;
+  bool has_next = false;
+  friend bool operator==(const MgFeedDone&, const MgFeedDone&) = default;
+};
+
+struct MgFeedFailed {
+  Generation gen = 0;
+  ProviderError cause;
+  friend bool operator==(const MgFeedFailed&, const MgFeedFailed&) = default;
+};
+
 // --- Chapter feed (worker → UI) ----------------------------------------------
 
 struct MgChaptersDone {
@@ -162,7 +179,7 @@ struct MgSyncDone {
 // --- The variant ---------------------------------------------------------------
 
 using MgEvent = std::variant<KeyEvent, MouseEvent, Resize, Tick, MgSearchDone,
-                             MgSearchFailed, MgChaptersDone, MgChaptersFailed,
+                             MgSearchFailed, MgFeedDone, MgFeedFailed, MgChaptersDone, MgChaptersFailed,
                              MgCoverDone, MgCoverFailed, MgPagesProgress,
                              MgPagesDone, MgPagesFailed, MgViewerExited,
                              MgSweepChapters, MgSweepFailed, MgSweepFinished,

@@ -45,6 +45,8 @@ inline constexpr std::size_t kMhSlugMax = 200;
 inline constexpr std::size_t kMhPathMax = 256;
 inline constexpr std::size_t kMhNumberMax = 16;
 inline constexpr std::uint32_t kMhSearchLimit = 30;
+// The ranked listings answer this many rows a page, whatever is asked.
+inline constexpr std::uint32_t kMhRankingPage = 30;
 
 namespace mh {
 
@@ -76,6 +78,11 @@ namespace mh {
 [[nodiscard]] std::string search_body(std::string_view query, std::uint32_t limit);
 [[nodiscard]] std::string manga_body(std::string_view slug);
 [[nodiscard]] std::string chapter_body(std::string_view slug, std::string_view number);
+// A ranked listing (mod POPULAR / LATEST / NEW) from `offset`, with its total
+// count; nullopt for a kind the site does not rank (Top rated).
+[[nodiscard]] std::optional<std::string> ranking_body(FeedKind kind, std::uint32_t offset);
+// The ranked answer's data.search.count (0 when absent).
+[[nodiscard]] std::uint32_t ranking_count(std::string_view raw);
 
 [[nodiscard]] std::string page_url(std::string_view image_host, std::string_view prefix,
                                    std::string_view file);
@@ -121,6 +128,11 @@ class MangaHub final : public MangaSource {
   [[nodiscard]] Result<PageSet, ProviderError> pages(std::string_view chapter_id,
                                                      bool data_saver) const override;
   [[nodiscard]] std::string cover_thumb_url(const MdManga& m) const override;
+
+  // Popular, latest updates and new, with the same isSafe gate as search.
+  [[nodiscard]] std::vector<FeedKind> feeds() const override;
+  [[nodiscard]] Result<FeedPage, ProviderError> feed(FeedKind kind, std::uint32_t page,
+                                                     std::string_view lang) const override;
 
  private:
   MangaHub(http::Client client, std::string api, http::Fingerprint fingerprint,

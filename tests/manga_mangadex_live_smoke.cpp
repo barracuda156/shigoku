@@ -89,6 +89,18 @@ int main() {
               at_home->data_saver.size(),
               detail::page_url(*at_home, 0, false).c_str());
 
+  // The ranked feeds: page 1 and 2 of the first one, rows and a next page.
+  for (std::uint32_t pg = 1; pg <= 2; ++pg) {
+    const FeedKind kind = md->feeds().front();
+    auto f = md->feed(kind, pg, "en");
+    if (!f.has_value() || f->rows.empty() || !f->has_next) {
+      std::fprintf(stderr, "manga_live_smoke: FAIL feed %s page %u\n", feed_label(kind), pg);
+      return 1;
+    }
+    std::printf("feed %s page %u: %zu rows, first \"%s\"\n", feed_label(kind), pg,
+                f->rows.size(), f->rows.front().title.c_str());
+  }
+
   std::printf("manga_live_smoke: PASS\n");
   return 0;
 }

@@ -36,6 +36,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,6 +93,11 @@ namespace wc {
                                      std::uint32_t limit);
 [[nodiscard]] std::string chapter_list_url(std::string_view host,
                                            std::string_view series_id);
+// A ranked listing: search_url's fragment with no text, sorted by
+// Popularity / Latest Updates / Recently Added, Descending, at `offset`.
+// Top rated has no sort here (nullopt).
+[[nodiscard]] std::optional<std::string> ranking_url(std::string_view host, FeedKind kind,
+                                                     std::uint32_t limit, std::uint32_t offset);
 [[nodiscard]] std::string images_url(std::string_view host,
                                      std::string_view chapter_id);
 [[nodiscard]] std::string cover_url(std::string_view cover_host,
@@ -172,6 +179,11 @@ class WeebCentral final : public MangaSource {
   // The probed JPG fallback ({kWcCoverHost}/cover/fallback/{id}.jpg) — always
   // derivable from the vetted id, so never "".
   [[nodiscard]] std::string cover_thumb_url(const MdManga& m) const override;
+
+  // Popular, latest updates and new; a full page means another may follow.
+  [[nodiscard]] std::vector<FeedKind> feeds() const override;
+  [[nodiscard]] Result<FeedPage, ProviderError> feed(FeedKind kind, std::uint32_t page,
+                                                     std::string_view lang) const override;
 
  private:
   WeebCentral(http::Client client, std::string host)
