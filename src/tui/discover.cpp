@@ -114,7 +114,34 @@ bool is_new_this_cour(const Enrichment& e, DiscoverAxis axis, Cour cour) {
          *e.season == cour.season && e.year.has_value() && *e.year == cour.year;
 }
 
-AxisSlot& DiscoverState::active() { return slots_[axis_index(axis_)]; }
+std::string similar_tab_label(const SimilarSeed& seed) {
+  constexpr int kTitleCols = 24;
+  return "Similar to " + truncate_to_cols(seed.title, kTitleCols);
+}
+
+AxisSlot& DiscoverState::active() { return on_similar_ ? similar_ : slots_[axis_index(axis_)]; }
+
+void DiscoverState::open_similar(SimilarSeed seed) {
+  if (!seed_.has_value() || seed_->anilist_id != seed.anilist_id) {
+    similar_ = AxisSlot{};
+    ++similar_gen_;
+  }
+  seed_ = std::move(seed);
+  on_similar_ = true;
+  similar_.failed.reset();
+}
+
+void DiscoverState::show_similar() {
+  if (!seed_.has_value()) return;
+  on_similar_ = true;
+  similar_.failed.reset();
+}
+
+void DiscoverState::on_similar_error(std::string cause, std::uint32_t gen) {
+  if (gen != similar_gen_) return;
+  similar_.loading = false;
+  similar_.failed = std::move(cause);
+}
 
 const Enrichment* DiscoverState::selected_entry() const {
   const AxisSlot& s = slot();
@@ -134,20 +161,26 @@ void DiscoverState::replace_show(std::int64_t anilist_id, const Enrichment& e) {
       if (row.meta.anilist_id == anilist_id) row.meta = e;
     }
   }
+  for (CatalogRow& row : similar_.entries) {
+    if (row.meta.anilist_id == anilist_id) row.meta = e;
+  }
 }
 
 void DiscoverState::cycle_axis(std::int64_t delta) {
-  const std::int64_t n = static_cast<std::int64_t>(kDiscoverAxes.size());
-  const std::int64_t cur = static_cast<std::int64_t>(axis_index(axis_));
+  const std::int64_t axes = static_cast<std::int64_t>(kDiscoverAxes.size());
+  const std::int64_t n = axes + (seed_.has_value() ? 1 : 0);
+  const std::int64_t cur = on_similar_ ? axes : static_cast<std::int64_t>(axis_index(axis_));
   // rem_euclid: a nonnegative residue for any signed delta.
   std::int64_t idx = (cur + delta) % n;
   if (idx < 0) idx += n;
-  axis_ = kDiscoverAxes[static_cast<std::size_t>(idx)];
+  on_similar_ = idx == axes;
+  if (!on_similar_) axis_ = kDiscoverAxes[static_cast<std::size_t>(idx)];
   active().failed.reset();
 }
 
 void DiscoverState::select_axis(std::size_t index) {
   if (index < kDiscoverAxes.size()) {
+    on_similar_ = false;
     axis_ = kDiscoverAxes[index];
     active().failed.reset();
   }
@@ -199,6 +232,8 @@ void DiscoverState::set_filters(DiscoverFilters filters) {
   for (AxisSlot& s : slots_) {
     s = AxisSlot{};
   }
+  similar_ = AxisSlot{};
+  ++similar_gen_;
   // Invalidate every fetch still in flight under the old filters: their
   // answers would otherwise file as perfectly-positioned pages of the new
   // set (P38 review).

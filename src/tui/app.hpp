@@ -402,6 +402,12 @@ using DiscoverPage = std::pair<std::vector<CatalogRow>, bool>;  // {rows, has_ne
 using DiscoverFn = std::function<Result<DiscoverPage, ProviderError>(
     DiscoverAxis axis, std::uint32_t page, const DiscoverFilters& filters)>;
 
+// Similar feed callback: one page of a show's recommendations (the `~` feed),
+// filtered like a Discover page. Same shape as DiscoverFn otherwise.
+using SimilarFn = std::function<Result<DiscoverPage, ProviderError>(
+    std::int64_t anilist_id, std::optional<std::int64_t> mal_id, std::uint32_t page,
+    const DiscoverFilters& filters)>;
+
 // GenreCollection callback (P38): the full AniList genre vocabulary, fetched
 // once per session for the filter overlay's genre picker. Mirrors EnrichFn's
 // shape but two-state (no confirmed-absent arm — see anilist.hpp). Runs on
@@ -436,6 +442,7 @@ struct AppDeps {
   const http::Client* http = nullptr;
   SearchFn search;  // must be set for `/` search to do anything (else no-op).
   DiscoverFn discover;  // must be set for the Discover feed to fetch (else no-op).
+  SimilarFn similar;  // must be set for the `~` feed to fetch (else no-op).
   EnrichFn enrich;  // must be set for refresh-on-view to fetch (else no-op).
   HealFn heal;  // set = refresh-on-view re-keys synthetic rows it can (else they stay).
   CharRecsFn char_recs;  // must be set for the `c` section to fetch (else no-op).

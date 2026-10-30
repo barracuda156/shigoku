@@ -72,5 +72,18 @@ int main() {
   std::printf("anilist_live_smoke: OK manga %zu hit(s), first: id=%lld title=%s\n",
              manga->entries.size(), static_cast<long long>(manga_id),
              (*by_id)->title_romaji.c_str());
+
+  // The Similar feed's query: Frieren's recommendations, two pages.
+  constexpr std::int64_t kFrieren = 154587;
+  for (std::uint32_t pg = 1; pg <= 2; ++pg) {
+    auto recs = anilist::recommendations(*client, kFrieren, pg);
+    if (!recs.has_value() || !recs->has_value() || (*recs)->entries.empty()) {
+      std::fprintf(stderr, "anilist_live_smoke: FAIL recommendations page %u\n", pg);
+      return 1;
+    }
+    std::printf("anilist_live_smoke: OK recommendations page %u: %zu row(s), first %s, next=%d\n",
+                pg, (*recs)->entries.size(), (*recs)->entries[0].title_romaji.c_str(),
+                (*recs)->has_next ? 1 : 0);
+  }
   return 0;
 }

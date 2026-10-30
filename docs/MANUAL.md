@@ -70,6 +70,7 @@ cannot answer (see [Catalog sources](#catalog-sources)).
 | `l`, `Enter`, double-click | Open the detail preview pane on a wide terminal, or the full page directly on a narrow one |
 | `Space` | Open the show's full page directly, from any width |
 | `P` | Add the highlighted show to your watchlist (also fires a quiet background check of other sources, so a later play starts instantly) |
+| `~` | Shows like this one, in Discover (see [Similar titles](#similar-titles-)) |
 | `q` | Quit |
 
 Scrolling to the last loaded result quietly fetches the next page.
@@ -91,6 +92,7 @@ Your watchlist, grouped by status.
 | `r` | Recompute progress from your actual playback history |
 | `u` | Undo the last status change (one level only) |
 | `X`, then `y` | Delete the show and its local episode history — a second key press confirms; anything else cancels |
+| `~` | Shows like this one, in Discover |
 | `q` | Quit |
 
 Each row shows your own score at the right (`★ 8.5`) when you have one.
@@ -121,13 +123,25 @@ MAL: no client id") rather than guessing at your connection.
 | `h`/`j`/`k`/`l`, arrows, wheel | Move the grid cursor |
 | `g`/`G` | Jump to the first/last card of the feed |
 | `1` / `2` / `3` / `4` | Jump straight to Trending / Popular / Top Rated / This Season |
+| `5` | Back to the Similar feed, once one is open |
 | `[` / `]` | Step to the previous/next feed |
 | `f` | Open the filter overlay (below) |
 | `Enter`, double-click | Open the show's full page |
 | `Space` | Same, from anywhere in the grid |
 | `P` | Add the highlighted show to your watchlist |
+| `~` | Shows like the highlighted one (a new Similar feed) |
 | `/` | Jump to Browse with a text search open — Discover itself has no free-text search |
 | `q` | Quit |
+
+### Similar titles (`~`)
+
+`~` on any show — in Browse, History, the Calendar, a Discover card, or the
+show's own page — opens Discover on a fifth feed, `[5] Similar to <title>`:
+the shows AniList's users recommend alongside it, most voted first, as many
+as scrolling asks for. When AniList can't answer, it falls back to the
+handful MyAnimeList lists for the show. The filter overlay applies here
+too. The feed stays as the fifth tab, so `5`, `[`/`]` or a click brings it
+back, until `~` on another show replaces it.
 
 ### Filter overlay (`f`)
 
@@ -218,6 +232,7 @@ title, status/score chips, a synopsis, and the episode grid.
 | `v` | Cycle which streaming source serves this show — automatic → each source in turn → back to automatic. shigoku otherwise picks a source and falls back between them on its own |
 | `d` | Download the highlighted episode instead of playing it |
 | `c` | Toggle the **Characters & Recommendations** section |
+| `~` | Open the full list of similar shows in Discover |
 | `Tab` (section open) | Move focus between the section and the episode grid |
 | `j`/`k`, `g`/`G` (section focused) | Move / jump within Characters & Recommendations |
 | `Enter` (a recommendation focused) | Open *that* show's own page |
@@ -640,6 +655,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | `Ctrl-C` | Quit immediately, no save step |
 | `B` / `H` / `D` / `C` / `S` | Jump to Browse / History / Discover / Calendar / Settings |
 | `/` | Search AniList from anywhere — jumps to Browse with the search box open. Exception: in History, `/` filters the watchlist locally instead |
+| `~` | Similar shows to the selected one, as a Discover feed |
 | Arrow keys | Alias `h`/`j`/`k`/`l` everywhere outside a text box |
 | Mouse click / double-click / wheel | Select / activate (`Enter`) / arrow-step |
 
@@ -675,6 +691,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | `h`/`j`/`k`/`l` | Move grid cursor |
 | `g`/`G` | Jump to first/last card |
 | `1`–`4` | Jump to Trending / Popular / Top Rated / This Season |
+| `5` | The Similar feed (once `~` opened one) |
 | `[`/`]` | Previous/next feed |
 | `f` | Filter overlay |
 | `Enter`/`Space`/double-click | Open full page |

@@ -1532,19 +1532,27 @@ std::optional<Rect> draw_card(const App& app, CellBuffer& buf, const CatalogRow&
 // space permitting, truncated (never wrapped — the bar is one row) when the
 // canvas is too narrow to hold both; an empty DiscoverFilters renders no
 // chips at all, byte-identical to the pre-P38 bar.
-void draw_axis_bar(CellBuffer& buf, int w, int y, DiscoverAxis active,
-                   const DiscoverFilters& filters) {
+void draw_axis_bar(CellBuffer& buf, int w, int y, const DiscoverState& d) {
+  const DiscoverAxis active = d.axis();
+  const DiscoverFilters& filters = d.filters();
   buf.fill(Rect{0, y, w, 1}, theme::bg);
   int x = 2;
   for (std::size_t i = 0; i < kDiscoverAxes.size(); ++i) {
     if (i > 0) x = buf.put_str(x, y, " \xC2\xB7 ", theme::fg3, theme::bg);  // ·
-    const bool is_active = kDiscoverAxes[i] == active;
+    const bool is_active = !d.on_similar() && kDiscoverAxes[i] == active;
     const Rgb key_col = is_active ? theme::focus : theme::fg2;
     const Rgb label_col = key_col;
     const Style label_st = is_active ? Style::Bold : Style::None;
     x = buf.put_str(x, y, "[" + std::to_string(i + 1) + "]", key_col, theme::bg);
     x = buf.put_str(x, y, std::string(" ") + axis_label(kDiscoverAxes[i]), label_col,
                     theme::bg, label_st);
+  }
+  if (d.similar_seed().has_value()) {
+    x = buf.put_str(x, y, " \xC2\xB7 ", theme::fg3, theme::bg);
+    const Rgb col = d.on_similar() ? theme::focus : theme::fg2;
+    x = buf.put_str(x, y, "[5]", col, theme::bg);
+    x = buf.put_str(x, y, " " + similar_tab_label(*d.similar_seed()), col, theme::bg,
+                    d.on_similar() ? Style::Bold : Style::None);
   }
 
   if (filters.empty()) return;
@@ -1569,7 +1577,7 @@ void draw_axis_bar(CellBuffer& buf, int w, int y, DiscoverAxis active,
 // loading (slow-escalated), sticky error, or the genuine empty feed. A slot
 // nothing has fetched yet (page == 0, not loading, not failed) stays blank.
 void draw_empty_grid(const App& app, CellBuffer& buf, int x0, int w, int y0, int y1,
-                     const AxisSlot& slot) {
+                     const AxisSlot& slot, const char* empty_copy) {
   const int mid = y0 + (y1 - y0) / 2;
   if (slot.loading) {
     const char* spin = kSpinnerFrames[app.spinner_phase];
@@ -1584,7 +1592,7 @@ void draw_empty_grid(const App& app, CellBuffer& buf, int x0, int w, int y0, int
     draw_centered(buf, x0, w, mid + 1, truncate_to_cols(*slot.failed, w > 4 ? w - 4 : w),
                   theme::fg2, Style::Italic);
   } else if (slot.page > 0) {
-    draw_centered(buf, x0, w, mid, "no entries", theme::fg2, Style::Italic);
+    draw_centered(buf, x0, w, mid, empty_copy, theme::fg2, Style::Italic);
   }
 }
 
@@ -1637,13 +1645,14 @@ void draw_discover(const App& app, CellBuffer& buf, int y0, int y1) {
   const DiscoverState& d = app.discover;
 
   // Axis bar (1 row) + a spacer row; the grid starts 2 rows down.
-  draw_axis_bar(buf, w, y0, d.axis(), d.filters());
+  draw_axis_bar(buf, w, y0, d);
   const int gy = y0 + 2;
   if (gy >= y1) return;
 
   const AxisSlot& slot = d.slot();
   if (slot.entries.empty()) {
-    draw_empty_grid(app, buf, 0, w, gy, y1, slot);
+    draw_empty_grid(app, buf, 0, w, gy, y1, slot,
+                    d.on_similar() ? "no similar titles" : "no entries");
     return;
   }
 
@@ -1663,7 +1672,10 @@ void draw_discover(const App& app, CellBuffer& buf, int y0, int y1) {
                                    grid_bottom);
     if (r.empty()) continue;
     if (const std::optional<Rect> excl = draw_card(app, buf, slot.entries[i], i,
-                                                    i == slot.cursor, d.axis(), cour,
+                                                    i == slot.cursor,
+                                                    d.on_similar() ? DiscoverAxis::Trending
+                                                                   : d.axis(),
+                                                    cour,
                                                     r.x, r.y, r.w, r.h);
         excl.has_value()) {
       exclusions.push_back(*excl);
@@ -1957,7 +1969,7 @@ std::optional<std::size_t> discover_card_at(const App& app, int px, int py) {
   return std::nullopt;
 }
 
-std::optional<std::size_t> discover_axis_at(int px, int py) {
+std::optional<std::size_t> discover_axis_at(const App& app, int px, int py) {
   if (py != kContentY0) return std::nullopt;  // the axis bar row (draw_discover's y0).
   int x = 2;
   for (std::size_t i = 0; i < kDiscoverAxes.size(); ++i) {
@@ -1968,6 +1980,11 @@ std::optional<std::size_t> discover_axis_at(int px, int py) {
     const int tw = str_width(tab);
     if (px >= x && px < x + tw) return i;
     x += tw;
+  }
+  if (const auto& seed = app.discover.similar_seed(); seed.has_value()) {
+    x += 3;
+    const int tw = str_width("[5] " + similar_tab_label(*seed));
+    if (px >= x && px < x + tw) return kDiscoverAxes.size();
   }
   return std::nullopt;
 }

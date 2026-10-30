@@ -28,6 +28,7 @@ struct Fake {
   int enrich_calls = 0;
   int char_calls = 0;
   int genre_calls = 0;
+  int similar_calls = 0;
   std::optional<std::int64_t> last_enrich_id;
   std::optional<std::int64_t> last_enrich_mal;
   bool can_heal = true;      // sets Backend::by_mal.
@@ -73,6 +74,22 @@ Backend make(Fake& f) {
     if (f.enrich_err.has_value()) return err(*f.enrich_err);
     if (!f.ok) return err(f.fail);
     return std::optional<CharactersAndRecommendations>(CharactersAndRecommendations{});
+  };
+  b.similar = [&f](std::int64_t, std::optional<std::int64_t>, std::uint32_t page)
+      -> Result<Page, ProviderError> {
+    ++f.similar_calls;
+    if (!f.ok) return err(f.fail);
+    Page p;
+    p.source = f.tag;
+    Enrichment drama;
+    drama.anilist_id = f.tag == Source::AniList ? 100 + std::int64_t{page} : -200;
+    drama.genres = {"Drama"};
+    Enrichment comedy;
+    comedy.anilist_id = f.tag == Source::AniList ? 300 + std::int64_t{page} : -400;
+    comedy.genres = {"Comedy"};
+    p.entries = {drama, comedy};
+    p.has_next = f.tag == Source::AniList;
+    return p;
   };
   b.genres = [&f]() -> Result<std::vector<std::string>, ProviderError> {
     ++f.genre_calls;
@@ -486,4 +503,46 @@ TEST_CASE("heal: mode anilist asks; a backend without by_mal cannot heal") {
   auto bad = a.cat->heal(0);
   REQUIRE_FALSE(bad.has_value());
   CHECK(bad.error().kind == ProviderError::Kind::Unsupported);
+}
+
+// ===========================================================================
+// similar (the `~` feed)
+// ===========================================================================
+
+TEST_CASE("similar: AniList pages; MAL only when AniList fails") {
+  Rig rig(Mode::Auto);
+  auto p = rig.cat->similar(5, 50, 2, DiscoverFilters{});
+  REQUIRE(p.has_value());
+  CHECK(p->source == Source::AniList);
+  CHECK(p->entries.size() == 2);
+  CHECK(p->entries[0].anilist_id == 102);
+  CHECK(p->has_next);
+  CHECK(rig.mal.similar_calls == 0);
+
+  rig.anilist.ok = false;
+  rig.anilist.fail = ProviderError::forbidden(403);
+  auto q = rig.cat->similar(5, 50, 1, DiscoverFilters{});
+  REQUIRE(q.has_value());
+  CHECK(q->source == Source::Mal);
+  CHECK(q->entries[0].anilist_id == -200);
+  CHECK_FALSE(q->has_next);
+}
+
+TEST_CASE("similar: filters narrow the page on this side") {
+  Rig rig(Mode::Auto);
+  DiscoverFilters f;
+  f.genres = {"Comedy"};
+  auto p = rig.cat->similar(5, 50, 1, f);
+  REQUIRE(p.has_value());
+  REQUIRE(p->entries.size() == 1);
+  CHECK(p->entries[0].anilist_id == 301);
+  CHECK(p->has_next);  // a short page still says whether more follow.
+}
+
+TEST_CASE("similar: a synthetic id goes straight to MAL") {
+  Rig rig(Mode::Auto);
+  auto p = rig.cat->similar(-77, 77, 1, DiscoverFilters{});
+  REQUIRE(p.has_value());
+  CHECK(p->source == Source::Mal);
+  CHECK(rig.anilist.similar_calls == 0);
 }

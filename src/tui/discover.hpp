@@ -117,12 +117,42 @@ struct AxisSlot {
   std::size_t scroll_row = 0;
 };
 
+// The show a Similar feed was opened for (`~`): its ids for the fetch, its
+// title for the tab.
+struct SimilarSeed {
+  std::int64_t anilist_id = 0;
+  std::optional<std::int64_t> mal_id;
+  std::string title;
+  friend bool operator==(const SimilarSeed&, const SimilarSeed&) = default;
+};
+
+// The Similar tab's label: "Similar to <title>", the title clipped.
+[[nodiscard]] std::string similar_tab_label(const SimilarSeed& seed);
+
 // The Discover view's whole state: the active axis + four slots (discover.rs
 // DiscoverState, state half only — covers/drains are P17b and never land here).
 class DiscoverState {
  public:
   [[nodiscard]] DiscoverAxis axis() const { return axis_; }
-  [[nodiscard]] const AxisSlot& slot() const { return slots_[axis_index(axis_)]; }
+  // The active feed's slot: the Similar feed's while it is on screen.
+  [[nodiscard]] const AxisSlot& slot() const {
+    return on_similar_ ? similar_ : slots_[axis_index(axis_)];
+  }
+
+  // The Similar feed: a fifth slot, after the four axes, that exists once `~`
+  // has opened one. A different show starts it over; the same show just
+  // brings it back, pages and cursor kept.
+  [[nodiscard]] bool on_similar() const { return on_similar_; }
+  [[nodiscard]] const std::optional<SimilarSeed>& similar_seed() const { return seed_; }
+  void open_similar(SimilarSeed seed);
+  // Back to the open Similar feed (`5`, its tab); a no-op without one.
+  void show_similar();
+  // The Similar feed's generation, stamped into its fetches: bumped by a new
+  // seed and by set_filters, so an answer for the old one discards whole.
+  [[nodiscard]] std::uint32_t similar_gen() const { return similar_gen_; }
+  void on_similar_feed(std::uint32_t page, std::vector<CatalogRow> entries, bool has_next,
+                       Store* store, std::int64_t now_unix, std::uint32_t gen);
+  void on_similar_error(std::string cause, std::uint32_t gen);
   [[nodiscard]] const AxisSlot& slot_for(DiscoverAxis a) const { return slots_[axis_index(a)]; }
 
   // The entry under the active slot's cursor, or nullptr (discover.rs
@@ -140,6 +170,7 @@ class DiscoverState {
 
   // `[` / `]` cycle with wraparound; switching preserves every slot's state
   // (DESIGN §8.6) and re-arms a failed slot for retry (discover.rs cycle_axis).
+  // An open Similar feed is the fifth stop.
   void cycle_axis(std::int64_t delta);
 
   // `1`-`4` direct select; out-of-range keys are ignored (discover.rs
@@ -218,6 +249,10 @@ class DiscoverState {
   std::array<AxisSlot, 4> slots_;
   DiscoverFilters filters_;
   std::uint32_t filter_gen_ = 0;
+  bool on_similar_ = false;
+  std::optional<SimilarSeed> seed_;
+  AxisSlot similar_;
+  std::uint32_t similar_gen_ = 0;
 };
 
 // `NEW` marks a current-cour release, suppressed on This Season where every

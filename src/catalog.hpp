@@ -67,6 +67,12 @@ struct Backend {
       std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>
       char_recs;
   std::function<Result<std::vector<std::string>, ProviderError>()> genres;
+  // One page of the show's recommendations (the Similar feed); a show the
+  // source does not know is an empty last page.
+  std::function<Result<Page, ProviderError>(std::int64_t anilist_id,
+                                            std::optional<std::int64_t> mal_id,
+                                            std::uint32_t page)>
+      similar;
   // The entry a MAL id belongs to, under this source's own id. Only the
   // AniList backend sets it; an unset one means the source cannot heal.
   std::function<Result<std::optional<Enrichment>, ProviderError>(std::int64_t mal_id)> by_mal;
@@ -127,6 +133,13 @@ class Catalog {
   [[nodiscard]] Result<std::optional<CharactersAndRecommendations>, ProviderError> char_recs(
       std::int64_t anilist_id, std::optional<std::int64_t> mal_id);
   [[nodiscard]] Result<std::vector<std::string>, ProviderError> genres();
+  // The Similar feed: AniList's recommendations page by page, MAL's handful
+  // when AniList cannot answer. `filters` narrow each page on this side (no
+  // recommendation endpoint filters), so a page can come back short.
+  [[nodiscard]] Result<Page, ProviderError> similar(std::int64_t anilist_id,
+                                                    std::optional<std::int64_t> mal_id,
+                                                    std::uint32_t page,
+                                                    const DiscoverFilters& filters);
 
   // The AniList entry for a MAL id, for re-keying a synthetic row: Ok(some)
   // carries the real anilist_id; Ok(nullopt) means AniList confirmed it has

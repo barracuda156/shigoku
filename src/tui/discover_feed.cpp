@@ -11,15 +11,10 @@
 
 namespace shigoku::tui {
 
-void DiscoverState::on_feed(DiscoverAxis axis, std::uint32_t page,
-                            std::vector<CatalogRow> entries, bool has_next,
-                            Store* store, std::int64_t now_unix, std::uint32_t gen) {
-  // Filter-generation gate FIRST (P38 review): an answer spawned under the
-  // old filters must be discarded whole — the positional check below cannot
-  // tell it from the new set's own page, and `loading` now belongs to the
-  // new generation's fetch.
-  if (gen != filter_gen_) return;
-  AxisSlot& s = slots_[axis_index(axis)];
+namespace {
+
+void file_page(AxisSlot& s, std::uint32_t page, std::vector<CatalogRow> entries, bool has_next,
+               Store* store, std::int64_t now_unix) {
   s.loading = false;
   if (page != s.page + 1) return;  // out-of-order / duplicate: discard.
   if (store != nullptr) {
@@ -37,6 +32,26 @@ void DiscoverState::on_feed(DiscoverAxis axis, std::uint32_t page,
   s.failed.reset();
   s.exhausted = !has_next || s.entries.size() >= kMaxFeedRows ||
                 (s.entries.empty() && page >= kMaxEmptyPages);
+}
+
+}  // namespace
+
+void DiscoverState::on_feed(DiscoverAxis axis, std::uint32_t page,
+                            std::vector<CatalogRow> entries, bool has_next,
+                            Store* store, std::int64_t now_unix, std::uint32_t gen) {
+  // Filter-generation gate FIRST (P38 review): an answer spawned under the
+  // old filters must be discarded whole — the positional check below cannot
+  // tell it from the new set's own page, and `loading` now belongs to the
+  // new generation's fetch.
+  if (gen != filter_gen_) return;
+  file_page(slots_[axis_index(axis)], page, std::move(entries), has_next, store, now_unix);
+}
+
+void DiscoverState::on_similar_feed(std::uint32_t page, std::vector<CatalogRow> entries,
+                                    bool has_next, Store* store, std::int64_t now_unix,
+                                    std::uint32_t gen) {
+  if (gen != similar_gen_) return;
+  file_page(similar_, page, std::move(entries), has_next, store, now_unix);
 }
 
 }  // namespace shigoku::tui

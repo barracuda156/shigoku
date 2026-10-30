@@ -222,6 +222,14 @@ Backend anilist_backend(const http::Client& client) {
     if (anilist_id <= 0) return err(ProviderError::unsupported());
     return anilist::characters_and_recommendations(client, anilist_id);
   };
+  b.similar = [&client](std::int64_t anilist_id, std::optional<std::int64_t>,
+                        std::uint32_t page) -> Result<Page, ProviderError> {
+    if (anilist_id <= 0) return err(ProviderError::unsupported());
+    auto p = anilist::recommendations(client, anilist_id, page);
+    if (!p.has_value()) return err(p.error());
+    if (!p->has_value()) return Page{};
+    return from_anilist(std::move(**p));
+  };
   b.genres = [&client]() { return anilist::genre_collection(client); };
   b.by_mal = [&client](std::int64_t mal_id) { return anilist::enrich_by_mal(client, mal_id); };
   return b;
@@ -264,6 +272,19 @@ Backend mal_backend(const http::Client& client, std::string client_id) {
   };
   b.genres = []() -> Result<std::vector<std::string>, ProviderError> {
     return mal_catalog::genre_vocabulary();
+  };
+  // MAL's by-id answer carries its handful of recommendations, all on page 1.
+  b.similar = [&client, client_id](std::int64_t anilist_id, std::optional<std::int64_t> hint,
+                                   std::uint32_t page) -> Result<Page, ProviderError> {
+    const auto mal_id = mal_id_for(anilist_id, hint);
+    if (!mal_id.has_value()) return err(ProviderError::unsupported());
+    Page out;
+    out.source = Source::Mal;
+    if (page > 1) return out;
+    auto d = mal_catalog::by_id(client, client_id, *mal_id, anilist_id);
+    if (!d.has_value()) return err(d.error());
+    if (d->has_value()) out.entries = std::move((*d)->recommendations);
+    return out;
   };
   return b;
 }
@@ -330,6 +351,22 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> Catalog::char
   return run<std::optional<CharactersAndRecommendations>>(
       *this, [&](Source s) { return backend(s)->char_recs(anilist_id, mal_id); },
       /*mal_only=*/anilist_id < 0);
+}
+
+Result<Page, ProviderError> Catalog::similar(std::int64_t anilist_id,
+                                             std::optional<std::int64_t> mal_id,
+                                             std::uint32_t page, const DiscoverFilters& filters) {
+  auto p = run<Page>(
+      *this,
+      [&](Source s) -> Result<Page, ProviderError> {
+        if (!backend(s)->similar) return err(ProviderError::unsupported());
+        return backend(s)->similar(anilist_id, mal_id, page);
+      },
+      /*mal_only=*/anilist_id < 0);
+  if (!p.has_value() || filters.empty()) return p;
+  std::erase_if(p->entries,
+                [&](const Enrichment& e) { return !mal_catalog::detail::passes_filters(e, filters); });
+  return p;
 }
 
 Result<std::vector<std::string>, ProviderError> Catalog::genres() {

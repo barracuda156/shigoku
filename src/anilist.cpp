@@ -599,6 +599,67 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> classify_char
   return std::optional<CharactersAndRecommendations>(std::move(out));
 }
 
+std::string recommendations_query(MediaKind kind) {
+  return std::string("query($id:Int!,$page:Int!){Media(id:$id,type:") + type_gql(kind) +
+         "){recommendations(page:$page,perPage:" + std::to_string(kRecommendationPage) +
+         ",sort:RATING_DESC){pageInfo{hasNextPage} nodes{rating mediaRecommendation{type " +
+         media_fields(kind) + "}}}}}";
+}
+
+std::string recommendations_body(std::int64_t anilist_id, std::uint32_t page, MediaKind kind) {
+  json body = {{"query", recommendations_query(kind)},
+               {"variables", {{"id", anilist_id}, {"page", page}}}};
+  return body.dump();
+}
+
+Result<std::optional<CatalogPage>, ProviderError> classify_recommendations(
+    std::string_view raw_json, MediaKind kind) {
+  json resp;
+  try {
+    resp = json::parse(raw_json.begin(), raw_json.end());
+  } catch (const json::parse_error& e) {
+    return err(ProviderError::decode(e.what()));
+  }
+  if (!resp.is_object() || !resp.contains("data") || resp.at("data").is_null()) {
+    return err(ProviderError::decode("data is null"));
+  }
+  const json& data = resp.at("data");
+  if (!data.contains("Media") || !data.at("Media").is_object()) {
+    return std::optional<CatalogPage>(std::nullopt);
+  }
+  const json& m = data.at("Media");
+  CatalogPage out;
+  if (!m.contains("recommendations") || !m.at("recommendations").is_object()) {
+    return std::optional<CatalogPage>(std::move(out));
+  }
+  const json& recs = m.at("recommendations");
+  if (recs.contains("pageInfo") && recs.at("pageInfo").is_object()) {
+    const json& pi = recs.at("pageInfo");
+    out.has_next = pi.contains("hasNextPage") && pi.at("hasNextPage").is_boolean() &&
+                   pi.at("hasNextPage").get<bool>();
+  }
+  if (recs.contains("nodes") && recs.at("nodes").is_array()) {
+    for (const auto& node : recs.at("nodes")) {
+      if (!node.is_object()) continue;
+      if (node.contains("rating") && node.at("rating").is_number_integer() &&
+          node.at("rating").get<std::int64_t>() <= 0) {
+        out.has_next = false;
+        break;
+      }
+      if (!node.contains("mediaRecommendation") || !node.at("mediaRecommendation").is_object()) {
+        continue;
+      }
+      const json& rec = node.at("mediaRecommendation");
+      if (const auto type = strip_opt(rec, "type");
+          type.has_value() && *type != type_gql(kind)) {
+        continue;
+      }
+      out.entries.push_back(media_to_enrichment(rec));
+    }
+  }
+  return std::optional<CatalogPage>(std::move(out));
+}
+
 // P38 (§9 — no Rust precedent): the full genre vocabulary for the Discover
 // filter overlay's genre picker. A bare argument-free query, same no-variable
 // shape as viewer_body below.
@@ -950,6 +1011,25 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> characters_an
 
   const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
   return detail::classify_characters_recs(raw, kind);
+}
+
+Result<std::optional<CatalogPage>, ProviderError> recommendations(const http::Client& client,
+                                                                 std::int64_t anilist_id,
+                                                                 std::uint32_t page,
+                                                                 MediaKind kind) {
+  http::Request req;
+  req.method = http::Method::Post;
+  req.url = kEndpoint;
+  req.content_type = "application/json";
+  const std::string body = detail::recommendations_body(anilist_id, page, kind);
+  req.body.assign(body.begin(), body.end());
+  req.accept = http::Accept::Any2xx;
+
+  auto resp = client.fetch(req);
+  if (!resp.has_value()) return err(resp.error());
+
+  const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
+  return detail::classify_recommendations(raw, kind);
 }
 
 // --- AniList sync (P20, 06 §5) -----------------------------------------------

@@ -416,3 +416,139 @@ TEST_CASE("is_new_this_cour flags current-cour off This Season only") {
   e.year = 2025;
   CHECK(!is_new_this_cour(e, DiscoverAxis::Trending, cour));  // wrong year.
 }
+
+// --- The Similar feed (`~`) -------------------------------------------------
+
+namespace {
+
+SimilarSeed seed(std::int64_t id, const char* title = "Frieren") {
+  SimilarSeed s;
+  s.anilist_id = id;
+  s.mal_id = id + 1000;
+  s.title = title;
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("open_similar shows a fifth slot and keeps the axes intact") {
+  DiscoverState d;
+  d.on_feed(DiscoverAxis::Trending, 1, entries(1, 20), true, nullptr, 1000, d.filter_gen());
+  CHECK_FALSE(d.on_similar());
+  CHECK_FALSE(d.similar_seed().has_value());
+
+  d.open_similar(seed(7));
+  REQUIRE(d.on_similar());
+  CHECK(d.similar_seed()->anilist_id == 7);
+  CHECK(d.slot().entries.empty());
+  CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>(1));
+
+  d.on_similar_feed(1, entries(500, 10), false, nullptr, 1000, d.similar_gen());
+  CHECK(d.slot().entries.size() == 10);
+  CHECK(d.slot().exhausted);
+  REQUIRE(d.selected_entry() != nullptr);
+  CHECK(d.selected_entry()->anilist_id == 500);
+
+  d.select_axis(0);
+  CHECK_FALSE(d.on_similar());
+  CHECK(d.slot().entries.size() == 20);  // Trending untouched.
+  d.show_similar();
+  CHECK(d.on_similar());
+  CHECK(d.slot().entries.size() == 10);  // the Similar pages survive the trip.
+}
+
+TEST_CASE("the same seed brings its feed back; a new seed starts over") {
+  DiscoverState d;
+  d.open_similar(seed(7));
+  d.on_similar_feed(1, entries(500, 10), true, nullptr, 1000, d.similar_gen());
+  d.nav(1, 0, geo());
+  const std::size_t cursor = d.slot().cursor;
+  d.select_axis(1);
+  d.open_similar(seed(7));
+  CHECK(d.slot().entries.size() == 10);
+  CHECK(d.slot().cursor == cursor);
+
+  const std::uint32_t old_gen = d.similar_gen();
+  d.open_similar(seed(8, "Dungeon Meshi"));
+  CHECK(d.slot().entries.empty());
+  CHECK(d.similar_seed()->title == "Dungeon Meshi");
+  // An answer for the previous seed discards whole.
+  d.on_similar_feed(1, entries(500, 10), true, nullptr, 1000, old_gen);
+  CHECK(d.slot().entries.empty());
+  d.on_similar_error("AniList is down (503)", old_gen);
+  CHECK_FALSE(d.slot().failed.has_value());
+}
+
+TEST_CASE("cycle_axis passes through the Similar feed only once one is open") {
+  DiscoverState d;
+  d.cycle_axis(-1);
+  CHECK(d.axis() == DiscoverAxis::ThisSeason);
+  CHECK_FALSE(d.on_similar());
+
+  d.select_axis(0);
+  d.open_similar(seed(7));
+  d.cycle_axis(1);  // past the end wraps to Trending.
+  CHECK_FALSE(d.on_similar());
+  CHECK(d.axis() == DiscoverAxis::Trending);
+  d.cycle_axis(-1);  // back from Trending lands on Similar.
+  CHECK(d.on_similar());
+  d.cycle_axis(-1);
+  CHECK_FALSE(d.on_similar());
+  CHECK(d.axis() == DiscoverAxis::ThisSeason);
+  d.show_similar();
+  d.select_axis(9);  // out of range: ignored, still on Similar.
+  CHECK(d.on_similar());
+}
+
+TEST_CASE("show_similar without a seed is a no-op") {
+  DiscoverState d;
+  d.show_similar();
+  CHECK_FALSE(d.on_similar());
+}
+
+TEST_CASE("Similar errors are sticky until revisited, like an axis") {
+  DiscoverState d;
+  d.open_similar(seed(7));
+  d.arm_loading(5);
+  d.on_similar_error("AniList blocked us (403); MAL: no client id", d.similar_gen());
+  CHECK_FALSE(d.slot().loading);
+  REQUIRE(d.slot().failed.has_value());
+  CHECK_FALSE(d.wanted_fetch(geo()).has_value());
+  d.select_axis(0);
+  d.show_similar();
+  CHECK_FALSE(d.slot().failed.has_value());
+  CHECK(d.wanted_fetch(geo()) == std::optional<std::uint32_t>(1));
+}
+
+TEST_CASE("set_filters restarts the Similar feed too") {
+  DiscoverState d;
+  d.open_similar(seed(7));
+  d.on_similar_feed(1, entries(500, 10), true, nullptr, 1000, d.similar_gen());
+  const std::uint32_t old_gen = d.similar_gen();
+  DiscoverFilters f;
+  f.genres = {"Drama"};
+  d.set_filters(f);
+  CHECK(d.on_similar());
+  CHECK(d.slot().entries.empty());
+  d.on_similar_feed(2, entries(510, 10), true, nullptr, 1000, old_gen);
+  CHECK(d.slot().entries.empty());
+}
+
+TEST_CASE("replace_show reaches Similar rows") {
+  DiscoverState d;
+  d.open_similar(seed(7));
+  d.on_similar_feed(1, entries(500, 3), false, nullptr, 1000, d.similar_gen());
+  Enrichment healed;
+  healed.anilist_id = 9001;
+  healed.title_romaji = "Healed";
+  d.replace_show(501, healed);
+  CHECK(d.slot().entries[1].meta.anilist_id == 9001);
+}
+
+TEST_CASE("similar_tab_label clips a long title") {
+  CHECK(similar_tab_label(seed(7)) == "Similar to Frieren");
+  const std::string long_label =
+      similar_tab_label(seed(7, "Sousou no Frieren: The Very Long Subtitle Edition"));
+  CHECK(long_label.rfind("Similar to Sousou no Frieren", 0) == 0);
+  CHECK(str_width(long_label) <= 11 + 24);
+}

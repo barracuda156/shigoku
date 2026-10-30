@@ -1221,11 +1221,38 @@ void spawn_discover_feed(EventQueue& queue, const DiscoverFn& discover, Discover
   spawn_detached([&queue, &discover, axis, page, filters, gen]() {
     auto res = discover(axis, page, filters);
     if (!res.has_value()) {
-      queue.try_post(Event{DiscoverFeedError{axis, catalog_cause(res.error()), gen}});
+      queue.try_post(
+          Event{DiscoverFeedError{axis, catalog_cause(res.error()), gen, std::nullopt}});
       return;
     }
     auto& [rows, has_next] = *res;
-    queue.try_post(Event{DiscoverFeedDone{axis, page, std::move(rows), has_next, gen}});
+    queue.try_post(
+        Event{DiscoverFeedDone{axis, page, std::move(rows), has_next, gen, std::nullopt}});
+  });
+}
+
+// The Similar feed's fetch: spawn_discover_feed's twin, keyed by the seed show
+// and the Similar feed's own generation.
+void spawn_similar_feed(EventQueue& queue, const SimilarFn& similar, SimilarSeed seed,
+                        std::uint32_t page, const DiscoverFilters& filters, std::uint32_t gen) {
+  spawn_detached([&queue, &similar, seed = std::move(seed), page, filters, gen]() {
+    auto res = similar(seed.anilist_id, seed.mal_id, page, filters);
+    if (!res.has_value()) {
+      DiscoverFeedError e;
+      e.cause = catalog_cause(res.error());
+      e.gen = gen;
+      e.similar_to = seed.anilist_id;
+      queue.try_post(Event{std::move(e)});
+      return;
+    }
+    auto& [rows, has_next] = *res;
+    DiscoverFeedDone d;
+    d.page = page;
+    d.rows = std::move(rows);
+    d.has_next = has_next;
+    d.gen = gen;
+    d.similar_to = seed.anilist_id;
+    queue.try_post(Event{std::move(d)});
   });
 }
 
@@ -2954,6 +2981,32 @@ void on_key(App& app, const KeyEvent& k) {
       case U'2': if (app.view == View::Discover) app.discover.select_axis(1); return;
       case U'3': if (app.view == View::Discover) app.discover.select_axis(2); return;
       case U'4': if (app.view == View::Discover) app.discover.select_axis(3); return;
+      case U'5': if (app.view == View::Discover) app.discover.show_similar(); return;
+      // `~`: Discover's Similar feed for the selected show, from any view that
+      // has one (a list, the grid, the show page).
+      case U'~': {
+        if (app.view != View::Browse && app.view != View::History &&
+            app.view != View::Schedule && app.view != View::Discover &&
+            app.view != View::Detail) {
+          return;
+        }
+        const Enrichment* show = detail::selected_enrichment(app);
+        if (show == nullptr) return;
+        SimilarSeed seed;
+        seed.anilist_id = show->anilist_id;
+        seed.mal_id = show->mal_id;
+        seed.title = std::string(preferred_title(
+            show->title_romaji,
+            show->title_english ? std::optional<std::string_view>(*show->title_english)
+                                : std::nullopt,
+            show->title_native ? std::optional<std::string_view>(*show->title_native)
+                               : std::nullopt,
+            parse_title_language(app.config.title_language)));
+        app.view_back = back_target(app);
+        app.discover.open_similar(std::move(seed));
+        app.view = View::Discover;
+        return;
+      }
       case U'f':
         // Discover filter overlay (P38, §9): opens with the current
         // committed filters as the starting draft (re-editing, not always a
@@ -3491,8 +3544,8 @@ void on_mouse(App& app, const MouseEvent& m) {
   }
 
   if (app.view == View::Discover) {
-    if (const auto ax = detail::discover_axis_at(m.x, m.y); ax.has_value()) {
-      synth_char(static_cast<char32_t>(U'1' + *ax));  // the 1-4 direct binds.
+    if (const auto ax = detail::discover_axis_at(app, m.x, m.y); ax.has_value()) {
+      synth_char(static_cast<char32_t>(U'1' + *ax));  // the 1-5 direct binds.
       return;
     }
     if (const auto card = detail::discover_card_at(app, m.x, m.y); card.has_value()) {
@@ -3670,16 +3723,22 @@ void tick(App& app, const Event& ev) {
             // page 1, near-end cursor → prefetch), arm loading, and spawn the
             // feed worker. A spawn failure resets the arm so the spinner never
             // strands. No cover pump this phase (P17a is placeholder-only).
-            if (app.view == View::Discover && app.deps != nullptr &&
-                app.deps->discover && app.queue != nullptr) {
+            const bool similar = app.discover.on_similar();
+            if (app.view == View::Discover && app.deps != nullptr && app.queue != nullptr &&
+                (similar ? static_cast<bool>(app.deps->similar)
+                         : static_cast<bool>(app.deps->discover))) {
               const GridGeo geo =
                   grid_geo(app.win.cols, content_height(app.win.rows),
                            app.cover_caps.cell);
               if (const auto page = app.discover.wanted_fetch(geo); page.has_value()) {
-                const DiscoverAxis axis = app.discover.axis();
                 app.discover.arm_loading(app.tick_count);
-                spawn_discover_feed(*app.queue, app.deps->discover, axis, *page,
-                                    app.discover.filters(), app.discover.filter_gen());
+                if (similar) {
+                  spawn_similar_feed(*app.queue, app.deps->similar, *app.discover.similar_seed(),
+                                     *page, app.discover.filters(), app.discover.similar_gen());
+                } else {
+                  spawn_discover_feed(*app.queue, app.deps->discover, app.discover.axis(), *page,
+                                      app.discover.filters(), app.discover.filter_gen());
+                }
                 recompute_loading(app);
                 app.dirty = true;
               }
@@ -3793,8 +3852,13 @@ void tick(App& app, const Event& ev) {
             // in on_feed) + best-effort catalog_cache upsert. The store is
             // nullable (demo / no-persist) — the feed still renders.
             Store* store = app.deps != nullptr ? app.deps->store : nullptr;
-            app.discover.on_feed(d.axis, d.page, d.rows, d.has_next, store, now_epoch_secs(),
-                                 d.gen);
+            if (d.similar_to.has_value()) {
+              app.discover.on_similar_feed(d.page, d.rows, d.has_next, store, now_epoch_secs(),
+                                           d.gen);
+            } else {
+              app.discover.on_feed(d.axis, d.page, d.rows, d.has_next, store, now_epoch_secs(),
+                                   d.gen);
+            }
             recompute_loading(app);
             app.dirty = true;
           },
@@ -3802,7 +3866,11 @@ void tick(App& app, const Event& ev) {
             // Sticky failed state (discover.rs on_feed_error): cleared only by
             // an axis-key retry, never an auto-refetch (that would storm the
             // API). Silent — the grid's empty-state renders the error copy.
-            app.discover.on_feed_error(d.axis, d.cause, d.gen);
+            if (d.similar_to.has_value()) {
+              app.discover.on_similar_error(d.cause, d.gen);
+            } else {
+              app.discover.on_feed_error(d.axis, d.cause, d.gen);
+            }
             recompute_loading(app);
             app.dirty = true;
           },
@@ -4510,7 +4578,7 @@ std::string idle_help(View v, Pane p) {
       // the episode grid on the detail surfaces — j/k hop rows, h/l step.
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
-      return "hjkl · / find anime · space zoom · P save · q quit";
+      return "hjkl · / find anime · space zoom · ~ similar · P save · q quit";
     case View::History:
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
@@ -4518,7 +4586,7 @@ std::string idle_help(View v, Pane p) {
     case View::Discover:
       // "P save" (KEYS_AUDIT F8): add-to-watchlist worked here all along but
       // was advertised only on Browse's line.
-      return "hjkl · enter open · space zoom · f filter · P save · q quit";
+      return "hjkl · enter open · space zoom · ~ similar · f filter · P save · q quit";
     case View::Settings:
       return "jk move · hl cycle · space toggle · enter edit · q save+quit";
     case View::Schedule:
@@ -4527,7 +4595,7 @@ std::string idle_help(View v, Pane p) {
       // §7.5 base copy + the §9 keys that only exist here: `c` characters/
       // recommendations (P36), `d` download (P35). A key the bar never names
       // may as well not exist (the P36 section went unnoticed on hardware).
-      return "hjkl grid · enter play · v provider · c cast · d download · space/esc back";
+      return "hjkl grid · enter play · v provider · c cast · ~ similar · d download · space/esc back";
   }
   return "q quit";  // unreachable.
 }

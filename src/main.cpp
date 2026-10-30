@@ -822,6 +822,16 @@ int run_tui() {
     for (auto& e : p->entries) rows.push_back(CatalogRow{std::move(e)});
     return tui::DiscoverPage{std::move(rows), p->has_next};
   };
+  deps.similar = [&cat](std::int64_t anilist_id, std::optional<std::int64_t> mal_id,
+                        std::uint32_t page, const DiscoverFilters& filters)
+      -> Result<tui::DiscoverPage, ProviderError> {
+    auto p = cat.similar(anilist_id, mal_id, page, filters);
+    if (!p.has_value()) return err(p.error());
+    std::vector<CatalogRow> rows;
+    rows.reserve(p->entries.size());
+    for (auto& e : p->entries) rows.push_back(CatalogRow{std::move(e)});
+    return tui::DiscoverPage{std::move(rows), p->has_next};
+  };
   deps.enrich = [&cat](std::int64_t anilist_id, std::optional<std::int64_t> mal_id)
       -> Result<std::optional<Enrichment>, ProviderError> {
     return cat.enrich(anilist_id, mal_id);

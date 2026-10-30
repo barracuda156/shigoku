@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -137,6 +138,9 @@ struct DiscoverFeedDone {
   std::vector<CatalogRow> rows;  // owned.
   bool has_next = false;
   std::uint32_t gen = 0;  // filter generation at spawn (P38).
+  // Set for a Similar-feed page: the seed show's id; `gen` is then the
+  // Similar feed's own generation.
+  std::optional<std::int64_t> similar_to;
   friend bool operator==(const DiscoverFeedDone&, const DiscoverFeedDone&) = default;
 };
 
@@ -144,6 +148,7 @@ struct DiscoverFeedError {
   DiscoverAxis axis = DiscoverAxis::Trending;
   std::string cause;  // human-facing message (the slot's sticky failed state).
   std::uint32_t gen = 0;  // filter generation at spawn (P38).
+  std::optional<std::int64_t> similar_to;  // as on DiscoverFeedDone.
   friend bool operator==(const DiscoverFeedError&, const DiscoverFeedError&) = default;
 };
 

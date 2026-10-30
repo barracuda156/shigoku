@@ -788,3 +788,64 @@ TEST_CASE("cross-type recommendations are dropped against the queried kind") {
   REQUIRE((*manga)->recommendations.size() == 1);
   CHECK((*manga)->recommendations[0].title_romaji == "a manga");
 }
+
+TEST_CASE("recommendations: rows in vote order, cut at the first unvoted one") {
+  const std::string_view raw = R"({"data":{"Media":{"recommendations":{
+      "pageInfo":{"hasNextPage":true},
+      "nodes":[
+        {"rating":1209,"mediaRecommendation":{"type":"ANIME","id":20954,"idMal":33352,
+          "title":{"romaji":"Violet Evergarden"}}},
+        {"rating":800,"mediaRecommendation":{"type":"MANGA","id":30002,
+          "title":{"romaji":"Berserk"}}},
+        {"rating":772,"mediaRecommendation":null},
+        {"rating":700,"mediaRecommendation":{"type":"ANIME","id":153518,"idMal":52701,
+          "title":{"romaji":"Dungeon Meshi"}}},
+        {"rating":0,"mediaRecommendation":{"type":"ANIME","id":1,"title":{"romaji":"Cut"}}},
+        {"rating":-2,"mediaRecommendation":{"type":"ANIME","id":2,"title":{"romaji":"Gone"}}}
+      ]}}}})";
+  auto r = detail::classify_recommendations(raw);
+  REQUIRE(r.has_value());
+  REQUIRE(r->has_value());
+  const CatalogPage& p = **r;
+  REQUIRE(p.entries.size() == 2);
+  CHECK(p.entries[0].anilist_id == 20954);
+  CHECK(p.entries[0].mal_id == std::optional<std::int64_t>(33352));
+  CHECK(p.entries[1].title_romaji == "Dungeon Meshi");
+  CHECK_FALSE(p.has_next);  // the zero-vote row ended the list.
+}
+
+TEST_CASE("recommendations: has_next follows pageInfo when every row is voted") {
+  const std::string_view raw = R"({"data":{"Media":{"recommendations":{
+      "pageInfo":{"hasNextPage":true},
+      "nodes":[{"rating":5,"mediaRecommendation":{"type":"ANIME","id":3,
+        "title":{"romaji":"Three"}}}]}}}})";
+  auto r = detail::classify_recommendations(raw);
+  REQUIRE(r.has_value());
+  REQUIRE(r->has_value());
+  CHECK((*r)->has_next);
+  CHECK((*r)->entries.size() == 1);
+}
+
+TEST_CASE("recommendations: Media null is a confirmed no-match; data null is no answer") {
+  auto absent = detail::classify_recommendations(R"({"data":{"Media":null}})");
+  REQUIRE(absent.has_value());
+  CHECK_FALSE(absent->has_value());
+  auto none = detail::classify_recommendations(R"({"data":null})");
+  REQUIRE_FALSE(none.has_value());
+  CHECK(none.error().kind == ProviderError::Kind::Decode);
+  auto quiet = detail::classify_recommendations(R"({"data":{"Media":{"recommendations":null}}})");
+  REQUIRE(quiet.has_value());
+  REQUIRE(quiet->has_value());
+  CHECK((*quiet)->entries.empty());
+  CHECK_FALSE((*quiet)->has_next);
+}
+
+TEST_CASE("recommendations_body binds id and page; the query pages by vote") {
+  const json j = json::parse(detail::recommendations_body(154587, 3));
+  CHECK(j.at("variables").at("id") == 154587);
+  CHECK(j.at("variables").at("page") == 3);
+  const std::string q = j.at("query").get<std::string>();
+  CHECK(q.find("recommendations(page:$page,perPage:20,sort:RATING_DESC)") != std::string::npos);
+  CHECK(q.find("pageInfo{hasNextPage}") != std::string::npos);
+  CHECK(q.find("Media(id:$id,type:ANIME)") != std::string::npos);
+}

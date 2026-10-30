@@ -167,9 +167,9 @@ namespace detail {
 // source).
 [[nodiscard]] std::optional<std::size_t> discover_card_at(const App& app, int x, int y);
 
-// Discover: the axis index (into kDiscoverAxes) whose tab covers (x, y) on
-// the axis bar row.
-[[nodiscard]] std::optional<std::size_t> discover_axis_at(int x, int y);
+// Discover: the tab index whose label covers (x, y) on the axis bar row:
+// 0-3 into kDiscoverAxes, 4 for an open Similar feed.
+[[nodiscard]] std::optional<std::size_t> discover_axis_at(const App& app, int x, int y);
 
 // Settings: the kSettingsRows index of the Row line at (x, y).
 [[nodiscard]] std::optional<std::size_t> settings_row_at(const App& app, int x, int y);

@@ -113,6 +113,16 @@ inline constexpr std::size_t kAiringPage = 50;
 characters_and_recommendations(const http::Client& client, std::int64_t anilist_id,
                                MediaKind kind = MediaKind::Anime);
 
+// One page of a show's recommendations, best voted first, kRecommendationPage
+// per page, 1-indexed: the Similar feed. Rows of another media type and rows
+// voted at or below zero are dropped; the first of those ends the list
+// (has_next false), since the order is by vote. Ok(nullopt) = AniList has no
+// such show.
+inline constexpr std::uint32_t kRecommendationPage = 20;
+[[nodiscard]] Result<std::optional<CatalogPage>, ProviderError> recommendations(
+    const http::Client& client, std::int64_t anilist_id, std::uint32_t page,
+    MediaKind kind = MediaKind::Anime);
+
 // AniList account identity from the Viewer query (06 §4.2, P19). The sync
 // pull needs id > 0.
 struct Viewer {
@@ -240,6 +250,12 @@ namespace detail {
 // show, not a negative answer).
 [[nodiscard]] Result<std::optional<CharactersAndRecommendations>, ProviderError>
 classify_characters_recs(std::string_view raw_json, MediaKind kind = MediaKind::Anime);
+
+[[nodiscard]] std::string recommendations_query(MediaKind kind = MediaKind::Anime);
+[[nodiscard]] std::string recommendations_body(std::int64_t anilist_id, std::uint32_t page,
+                                               MediaKind kind = MediaKind::Anime);
+[[nodiscard]] Result<std::optional<CatalogPage>, ProviderError> classify_recommendations(
+    std::string_view raw_json, MediaKind kind = MediaKind::Anime);
 
 // The Viewer query body (anilist.rs viewer_body, :512).
 [[nodiscard]] std::string viewer_body();
