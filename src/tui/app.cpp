@@ -574,8 +574,7 @@ bool compose_grid_apc(const App& app, std::map<std::string, Placed>& placed,
   const CoverBackend backend = app.cover_caps.backend;
   std::map<std::string, Rect> desired;
   if (app.view == View::Discover && app.cover_caps.images()) {
-    const DiscoverAxis axis = app.discover.axis();
-    const AxisSlot& slot = app.discover.slot_for(axis);
+    const AxisSlot& slot = app.discover.slot();
     const int w = app.win.cols;
     const int y0 = kContentY0, y1 = static_cast<int>(app.win.rows) - 1;
     if (y1 > y0) {
@@ -589,7 +588,7 @@ bool compose_grid_apc(const App& app, std::map<std::string, Placed>& placed,
           const Enrichment& e = slot.entries[i].meta;
           if (!e.cover_url.has_value()) continue;
           if (app.cover_render_store.get(*e.cover_url) == nullptr) continue;
-          desired[*e.cover_url] = r;  // last-wins is fine: a url appears once per axis slot.
+          desired[*e.cover_url] = r;  // last-wins is fine: a url appears once per slot.
         }
       }
     }

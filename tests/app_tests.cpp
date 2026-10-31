@@ -2468,3 +2468,54 @@ TEST_CASE("sync flushed: a renewed MyAnimeList token is reloaded from the auth f
   CHECK(h->app.toasts.visible().back().text == "renewed MyAnimeList sign-in, but saving it failed");
   std::remove(path.c_str());
 }
+
+// --- compose_grid_apc: the Similar feed's covers ----------------------------
+//
+// The placement diff must read the slot on screen. Keyed by the axis, the
+// Similar tab asked for the axis slot's covers and its own never went up:
+// the cards kept their "#N" placeholders after the pixels had landed.
+
+TEST_CASE("compose_grid_apc places the Similar feed's covers, not the axis slot's") {
+  App app;
+  app.view = View::Discover;
+  app.win = WinSize{100, 40, 0, 0};
+  app.cover_caps.backend = CoverBackend::Kitty;
+  CoverPixels px;
+  px.w = 2;
+  px.h = 2;
+  px.rgba.assign(16, 0xFF);
+
+  CatalogRow axis_row = row_for(1, "Trending show");
+  axis_row.meta.cover_url = "https://example.com/trending.jpg";
+  app.discover.on_feed(DiscoverAxis::Trending, 1, {axis_row}, /*has_next=*/false, nullptr, 1000,
+                       app.discover.filter_gen());
+  CatalogRow sim_row = row_for(2, "Similar show");
+  sim_row.meta.cover_url = "https://example.com/similar.jpg";
+  SimilarSeed seed;
+  seed.anilist_id = 7;
+  seed.title = "Seed";
+  app.discover.open_similar(seed);
+  app.discover.on_similar_feed(1, {sim_row}, /*has_next=*/false, nullptr, 1000,
+                               app.discover.similar_gen());
+  REQUIRE(app.cover_render_store.install(*axis_row.meta.cover_url, px).has_value());
+  REQUIRE(app.cover_render_store.install(*sim_row.meta.cover_url, px).has_value());
+
+  std::map<std::string, detail::Placed> placed;
+  std::string pre, post;
+  REQUIRE(app.discover.on_similar());
+  CHECK(detail::compose_grid_apc(app, placed, pre, post));
+  CHECK(placed.size() == 1);
+  CHECK(placed.count(*sim_row.meta.cover_url) == 1);
+  CHECK(placed.count(*axis_row.meta.cover_url) == 0);
+  CHECK(post.find("a=T") != std::string::npos);
+
+  // Steady state on the same tab: nothing goes out.
+  CHECK_FALSE(detail::compose_grid_apc(app, placed, pre, post));
+
+  // Back on the axis: its cover goes up and the Similar one comes down.
+  app.discover.select_axis(0);
+  CHECK(detail::compose_grid_apc(app, placed, pre, post));
+  CHECK(placed.size() == 1);
+  CHECK(placed.count(*axis_row.meta.cover_url) == 1);
+  CHECK_FALSE(pre.empty());
+}
