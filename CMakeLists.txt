@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(shigoku VERSION 0.2.3 LANGUAGES CXX C)
+project(shigoku VERSION 0.2.4 LANGUAGES CXX C)
 
 # --- Language: C++23 (std::expected, if consteval, etc.). No GNU extensions. ---
 set(CMAKE_CXX_STANDARD 23)
@@ -1016,8 +1016,7 @@ endif()
 #     ctest-registered.
 #   - shigoku-view binary: gated on SDL via pkg-config, auto-off with a status
 #     line (never a hard configure error, per the plan). SDL2 default;
-#     -DVIEWER_SDL3=ON selects SDL3 (rev 2.3: SDL2=Cocoa on ppc darwin, SDL3
-#     X11-only there — hence opt-in). Rename knob: SHIGOKU_VIEW_BIN.
+#     -DVIEWER_SDL3=ON selects SDL3. Rename knob: SHIGOKU_VIEW_BIN.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_BUILD_TESTS)
 add_executable(viewer_tests tests/viewer_tests.cpp src/view/pager.cpp src/view/docsrc.cpp
@@ -1477,7 +1476,7 @@ add_test(NAME connect_tests COMMAND connect_tests)
 endif()  # WITH_TUI
 
 # resolver_tests / resolve_tests: the pure Tier-B/C scorer and the pure
-# resolve engine, ported 1:1 from resolver.rs / resolve.rs. No curl/sqlite/tui —
+# resolve engine. No curl/sqlite/tui —
 # they link only the leaf shigoku_resolve + domain, so they run everywhere.
 add_executable(resolver_tests tests/resolver_tests.cpp)
 target_link_libraries(resolver_tests PRIVATE
@@ -1557,7 +1556,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME anilist_tests COMMAND anilist_tests)
 endif()
 
-# login_tests (P19): complete_login's extract/floor-check/verify/save state
+# login_tests: complete_login's extract/floor-check/verify/save state
 # machine + authorize_url/normalize_paste/param boundary-anchoring, against
 # a fake Verifier (no network). Links login + auth only; gated the same as
 # shigoku_login (transitively shigoku_anilist, shigoku_store) is.
@@ -1669,17 +1668,14 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# hls_tests: providers/hls.rs `mod tests` ported 1:1 —
-# parse_master_playlist, select_variant's cap policy, join_url. Pure/offline,
-# no curl needed.
+# hls_tests. Pure/offline, no curl needed.
 add_executable(hls_tests tests/hls_tests.cpp)
 target_link_libraries(hls_tests PRIVATE
   shigoku_hls shigoku_domain shigoku_flags shigoku_thirdparty Threads::Threads shigoku_atomic)
 add_test(NAME hls_tests COMMAND hls_tests)
 
-# senshi_tests: the ~20-test golden contract ported 1:1 from senshi.rs,
-# offline (pure helpers + fixture parsing) plus a few transport cases over
-# a loopback fixture server.
+# senshi_tests: the ~20-test golden contract, offline (pure helpers + fixture parsing)
+# plus a few transport cases over a loopback fixture server.
 if(SHIGOKU_HAVE_CURL)
   add_executable(senshi_tests tests/senshi_tests.cpp)
   target_compile_definitions(senshi_tests PRIVATE
@@ -1697,10 +1693,10 @@ add_executable(subprocess_tests tests/subprocess_tests.cpp)
 target_link_libraries(subprocess_tests PRIVATE shigoku_subprocess shigoku_thirdparty Threads::Threads)
 add_test(NAME subprocess_tests COMMAND subprocess_tests)
 
-# manga_mangadex_tests: URL builders exact-string, the
-# three parsers over tests/fixtures/mangadex/, chapter_less / dedupe /
-# next_offset pinned rules. Fully offline (no fixture server; the transport
-# loop's math is tested pure via detail::next_offset).
+# manga_mangadex_tests: URL builders exact-string, the three
+# parsers over tests/fixtures/mangadex/, chapter_less / dedupe /
+# next_offset pinned rules. Fully offline (no fixture server;
+# the transport loop's math is tested pure via detail::next_offset).
 if(SHIGOKU_HAVE_CURL)
   add_executable(manga_mangadex_tests tests/manga_mangadex_tests.cpp)
   target_compile_definitions(manga_mangadex_tests PRIVATE
@@ -1852,9 +1848,9 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# anibd_tests: every anibd #[test] ported 1:1 — pure parsers/guards
-# offline plus transport cases (SSRF skip, percent-encoded data param, 403 ->
-# taxonomy) over a loopback fixture server. No fixture files (JSON is inline).
+# anibd_tests: pure parsers/guards offline plus transport cases
+# (SSRF skip, percent-encoded data param, 403 -> taxonomy)
+# over a loopback fixture server. No fixture files (JSON is inline).
 if(SHIGOKU_HAVE_CURL)
   add_executable(anibd_tests tests/anibd_tests.cpp)
   target_link_libraries(anibd_tests PRIVATE
@@ -1872,9 +1868,7 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# megaplay_tests: every megaplay #[test] ported 1:1 — pure
-# parsers/guards offline (data-id scrape, getSources map, softsub pick,
-# cue-cap, the P51 envelope scrape/bake) plus transport cases (episodes probe,
+# megaplay_tests: pure parsers/guards offline plus transport cases (episodes probe,
 # two/three-hop resolve, private-host sub drop, the envelope cache) over
 # a loopback fixture server. One fixture file: tests/fixtures/megaplay_newclient.js.
 if(SHIGOKU_HAVE_CURL)
@@ -1887,10 +1881,9 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME megaplay_tests COMMAND megaplay_tests)
 endif()
 
-# anidbapp_tests: every anidbapp #[test] ported 1:1 — pure parsers/guards
-# offline (card/slug/entity/year parsing, external ids, challenge gate, HLS
-# extraction, episode sort/dedup/offset) plus transport cases over a loopback
-# fixture server. No fixture files (HTML/JSON inline).
+# anidbapp_tests: pure parsers/guards offline (card/slug/entity/year parsing,
+# external ids, challenge gate, HLS extraction, episode sort/dedup/offset)
+# plus transport cases over a loopback fixture server. No fixture files (HTML/JSON inline).
 if(SHIGOKU_HAVE_CURL)
   add_executable(anidbapp_tests tests/anidbapp_tests.cpp)
   target_link_libraries(anidbapp_tests PRIVATE
@@ -1909,11 +1902,11 @@ if(SHIGOKU_HAVE_CURL)
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
-# hianime_tests: every hianime #[test] — pure parsers/guards offline
-# (search card scrape + main-sidebar cut, episode-list/servers JSON-envelope
-# unwrap, data-hash base64, the __P XOR+JSON decode, entity decode, url
-# encode) plus transport cases (episode listing, dub-prefix bisection, the
-# two-server resolve hop) over loopback fixture servers. Fixtures captured
+# hianime_tests: pure parsers/guards offline (search card scrape +
+# main-sidebar cut, episode-list/servers JSON-envelope unwrap,
+# data-hash base64, the __P XOR+JSON decode, entity decode, url
+# encode) plus transport cases (episode listing, dub-prefix bisection,
+# the two-server resolve hop) over loopback fixture servers. Fixtures captured
 # live under tests/fixtures/hianime/ (P47 walk, 2026-09-21).
 if(SHIGOKU_HAVE_CURL)
   add_executable(hianime_tests tests/hianime_tests.cpp)
@@ -2045,9 +2038,7 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME player_tests COMMAND player_tests)
 endif()
 
-# aniskip_tests: aniskip.rs mod tests ported 1:1 — skip_mode parse,
-# times_from_body/build_opts/episode_number pure helpers, ensure_script
-# rewrite, prepare() early-outs. Needs shigoku_player for SkipScript.
+# aniskip_tests. Need shigoku_player for SkipScript.
 if(SHIGOKU_HAVE_CURL)
   add_executable(aniskip_tests tests/aniskip_tests.cpp)
   target_link_libraries(aniskip_tests PRIVATE
@@ -2056,9 +2047,8 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME aniskip_tests COMMAND aniskip_tests)
 endif()
 
-# proxy_tests: the proxy.rs golden suite ported 1:1 — pure codec/scan/
-# rewrite helpers offline, plus fetch_upstream guard/injection, the lifecycle
-# stop-wakes-accept, and the token gate driven over a real loopback socket.
+# proxy_tests: pure codec/scan/rewrite helpers offline, plus fetch_upstream guard/injection,
+# the lifecycle stop-wakes-accept and the token gate driven over a real loopback socket.
 if(SHIGOKU_HAVE_CURL)
   add_executable(proxy_tests tests/proxy_tests.cpp)
   target_compile_definitions(proxy_tests PRIVATE
@@ -2078,13 +2068,13 @@ if(SHIGOKU_HAVE_CURL)
   add_test(NAME crypto_tests COMMAND crypto_tests)
 endif()
 
-# cells_tests / input_tests / toast_tests / cover_pool_tests (P6/P17b): pure
-# TUI-core tests (no curl). They link shigoku_tui_render + domain; the
-# render/decode/queue paths are offline and build even without curl
-# (shigoku_tui itself is curl-gated, P7). cover_pool_tests covers the P17b
-# CoverPool coordinator + render store — pure, no store/curl needed either.
-# sixel_tests rides the same group: the emitter, its DA1 classifier, the
-# backend ranking and the string-backed FILE* seam are all pure and offline.
+# cells_tests / input_tests / toast_tests / cover_pool_tests: pure
+# TUI-core tests (no curl). They link shigoku_tui_render + domain;
+# the render/decode/queue paths are offline and build even without curl
+# (shigoku_tui itself is curl-gated). cover_pool_tests covers the CoverPool
+# coordinator + render store — pure, no store/curl needed either.
+# sixel_tests rides the same group: the emitter, its DA1 classifier,
+# the backend ranking and the string-backed FILE* seam are all pure and offline.
 if(WITH_TUI)
 foreach(_p6test cells_tests input_tests toast_tests cover_pool_tests sixel_tests)
   add_executable(${_p6test} tests/${_p6test}.cpp)
@@ -2205,8 +2195,8 @@ endif()  # SHIGOKU_BUILD_TESTS
 # ---------------------------------------------------------------------------
 # Install: the three binaries, standard destinations. Each is only built under
 # its own knob (shigoku itself needs curl+sqlite3; shigoku-manga also needs
-# WITH_TUI; shigoku-view also needs WITH_VIEWER + SDL found) — guarding on the
-# target actually existing avoids repeating those conditions here.
+# WITH_TUI; shigoku-view also needs WITH_VIEWER + SDL found) — guarding on
+# the target actually existing avoids repeating those conditions here.
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 if(TARGET shigoku)
