@@ -36,6 +36,7 @@
 #include "mangadex.hpp"
 #include "mconfig.hpp"
 #include "mevent.hpp"
+#include "msimilar.hpp"
 #include "mstore.hpp"
 #include "source.hpp"
 
@@ -94,6 +95,9 @@ struct MgDeps {
   // (bare test frames): every call site degrades to local-only reading.
   const http::Client* sync_client = nullptr;
   std::string auth_file;
+  // The Similar feed's AniList lookup (`~`). Unset = the key says so (bare
+  // test frames).
+  MgSimilarFn similar;
   MangaConfig config;
 };
 
@@ -150,6 +154,25 @@ struct MgApp {
   std::optional<FeedKind> feed;
   std::uint32_t feed_page = 0;
   bool feed_has_next = false;
+  // The Similar feed (`~`): AniList's recommendations for one title, in the
+  // results list as unbound rows (model.hpp). The seed outlives the list — it
+  // is the `[`/`]` ring's last stop until another `~` — while `similar_open`
+  // says the list holds (or is loading) that feed now.
+  struct MgSimilarSeed {
+    std::optional<std::int64_t> al_id;
+    std::string title;
+    friend bool operator==(const MgSimilarSeed&, const MgSimilarSeed&) = default;
+  };
+  std::optional<MgSimilarSeed> similar_seed;
+  bool similar_open = false;
+  std::int64_t similar_al_id = 0;  // the seed as AniList resolved it (0 = not yet).
+  std::string similar_al_title;    // AniList's title for it ("" = the seed's own).
+  std::uint32_t similar_page = 0;
+  bool similar_has_next = false;
+  // Enter on an unbound row: the active source searched for it. The id is
+  // the row the answer belongs to (0 = nothing in flight).
+  tui::GenCounter bind_gen;
+  std::int64_t bind_pending_al_id = 0;
 
   // Library list (left pane in MgView::Library) — the store's followed rows,
   // reloaded whenever something that changes them lands.

@@ -57,6 +57,47 @@ struct MgFeedFailed {
   friend bool operator==(const MgFeedFailed&, const MgFeedFailed&) = default;
 };
 
+// --- Similar feed (worker → UI) ----------------------------------------------
+//
+// One page of AniList's recommendations for a seed title (`~`), converted to
+// unbound rows (model.hpp). Same generation as search, so either supersedes
+// the other.
+
+struct MgSimilarDone {
+  Generation gen = 0;
+  std::int64_t al_id = 0;  // the seed as AniList resolved it.
+  std::string al_title;    // AniList's title for the seed.
+  std::uint32_t page = 1;
+  std::vector<MdManga> rows;
+  bool has_next = false;
+  friend bool operator==(const MgSimilarDone&, const MgSimilarDone&) = default;
+};
+
+struct MgSimilarFailed {
+  Generation gen = 0;
+  ProviderError cause;
+  friend bool operator==(const MgSimilarFailed&, const MgSimilarFailed&) = default;
+};
+
+// --- Binding (worker → UI) ---------------------------------------------------
+//
+// Enter on an unbound row: the active source searched by its titles, and the
+// row that matched (by AniList id, else by title) or none.
+
+struct MgBindDone {
+  Generation gen = 0;
+  std::int64_t al_id = 0;        // the row that asked.
+  std::optional<MdManga> match;  // the source's row; nullopt = not there.
+  friend bool operator==(const MgBindDone&, const MgBindDone&) = default;
+};
+
+struct MgBindFailed {
+  Generation gen = 0;
+  std::int64_t al_id = 0;
+  ProviderError cause;
+  friend bool operator==(const MgBindFailed&, const MgBindFailed&) = default;
+};
+
 // --- Chapter feed (worker → UI) ----------------------------------------------
 
 struct MgChaptersDone {
@@ -179,7 +220,9 @@ struct MgSyncDone {
 // --- The variant ---------------------------------------------------------------
 
 using MgEvent = std::variant<KeyEvent, MouseEvent, Resize, Tick, MgSearchDone,
-                             MgSearchFailed, MgFeedDone, MgFeedFailed, MgChaptersDone, MgChaptersFailed,
+                             MgSearchFailed, MgFeedDone, MgFeedFailed, MgSimilarDone,
+                             MgSimilarFailed, MgBindDone, MgBindFailed, MgChaptersDone,
+                             MgChaptersFailed,
                              MgCoverDone, MgCoverFailed, MgPagesProgress,
                              MgPagesDone, MgPagesFailed, MgViewerExited,
                              MgSweepChapters, MgSweepFailed, MgSweepFinished,

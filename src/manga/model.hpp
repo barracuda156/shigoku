@@ -11,11 +11,15 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace shigoku::manga {
 
 struct MdManga {
-  std::string id;              // native source id (vetted at parse time).
+  // Native source id (vetted at parse time). Empty = the row did not come
+  // from a source (an AniList recommendation): nothing keyed on the source
+  // — chapters, covers, the store — applies until it is bound to one.
+  std::string id;
   std::string title;           // title.en → title["ja-ro"] → first entry.
   std::optional<int> year;
   std::string status;          // raw API string: "ongoing"/"completed"/…
@@ -23,8 +27,16 @@ struct MdManga {
   std::string cover_filename;  // cover_art rel fileName; "" = no/vetoed cover.
   std::optional<std::int64_t> al_id;   // attributes.links.al ("105778", string
   std::optional<std::int64_t> mal_id;  // in the API); non-numeric → nullopt.
+  // An absolute cover URL for a row without a source ("" = ask the source).
+  std::string cover_url;
+  // Other titles the row is known by, for matching it across sources; never
+  // shown.
+  std::vector<std::string> alt_titles;
   friend bool operator==(const MdManga&, const MdManga&) = default;
 };
+
+// A row from a source, as opposed to an AniList row still to be bound.
+[[nodiscard]] inline bool bound(const MdManga& m) { return !m.id.empty(); }
 
 struct MdChapter {
   std::string id;        // native source id (vetted).

@@ -738,7 +738,7 @@ endif()
 # for RemoteEntry/ListEntry).
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
-  add_library(shigoku_manga_sync STATIC src/manga/msync.cpp)
+  add_library(shigoku_manga_sync STATIC src/manga/msync.cpp src/manga/msimilar.cpp)
   target_include_directories(shigoku_manga_sync PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_manga_sync
     PUBLIC shigoku_anilist shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty)

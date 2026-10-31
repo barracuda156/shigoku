@@ -280,9 +280,79 @@ void spawn_feed(MgApp& app, const MangaSource* source, FeedKind kind, std::uint3
   });
 }
 
+// The Similar feed's page: the AniList lookup off the UI thread, its rows
+// converted there so the event carries list rows. The resolved id rides
+// along once known, so later pages skip the title search.
+void spawn_similar(MgApp& app, std::uint32_t page) {
+  const Generation gen = app.search_gen.bump();
+  auto* queue = app.queue;
+  if (queue == nullptr || app.deps == nullptr || !app.deps->similar) return;
+  const MgSimilarFn* similar = &app.deps->similar;
+  std::optional<std::int64_t> al_id;
+  if (app.similar_al_id > 0) {
+    al_id = app.similar_al_id;
+  } else if (app.similar_seed.has_value()) {
+    al_id = app.similar_seed->al_id;
+  }
+  std::string title = app.similar_seed.has_value() ? app.similar_seed->title : std::string();
+  tui::spawn_detached([queue, similar, gen, page, al_id, title = std::move(title)]() {
+    auto r = (*similar)(al_id, title, page);
+    if (!r.has_value()) {
+      queue->try_post(MgEvent{MgSimilarFailed{gen, r.error()}});
+      return;
+    }
+    MgSimilarDone d;
+    d.gen = gen;
+    d.al_id = r->al_id;
+    d.al_title = r->al_title;
+    d.page = page;
+    d.has_next = r->has_next;
+    d.rows.reserve(r->rows.size());
+    for (const Enrichment& e : r->rows) d.rows.push_back(similar_row(e));
+    queue->try_post(MgEvent{std::move(d)});
+  });
+}
+
+// Enter on an unbound row: the active source searched by the row's titles,
+// one search per title until one matches (pick_binding is pure, so the
+// worker decides). A search that fails only counts when none succeeded.
+void spawn_bind(MgApp& app, const MangaSource* source, MdManga want) {
+  const Generation gen = app.bind_gen.bump();
+  auto* queue = app.queue;
+  if (queue == nullptr) return;
+  tui::spawn_detached([queue, source, gen, want = std::move(want)]() {
+    std::vector<std::string> queries;
+    queries.push_back(want.title);
+    for (const std::string& t : want.alt_titles) {
+      if (!t.empty() && t != want.title) queries.push_back(t);
+    }
+    const std::int64_t al_id = want.al_id.value_or(0);
+    std::optional<ProviderError> failure;
+    bool answered = false;
+    for (const std::string& q : queries) {
+      auto r = source->search(q);
+      if (!r.has_value()) {
+        failure = r.error();
+        continue;
+      }
+      answered = true;
+      if (auto m = pick_binding(*r, want); m.has_value()) {
+        queue->try_post(MgEvent{MgBindDone{gen, al_id, std::move(m)}});
+        return;
+      }
+    }
+    if (!answered && failure.has_value()) {
+      queue->try_post(MgEvent{MgBindFailed{gen, al_id, *failure}});
+      return;
+    }
+    queue->try_post(MgEvent{MgBindDone{gen, al_id, std::nullopt}});
+  });
+}
+
 void spawn_chapters(MgApp& app, const MangaSource* source, std::string manga_id) {
   const Generation gen = app.chapters_gen.bump();
   auto* queue = app.queue;
+  if (queue == nullptr) return;  // bare test frames: the state alone is the point.
   std::string scoped = scoped_id(*source, manga_id);
   tui::spawn_detached([queue, source, gen, manga_id = std::move(manga_id),
                        scoped = std::move(scoped),
@@ -539,12 +609,33 @@ void spawn_cover(MgApp& app, std::int64_t for_id, std::string url,
 
 int visible_rows(const MgApp& app) { return tui::content_height(app.win.rows); }
 
+// A new list in the left pane: the cursor and the chapter pane start over.
+void take_results(MgApp& app, std::vector<MdManga> rows) {
+  app.results = std::move(rows);
+  app.cursor = 0;
+  app.scroll = 0;
+  app.chapters_for.clear();
+  app.chapters_pending_for.clear();
+  app.chapters.clear();
+  app.chapters_loading = false;
+  app.focus = MgFocus::Results;
+  app.chapter_cursor = 0;
+  app.chapter_scroll = 0;
+}
+
 // The next page of the held feed, once the cursor is within a few rows of
 // the end and nothing is loading.
 void maybe_page_feed(MgApp& app) {
   constexpr int kPrefetchRows = 3;
-  if (!app.feed.has_value() || !app.feed_has_next || app.searching) return;
+  if (app.searching) return;
   if (app.cursor + kPrefetchRows < static_cast<int>(app.results.size())) return;
+  if (app.similar_open) {
+    if (!app.similar_has_next) return;
+    app.searching = true;
+    spawn_similar(app, app.similar_page + 1);
+    return;
+  }
+  if (!app.feed.has_value() || !app.feed_has_next) return;
   const MangaSource* src = active_source(app);
   if (src == nullptr) return;
   app.searching = true;
@@ -585,6 +676,7 @@ void open_feed(MgApp& app, FeedKind kind) {
   app.feed = kind;
   app.feed_page = 0;
   app.feed_has_next = false;
+  app.similar_open = false;
   app.last_query.clear();
   app.searching = true;
   app.view = MgView::Search;
@@ -594,26 +686,98 @@ void open_feed(MgApp& app, FeedKind kind) {
   app.dirty = true;
 }
 
-// `[` / `]`: the previous / next feed the active source has, wrapping.
+// The Similar feed into the results list from page 1: `~`, or `[`/`]`
+// stepping back onto it.
+void show_similar(MgApp& app) {
+  if (!app.similar_seed.has_value()) return;
+  app.feed.reset();
+  app.feed_page = 0;
+  app.feed_has_next = false;
+  app.similar_open = true;
+  app.similar_page = 0;
+  app.similar_has_next = false;
+  app.last_query.clear();
+  app.searching = true;
+  app.view = MgView::Search;
+  app.focus = MgFocus::Results;
+  app.continue_pending = false;
+  spawn_similar(app, 1);
+  app.dirty = true;
+}
+
+// The seed's name for the status row: AniList's once it answered.
+std::string similar_title(const MgApp& app) {
+  if (!app.similar_al_title.empty()) return app.similar_al_title;
+  return app.similar_seed.has_value() ? app.similar_seed->title : std::string();
+}
+
+// `~`: titles like the selection, from AniList. The same seed again just
+// reloads; a new one starts the feed over.
+void open_similar(MgApp& app) {
+  const MdManga* sel = selected(app);
+  if (sel == nullptr) return;
+  if (app.deps == nullptr || !app.deps->similar) {
+    app.toasts.push(tui::ToastKind::Info, "similar titles need anilist", app.tick_count);
+    app.dirty = true;
+    return;
+  }
+  MgApp::MgSimilarSeed seed;
+  seed.al_id = sel->al_id;
+  seed.title = sel->title;
+  if (!app.similar_seed.has_value() || !(*app.similar_seed == seed)) {
+    app.similar_seed = std::move(seed);
+    app.similar_al_id = sel->al_id.value_or(0);
+    app.similar_al_title.clear();
+  }
+  show_similar(app);
+}
+
+// `[` / `]`: the previous / next feed the active source has, wrapping; an
+// open Similar feed is the last stop.
 void step_feed(MgApp& app, int delta) {
   const MangaSource* src = active_source(app);
   if (src == nullptr) return;
   const std::vector<FeedKind> kinds = src->feeds();
-  if (kinds.empty()) {
+  const int feeds = static_cast<int>(kinds.size());
+  const int n = feeds + (app.similar_seed.has_value() ? 1 : 0);
+  if (n == 0) {
     app.toasts.push(tui::ToastKind::Info, std::string(source_name(app)) + " has no feeds",
                     app.tick_count);
     app.dirty = true;
     return;
   }
-  const int n = static_cast<int>(kinds.size());
   int idx = delta > 0 ? -1 : 0;
-  if (app.feed.has_value()) {
-    for (int i = 0; i < n; ++i) {
+  if (app.similar_open) {
+    idx = feeds;
+  } else if (app.feed.has_value()) {
+    for (int i = 0; i < feeds; ++i) {
       if (kinds[static_cast<std::size_t>(i)] == *app.feed) idx = i;
     }
   }
   const int next = ((idx + delta) % n + n) % n;
-  open_feed(app, kinds[static_cast<std::size_t>(next)]);
+  if (next == feeds) {
+    show_similar(app);
+  } else {
+    open_feed(app, kinds[static_cast<std::size_t>(next)]);
+  }
+}
+
+// An action that needs a source row, pressed on an unbound one.
+void refuse_unbound(MgApp& app) {
+  app.toasts.push(tui::ToastKind::Info,
+                  "Enter finds it on " + std::string(source_name(app)) + " first",
+                  app.tick_count);
+  app.dirty = true;
+}
+
+// Enter on an unbound row: find it on the active source; the answer re-enters
+// request_chapters over the bound row.
+void start_bind(MgApp& app, const MangaSource* src, const MdManga& row) {
+  const std::int64_t al_id = row.al_id.value_or(0);
+  if (al_id != 0 && app.bind_pending_al_id == al_id) return;  // already looking.
+  app.bind_pending_al_id = al_id;
+  spawn_bind(app, src, row);
+  app.dirty = true;
 }
 
 // Library list motion (same keep-visible law as move_cursor; its own cursor
@@ -642,6 +806,10 @@ void request_chapters(MgApp& app) {
   const MdManga* sel = selected(app);
   const MangaSource* src = selected_source(app);
   if (sel == nullptr || src == nullptr) return;
+  if (!bound(*sel)) {
+    start_bind(app, src, *sel);
+    return;
+  }
   if (app.chapters_for == sel->id) {
     // Already held: Enter re-engages by moving focus into the list.
     app.focus = MgFocus::Chapters;
@@ -724,6 +892,11 @@ void cycle_source(MgApp& app) {
   app.feed.reset();
   app.feed_page = 0;
   app.feed_has_next = false;
+  app.similar_open = false;
+  app.similar_page = 0;
+  app.similar_has_next = false;
+  app.bind_pending_al_id = 0;
+  app.bind_gen.bump();
   app.search_gen.bump();
   app.chapters_for.clear();
   app.chapters_pending_for.clear();
@@ -860,6 +1033,10 @@ void toggle_following(MgApp& app) {
   const MdManga* sel = selected(app);
   const MangaSource* src = selected_source(app);
   if (store == nullptr || sel == nullptr || src == nullptr) return;
+  if (!bound(*sel)) {
+    refuse_unbound(app);
+    return;
+  }
   const std::string scoped = scoped_id(*src, sel->id);
   auto following = store->is_following(scoped);
   if (!following.has_value()) {
@@ -1070,6 +1247,7 @@ void sync_selection(MgApp& app) {
     app.toasts.push(tui::ToastKind::Info, std::move(line), app.tick_count);
     app.dirty = true;
   };
+  if (!bound(*sel)) return refuse_unbound(app);
   if (!sel->al_id.has_value() || *sel->al_id <= 0) {
     return refuse("no anilist id for this title");
   }
@@ -1123,6 +1301,7 @@ void on_key(MgApp& app, const KeyEvent& k) {
         app.last_query = app.prompt;
         app.searching = true;
         app.feed.reset();
+        app.similar_open = false;
         app.view = MgView::Search;  // results have nowhere else to land.
         spawn_search(app, active_source(app), app.prompt);
       }
@@ -1184,6 +1363,11 @@ void on_key(MgApp& app, const KeyEvent& k) {
   // `s` cycles the active source (no-op with fewer than two wired).
   if (k.codepoint == U's') {
     cycle_source(app);
+    return;
+  }
+  // `~` lists titles like the selection: AniList's recommendations.
+  if (k.codepoint == U'~') {
+    open_similar(app);
     return;
   }
   // `1`-`4` open the active source's ranked feeds; `[` / `]` step through
@@ -1410,25 +1594,42 @@ void on_mouse(MgApp& app, const MouseEvent& m) {
 
 // --- Cover reconcile (the anime reconcile_cover, in miniature) --------------
 
-void cover_tick(MgApp& app) {
-  const MangaSource* source = selected_source(app);
-  if (source == nullptr || app.deps == nullptr || app.deps->covers == nullptr) {
-    return;
-  }
-  const MdManga* sel = selected(app);
+// The cover the selection wants: the source's thumbnail for its row, the
+// AniList cover for an unbound one. Keyed on the SCOPED id (the library
+// mixes sources, and two sites are free to hand out the same native id), or
+// on the AniList id for a row no source scopes yet.
+struct CoverWant {
   std::string url;
-  if (sel != nullptr) url = source->cover_thumb_url(*sel);
+  std::int64_t key = 0;  // 0 = no cover.
+};
+
+CoverWant cover_want(const MgApp& app, const MdManga& sel) {
+  CoverWant w;
+  if (!bound(sel)) {
+    w.url = sel.cover_url;
+    if (!w.url.empty()) w.key = cover_key("al:" + std::to_string(sel.al_id.value_or(0)));
+    return w;
+  }
+  const MangaSource* source = selected_source(app);
+  if (source == nullptr) return w;
+  w.url = source->cover_thumb_url(sel);
+  if (!w.url.empty()) w.key = cover_key(scoped_id(*source, sel.id));
+  return w;
+}
+
+void cover_tick(MgApp& app) {
+  if (app.deps == nullptr || app.deps->covers == nullptr) return;
+  const MdManga* sel = selected(app);
+  CoverWant want;
+  if (sel != nullptr) want = cover_want(app, *sel);
 
   std::optional<std::int64_t> target_id;
   std::optional<std::string_view> target_url;
   // Placeholder mode never fetches: without a kitty path there is nowhere to
   // put pixels (the box renders regardless).
-  if (sel != nullptr && !url.empty() &&
-      app.cover_backend != tui::CoverBackend::None) {
-    // Keyed on the SCOPED id: the library mixes sources, and two sites are
-    // free to hand out the same native id.
-    target_id = cover_key(scoped_id(*source, sel->id));
-    target_url = url;
+  if (want.key != 0 && app.cover_backend != tui::CoverBackend::None) {
+    target_id = want.key;
+    target_url = want.url;
   }
 
   switch (app.cover.decide(target_id, target_url, app.tick_count)) {
@@ -1448,7 +1649,7 @@ void cover_tick(MgApp& app) {
       const std::uint32_t ch = app.cell.known() ? app.cell.height : kFallbackCellH;
       app.cover.begin_fetch(*target_id, *target_url);
       app.cover_pixels = CoverPixels{};  // supersede held pixels (anime rule).
-      spawn_cover(app, *target_id, url,
+      spawn_cover(app, *target_id, want.url,
                   static_cast<std::uint32_t>(r.w) * cw,
                   static_cast<std::uint32_t>(r.h) * ch);
       app.dirty = true;
@@ -1467,15 +1668,21 @@ void draw_top_bar(const MgApp& app, CellBuffer& buf) {
   // truncated — a half-sentence of keys is worse than fewer keys).
   const bool lib = app.view == MgView::Library;
   const std::string wide =
-      lib ? "/ search  Enter open  r continue  D download  U updates  f unfollow  S sync  L search  q quit"
-          : "/ search  1-4 feeds  Enter open  r continue  D download  f follow  s source  S sync  L library  q quit";
+      lib ? "/ search  ~ similar  Enter open  r continue  D download  U updates  f unfollow  S sync  L search  q quit"
+          : "/ search  1-4 feeds  ~ similar  Enter open  r continue  D download  f follow  s source  S sync  L library  q quit";
+  const std::string medium =
+      lib ? "~ similar  Enter open  r continue  U updates  f unfollow  L search  q quit"
+          : "/ search  1-4 feeds  ~ similar  Enter open  r continue  f follow  s source  L library";
   const std::string narrow =
       lib ? "Enter open  r read  D get  U check  f unfollow  L search"
           : "/ search  Enter open  r read  f follow  L library  q quit";
-  const int wide_x = app.win.cols - tui::str_width(wide) - 1;
-  const std::string& hints = wide_x > 16 ? wide : narrow;
-  const int hx = app.win.cols - tui::str_width(hints) - 1;
-  if (hx > 16) buf.put_str(hx, 0, hints, th::fg3, th::surface);
+  for (const std::string* hints : {&wide, &medium, &narrow}) {
+    const int hx = app.win.cols - tui::str_width(*hints) - 1;
+    if (hx > 16) {
+      buf.put_str(hx, 0, *hints, th::fg3, th::surface);
+      return;
+    }
+  }
 }
 
 // The library list: title, then the counter that decides whether it is worth
@@ -1523,8 +1730,8 @@ void draw_list(MgApp& app, CellBuffer& buf, int x, int w, int y0, int y1) {
     const MangaSource* src = active_source(app);
     const bool has_feeds = src != nullptr && !src->feeds().empty();
     const std::string copy =
-        app.searching ? (app.feed.has_value() ? "loading…" : "searching…")
-        : !app.last_query.empty() || app.feed.has_value()
+        app.searching ? (app.feed.has_value() || app.similar_open ? "loading…" : "searching…")
+        : !app.last_query.empty() || app.feed.has_value() || app.similar_open
             ? "no results"
         : has_feeds ? "press / to search " + std::string(source_name(app)) +
                           ", or 1-4 for its feeds"
@@ -1559,11 +1766,9 @@ void draw_cover_box(MgApp& app, CellBuffer& buf, const MdManga& sel, int x,
   if (rows <= 0 || tier.cover_w <= 0) return;
   const Rect r{x, y0, tier.cover_w, rows};
 
-  const MangaSource* source = selected_source(app);
-  const std::string url =
-      source != nullptr ? source->cover_thumb_url(sel) : std::string{};
-  const std::int64_t want =
-      url.empty() ? 0 : cover_key(scoped_id(*source, sel.id));
+  const CoverWant cw = cover_want(app, sel);
+  const std::string& url = cw.url;
+  const std::int64_t want = cw.key;
   const bool have = want != 0 &&
                     app.cover_backend != tui::CoverBackend::None &&
                     app.cover.has_pixels() &&
@@ -1658,6 +1863,18 @@ void draw_detail(MgApp& app, CellBuffer& buf, int x, int w, int y0, int y1) {
   // Chapters section: a navigable list, not a peek — cursor, scroll window,
   // read marks, and the mouse plan all live here.
   if (dy >= y1) return;
+  if (!bound(*sel)) {
+    // An AniList row: Enter finds it on the active source first.
+    const bool finding = app.bind_pending_al_id != 0 && sel->al_id.has_value() &&
+                         *sel->al_id == app.bind_pending_al_id;
+    const std::string line =
+        finding ? std::string(spinner_frame(app.tick_count)) + " finding it on " +
+                      std::string(source_name(app)) + "…"
+                : "Enter — find it on " + std::string(source_name(app));
+    buf.put_str(x + 1, dy, tui::truncate_to_cols(line, w - 2), finding ? th::fg2 : th::fg3,
+                th::bg);
+    return;
+  }
   const bool held = app.chapters_for == sel->id;
   const bool pending = app.chapters_loading && app.chapters_pending_for == sel->id;
   // The spinner replaces the list only when there is no list yet: a cached
@@ -1776,6 +1993,9 @@ void draw_bottom(const MgApp& app, CellBuffer& buf) {
     status = std::string(spinner_frame(app.tick_count)) + " checking " +
              std::to_string(app.sweep_done) + "/" + std::to_string(app.sweep_total) +
              " series…";
+  } else if (app.searching && app.similar_open) {
+    status = std::string(spinner_frame(app.tick_count)) + " finding titles like " +
+             similar_title(app) + "…";
   } else if (app.searching && app.feed.has_value()) {
     status = std::string(spinner_frame(app.tick_count)) + " loading " +
              feed_label(*app.feed) + "…";
@@ -1784,6 +2004,11 @@ void draw_bottom(const MgApp& app, CellBuffer& buf) {
              app.last_query + "\"…";
   } else if (app.view == MgView::Library) {
     status = "library — " + std::to_string(app.library.size()) + " followed";
+  } else if (app.similar_open && !app.results.empty()) {
+    status = "Similar to " + similar_title(app) + " — " +
+             std::to_string(app.results.size()) + " titles" +
+             (app.similar_has_next ? ", more below" : "") + " \xC2\xB7 Enter finds one on " +
+             std::string(source_name(app));
   } else if (app.feed.has_value() && !app.results.empty()) {
     status = std::string(feed_label(*app.feed)) + " on " + std::string(source_name(app)) +
              " — " + std::to_string(app.results.size()) + " titles" +
@@ -1941,23 +2166,15 @@ void tick(MgApp& app, const MgEvent& ev) {
             // overlay runs its own spinner/elapsed clock off the same counter
             // (draw_connect is pure), so a live session repaints every tick.
             if (app.searching || app.chapters_loading || app.sweep_running ||
-                app.syncing || app.connect.has_value() || !app.toasts.empty()) {
+                app.syncing || app.bind_pending_al_id != 0 || app.connect.has_value() ||
+                !app.toasts.empty()) {
               app.dirty = true;
             }
           },
           [&](const MgSearchDone& d) {
             if (!app.search_gen.is_current(d.gen)) return;
             app.searching = false;
-            app.results = d.results;
-            app.cursor = 0;
-            app.scroll = 0;
-            app.chapters_for.clear();
-            app.chapters_pending_for.clear();
-            app.chapters.clear();
-            app.chapters_loading = false;
-            app.focus = MgFocus::Results;
-            app.chapter_cursor = 0;
-            app.chapter_scroll = 0;
+            take_results(app, d.results);
             if (app.results.empty()) {
               app.toasts.push(tui::ToastKind::Info, "no results", app.tick_count);
             }
@@ -1978,16 +2195,7 @@ void tick(MgApp& app, const MgEvent& ev) {
               return;
             }
             if (d.page == 1) {
-              app.results = d.rows;
-              app.cursor = 0;
-              app.scroll = 0;
-              app.chapters_for.clear();
-              app.chapters_pending_for.clear();
-              app.chapters.clear();
-              app.chapters_loading = false;
-              app.focus = MgFocus::Results;
-              app.chapter_cursor = 0;
-              app.chapter_scroll = 0;
+              take_results(app, d.rows);
               if (app.results.empty()) {
                 app.toasts.push(tui::ToastKind::Info, "nothing listed", app.tick_count);
               }
@@ -2007,6 +2215,77 @@ void tick(MgApp& app, const MgEvent& ev) {
             app.searching = false;
             app.toasts.push(tui::ToastKind::Error, error_text(f.cause, source_name(app)),
                             app.tick_count);
+            app.dirty = true;
+          },
+          [&](const MgSimilarDone& d) {
+            if (!app.search_gen.is_current(d.gen)) return;
+            app.searching = false;
+            if (!app.similar_open || d.page != app.similar_page + 1) return;
+            if (d.page == 1) {
+              take_results(app, d.rows);
+              if (app.results.empty()) {
+                app.toasts.push(tui::ToastKind::Info, "anilist recommends nothing for it",
+                                app.tick_count);
+              }
+            } else {
+              for (const MdManga& m : d.rows) {
+                const bool held = std::any_of(app.results.begin(), app.results.end(),
+                                              [&](const MdManga& r) {
+                                                return r.al_id.has_value() && r.al_id == m.al_id;
+                                              });
+                if (!held) app.results.push_back(m);
+              }
+            }
+            app.similar_page = d.page;
+            app.similar_has_next = d.has_next;
+            if (d.al_id > 0) app.similar_al_id = d.al_id;
+            if (!d.al_title.empty()) app.similar_al_title = d.al_title;
+            app.dirty = true;
+          },
+          [&](const MgSimilarFailed& f) {
+            if (!app.search_gen.is_current(f.gen)) return;
+            app.searching = false;
+            app.toasts.push(tui::ToastKind::Error, "similar: " + error_text(f.cause, "anilist"),
+                            app.tick_count);
+            app.dirty = true;
+          },
+          [&](const MgBindDone& d) {
+            if (!app.bind_gen.is_current(d.gen)) return;
+            app.bind_pending_al_id = 0;
+            // The row that asked, wherever the list moved meanwhile.
+            int idx = -1;
+            for (std::size_t i = 0; i < app.results.size(); ++i) {
+              const MdManga& r = app.results[i];
+              if (!bound(r) && r.al_id.has_value() && *r.al_id == d.al_id) {
+                idx = static_cast<int>(i);
+                break;
+              }
+            }
+            if (idx < 0) return;  // the list moved on.
+            if (!d.match.has_value()) {
+              app.continue_pending = false;
+              app.toasts.push(tui::ToastKind::Info,
+                              "not on " + std::string(source_name(app)) +
+                                  " \xC2\xB7 / searches by hand",
+                              app.tick_count);
+              app.dirty = true;
+              return;
+            }
+            app.results[static_cast<std::size_t>(idx)] = *d.match;
+            // Enter's second half, while the row is still the selection.
+            if (app.view == MgView::Search && app.cursor == idx) {
+              request_chapters(app);
+            } else {
+              app.continue_pending = false;
+            }
+            app.dirty = true;
+          },
+          [&](const MgBindFailed& f) {
+            if (!app.bind_gen.is_current(f.gen)) return;
+            app.bind_pending_al_id = 0;
+            app.continue_pending = false;
+            app.toasts.push(tui::ToastKind::Error,
+                            "find: " + error_text(f.cause, source_name(app)), app.tick_count);
             app.dirty = true;
           },
           [&](const MgChaptersDone& d) {

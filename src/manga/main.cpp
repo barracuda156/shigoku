@@ -5,9 +5,12 @@
 // it would drive); --version alone so packaging scripts can probe the
 // binary.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../http.hpp"
@@ -18,6 +21,7 @@
 #include "mangahub.hpp"
 #include "mapp.hpp"
 #include "mconfig.hpp"
+#include "msimilar.hpp"
 #include "mstore.hpp"
 #include "nhentai.hpp"
 #include "viewer.hpp"
@@ -87,6 +91,14 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // `~`: AniList's manga recommendations, over their own client (one blocking
+  // worker per client). A row without an AniList id is looked up by title.
+  auto lookup_client = shigoku::http::Client::create();
+  if (!lookup_client.has_value()) {
+    std::fprintf(stderr, "shigoku-manga: http client init failed\n");
+    return 1;
+  }
+
   // manga.db lives beside the chapter library under the DATA dir. A store
   // that refuses to open is fatal, not degraded: silently dropping every read
   // mark for a session is worse than not starting.
@@ -128,5 +140,9 @@ int main(int argc, char** argv) {
   deps.store = &store.value();
   deps.sync_client = &sync_client.value();
   deps.auth_file = shigoku::auth_file_path(*paths);
+  deps.similar = [&lookup_client](std::optional<std::int64_t> al_id, std::string_view title,
+                                  std::uint32_t page) {
+    return shigoku::manga::anilist_similar(*lookup_client, al_id, title, page);
+  };
   return shigoku::manga::run(deps);
 }

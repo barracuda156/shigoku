@@ -85,5 +85,25 @@ int main() {
                 pg, (*recs)->entries.size(), (*recs)->entries[0].title_romaji.c_str(),
                 (*recs)->has_next ? 1 : 0);
   }
+
+  // The manga reader's `~`: a seed by id (One Piece), and the title search a
+  // row without an AniList id goes through first.
+  constexpr std::int64_t kOnePieceManga = 30013;
+  auto mrecs = anilist::recommendations(*client, kOnePieceManga, 1, anilist::MediaKind::Manga);
+  if (!mrecs.has_value() || !mrecs->has_value() || (*mrecs)->entries.empty()) {
+    std::fprintf(stderr, "anilist_live_smoke: FAIL manga recommendations\n");
+    return 1;
+  }
+  std::printf("anilist_live_smoke: OK manga recommendations: %zu row(s), first %s, next=%d\n",
+              (*mrecs)->entries.size(), (*mrecs)->entries[0].title_romaji.c_str(),
+              (*mrecs)->has_next ? 1 : 0);
+  auto mhits = anilist::search(*client, "Berserk", 1, anilist::MediaKind::Manga);
+  if (!mhits.has_value() || mhits->entries.empty()) {
+    std::fprintf(stderr, "anilist_live_smoke: FAIL manga search\n");
+    return 1;
+  }
+  std::printf("anilist_live_smoke: OK manga search: first id=%lld %s\n",
+              static_cast<long long>(mhits->entries[0].anilist_id),
+              mhits->entries[0].title_romaji.c_str());
   return 0;
 }

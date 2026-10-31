@@ -1590,3 +1590,321 @@ TEST_CASE("a source switch leaves the feed") {
   tick(app, MgEvent{feed_page(inflight, FeedKind::Popular, 1, rows_from(0, 5), false)});
   CHECK(app.results.empty());
 }
+
+// --- the Similar feed (`~`) and binding ---------------------------------------
+
+namespace {
+
+// An AniList recommendation as the list holds it: no native id yet.
+MdManga al_row(std::int64_t al_id, const char* title) {
+  MdManga m;
+  m.title = title;
+  m.al_id = al_id;
+  m.cover_url = "https://img.example/" + std::to_string(al_id) + ".jpg";
+  return m;
+}
+
+MgSimilarDone similar_page(Generation gen, std::uint32_t page, std::vector<MdManga> rows,
+                           bool has_next, std::int64_t al_id = 10) {
+  MgSimilarDone d;
+  d.gen = gen;
+  d.al_id = al_id;
+  d.page = page;
+  d.rows = std::move(rows);
+  d.has_next = has_next;
+  return d;
+}
+
+std::vector<MdManga> al_rows_from(int first, int n) {
+  std::vector<MdManga> out;
+  for (int i = first; i < first + n; ++i) out.push_back(al_row(100 + i, "R"));
+  return out;
+}
+
+// The lookup seam, never reached in a bare frame (no queue): its presence is
+// what lets `~` proceed.
+MgSimilarFn stub_similar() {
+  return [](std::optional<std::int64_t>, std::string_view, std::uint32_t)
+             -> Result<MgSimilarPage, ProviderError> { return MgSimilarPage{}; };
+}
+
+}  // namespace
+
+TEST_CASE("~ on a result opens the Similar feed; its page lands as unbound rows") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  tick(app, MgEvent{key_char(U'1')});
+  tick(app, MgEvent{feed_page(app.search_gen.current(), FeedKind::Popular, 1,
+                              rows_from(0, 3), false)});
+  app.results[0].al_id = 10;
+  app.last_query = "old";
+
+  tick(app, MgEvent{key_char(U'~')});
+  REQUIRE(app.similar_seed.has_value());
+  CHECK(app.similar_seed->al_id == 10);
+  CHECK(app.similar_seed->title == "T");
+  CHECK(app.similar_open);
+  CHECK_FALSE(app.feed.has_value());
+  CHECK(app.searching);
+  CHECK(app.last_query.empty());
+
+  MgSimilarDone d = similar_page(app.search_gen.current(), 1, al_rows_from(0, 2), true);
+  d.al_title = "Seed Title";
+  tick(app, MgEvent{d});
+  CHECK_FALSE(app.searching);
+  REQUIRE(app.results.size() == 2);
+  CHECK_FALSE(bound(app.results[0]));
+  CHECK(app.results[0].al_id == 100);
+  CHECK(app.cursor == 0);
+  CHECK(app.similar_page == 1);
+  CHECK(app.similar_has_next);
+  CHECK(app.similar_al_title == "Seed Title");
+  CHECK(selected(app) == &app.results[0]);
+}
+
+TEST_CASE("the Similar feed pages near the end and drops repeats by AniList id") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  app.results = {manga_row("m1", "Seed")};
+  tick(app, MgEvent{key_char(U'~')});
+  tick(app, MgEvent{similar_page(app.search_gen.current(), 1, al_rows_from(0, 10), true)});
+  const Generation before = app.search_gen.current();
+
+  tick(app, MgEvent{key_char(U'G')});
+  CHECK(app.searching);
+  CHECK(app.search_gen.current() != before);
+
+  tick(app, MgEvent{similar_page(app.search_gen.current(), 2, al_rows_from(8, 6), false)});
+  CHECK(app.results.size() == 14);
+  CHECK(app.similar_page == 2);
+  CHECK_FALSE(app.similar_has_next);
+  tick(app, MgEvent{key_char(U'G')});
+  CHECK_FALSE(app.searching);
+
+  // A page for the seed before this one dies by generation.
+  tick(app, MgEvent{similar_page(before, 2, al_rows_from(50, 3), false)});
+  CHECK(app.results.size() == 14);
+}
+
+TEST_CASE("] steps onto the Similar feed after the source's feeds; 1 leaves it") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  app.results = {manga_row("m1", "Seed")};
+  tick(app, MgEvent{key_char(U'~')});
+  REQUIRE(app.similar_open);
+
+  tick(app, MgEvent{key_char(U'1')});
+  CHECK_FALSE(app.similar_open);
+  REQUIRE(app.feed.has_value());
+  CHECK(*app.feed == FeedKind::Popular);
+  CHECK(app.similar_seed.has_value());  // the seed outlives the list.
+
+  tick(app, MgEvent{key_char(U']')});
+  CHECK(*app.feed == FeedKind::Latest);
+  tick(app, MgEvent{key_char(U']')});
+  CHECK(app.similar_open);
+  CHECK_FALSE(app.feed.has_value());
+  CHECK(app.searching);
+  tick(app, MgEvent{key_char(U']')});
+  CHECK_FALSE(app.similar_open);
+  CHECK(*app.feed == FeedKind::Popular);
+  tick(app, MgEvent{key_char(U'[')});
+  CHECK(app.similar_open);
+
+  // A source without feeds still rings through an open Similar feed.
+  fs.kinds.clear();
+  tick(app, MgEvent{key_char(U']')});
+  CHECK(app.similar_open);
+}
+
+TEST_CASE("a source switch leaves the Similar feed but keeps its seed") {
+  FeedSource fs;
+  FakeSource md("md", "MangaDex");
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.sources = {&fs, &md};
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  app.results = {manga_row("m1", "Seed")};
+  tick(app, MgEvent{key_char(U'~')});
+  const Generation inflight = app.search_gen.current();
+  tick(app, MgEvent{key_char(U's')});
+  CHECK_FALSE(app.similar_open);
+  CHECK(app.similar_seed.has_value());
+  tick(app, MgEvent{similar_page(inflight, 1, al_rows_from(0, 3), false)});
+  CHECK(app.results.empty());
+  tick(app, MgEvent{key_char(U']')});  // MangaDex here ranks nothing: Similar alone.
+  CHECK(app.similar_open);
+}
+
+TEST_CASE("~ without the AniList lookup wired only says so") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  app.deps = &deps;
+  app.results = {manga_row("m1", "Seed")};
+  tick(app, MgEvent{key_char(U'~')});
+  CHECK_FALSE(app.similar_open);
+  CHECK_FALSE(app.similar_seed.has_value());
+  CHECK_FALSE(app.searching);
+  CHECK_FALSE(app.toasts.empty());
+}
+
+TEST_CASE("Enter on an unbound row finds it on the source; the match takes its place") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  app.results = {al_row(100, "A"), al_row(101, "B")};
+  app.cursor = 1;
+
+  tick(app, MgEvent{key_special(KeyEvent::Special::Enter)});
+  CHECK(app.bind_pending_al_id == 101);
+  CHECK(app.chapters_pending_for.empty());
+  const Generation gen = app.bind_gen.current();
+  tick(app, MgEvent{key_special(KeyEvent::Special::Enter)});  // already looking.
+  CHECK(app.bind_gen.current() == gen);
+
+  MgBindDone done;
+  done.gen = gen;
+  done.al_id = 101;
+  done.match = manga_row("src-b", "B");
+  tick(app, MgEvent{done});
+  CHECK(app.bind_pending_al_id == 0);
+  REQUIRE(app.results.size() == 2);
+  CHECK(app.results[1].id == "src-b");
+  CHECK(bound(app.results[1]));
+  CHECK_FALSE(bound(app.results[0]));
+  // Enter's second half: the chapters fetch for the bound row.
+  CHECK(app.chapters_pending_for == "src-b");
+  CHECK(app.chapters_loading);
+}
+
+TEST_CASE("an unbound row the source lacks stays; f and S refuse it; a stale answer is dropped") {
+  FeedSource fs;
+  MgApp& app = fresh_app();
+  MgDeps deps;
+  deps.source = &fs;
+  deps.similar = stub_similar();
+  app.deps = &deps;
+  MangaStore store = memory_store();
+  deps.store = &store;
+  app.results = {al_row(100, "A")};
+
+  tick(app, MgEvent{key_special(KeyEvent::Special::Enter)});
+  const Generation stale = app.bind_gen.current();
+  MgBindDone none;
+  none.gen = stale;
+  none.al_id = 100;
+  tick(app, MgEvent{none});
+  CHECK_FALSE(bound(app.results[0]));
+  CHECK(app.bind_pending_al_id == 0);
+  CHECK(app.chapters_pending_for.empty());
+  CHECK_FALSE(app.toasts.empty());
+
+  tick(app, MgEvent{key_char(U'f')});
+  auto rows = store.library();
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());
+  tick(app, MgEvent{key_char(U'S')});
+  CHECK_FALSE(app.syncing);
+
+  // A failed search, and one answered after the row was left behind.
+  tick(app, MgEvent{key_special(KeyEvent::Special::Enter)});
+  MgBindFailed failed;
+  failed.gen = app.bind_gen.current();
+  failed.al_id = 100;
+  failed.cause = ProviderError{};
+  tick(app, MgEvent{failed});
+  CHECK(app.bind_pending_al_id == 0);
+  tick(app, MgEvent{key_special(KeyEvent::Special::Enter)});
+  MgBindDone late;
+  late.gen = app.bind_gen.current();
+  late.al_id = 100;
+  late.match = manga_row("src-a", "A");
+  app.results = {manga_row("other", "O")};
+  tick(app, MgEvent{late});
+  CHECK(app.results[0].id == "other");
+}
+
+TEST_CASE("pick_binding: the AniList id wins, then an exact title, never a guess") {
+  MdManga want = al_row(55, "Oshi no Ko");
+  want.alt_titles = {"[Oshi no Ko]", "推しの子"};
+  MdManga by_id = manga_row("x1", "Something Else");
+  by_id.al_id = 55;
+  MdManga by_title = manga_row("x2", "[OSHI NO KO]");
+  MdManga near = manga_row("x3", "Oshi no Ko: Side Story");
+
+  auto hit = pick_binding({near, by_title, by_id}, want);
+  REQUIRE(hit.has_value());
+  CHECK(hit->id == "x1");
+  hit = pick_binding({near, by_title}, want);
+  REQUIRE(hit.has_value());
+  CHECK(hit->id == "x2");
+  CHECK_FALSE(pick_binding({near}, want).has_value());
+  CHECK_FALSE(pick_binding({}, want).has_value());
+
+  // A hit's own alternative titles count too.
+  MdManga alt = manga_row("x4", "Push Child");
+  alt.alt_titles = {"推しの子"};
+  hit = pick_binding({near, alt}, want);
+  REQUIRE(hit.has_value());
+  CHECK(hit->id == "x4");
+}
+
+TEST_CASE("similar_row: an AniList entry as an unbound row") {
+  Enrichment e;
+  e.anilist_id = 30013;
+  e.mal_id = 13;
+  e.title_romaji = "One Piece";
+  e.title_english = "One Piece";
+  e.title_native = "ONE PIECE";
+  e.cover_url = "https://img.example/op.jpg";
+  e.year = 1997;
+  e.status = "RELEASING";
+  e.description = "Gol D. Roger<br>was known as the &quot;Pirate King&quot;.";
+  const MdManga m = similar_row(e);
+  CHECK(m.id.empty());
+  CHECK_FALSE(bound(m));
+  CHECK(m.title == "One Piece");
+  CHECK(m.al_id == 30013);
+  CHECK(m.mal_id == 13);
+  CHECK(m.cover_url == "https://img.example/op.jpg");
+  CHECK(m.year == 1997);
+  CHECK(m.status == "ongoing");
+  CHECK(m.description == "Gol D. Roger\nwas known as the \"Pirate King\".");
+  CHECK(m.alt_titles == std::vector<std::string>{"ONE PIECE"});
+
+  Enrichment bare;
+  bare.anilist_id = 1;
+  bare.title_romaji = "Bare";
+  bare.status = "FINISHED";
+  const MdManga b = similar_row(bare);
+  CHECK(b.status == "completed");
+  CHECK(b.cover_url.empty());
+  CHECK(b.alt_titles.empty());
+}
+
+TEST_CASE("strip_markup drops tags and decodes entities") {
+  CHECK(strip_markup("a <i>b</i> c") == "a b c");
+  CHECK(strip_markup("one<br><br/>two<br />three") == "one\ntwo\nthree");
+  CHECK(strip_markup("x &amp; y &lt;z&gt; &#039;q&#039;") == "x & y <z> 'q'");
+  CHECK(strip_markup("trailing<br>\n\n") == "trailing");
+  CHECK(strip_markup("unterminated <i") == "unterminated");
+}
