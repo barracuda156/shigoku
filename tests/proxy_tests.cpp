@@ -578,3 +578,94 @@ TEST_CASE("serve_gates_on_the_playback_token") {
       "GET " + bad_prefix + blocked + " HTTP/1.1\r\nHost: x\r\n\r\n";
   CHECK(roundtrip(host, bad).find("404") != std::string::npos);
 }
+
+namespace {
+
+// The flixcloud playlist key (the embed module's _c), as captured with
+// tests/fixtures/reanime/master.b64.
+const std::vector<std::uint8_t> kFlixKey = {
+    0x01, 0xa9, 0xfb, 0xc8, 0xae, 0x8f, 0x27, 0x33, 0xa1, 0x71, 0x6a, 0xd2, 0xca, 0x0c, 0x30, 0x07,
+    0x59, 0xe2, 0x89, 0x06, 0x3d, 0x41, 0xb2, 0x79, 0x2f, 0x13, 0xa7, 0xc0, 0x05, 0xab, 0xaa, 0xcf};
+
+StreamLink::PlaylistCipher xor_cipher() {
+  StreamLink::PlaylistCipher c;
+  c.key = kFlixKey;
+  c.kind = StreamLink::PlaylistCipher::Kind::Xor;
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE("unxor_playlist_opens_a_captured_flixcloud_master") {
+  const std::string fx = std::string(SHIGOKU_TEST_FIXTURES_DIR) + "/reanime/";
+  const std::string enc = read_file(fx + "master.b64");
+  const std::string plain = read_file(fx + "master.m3u8");
+  auto text = unxor_playlist(reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(), kFlixKey);
+  REQUIRE(text.has_value());
+  CHECK(*text == plain);
+
+  // A wrong key decodes to bytes that are not a playlist; binary is refused
+  // before any decode; no key, nothing.
+  auto wrong = kFlixKey;
+  wrong[0] ^= 1;
+  CHECK_FALSE(unxor_playlist(reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(), wrong)
+                  .has_value());
+  const std::vector<std::uint8_t> ts(400, 0x47);
+  CHECK_FALSE(unxor_playlist(ts.data(), ts.size(), kFlixKey).has_value());
+  CHECK_FALSE(
+      unxor_playlist(reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(), {}).has_value());
+}
+
+TEST_CASE("respond_under_an_xor_cipher_opens_cuts_and_rewrites_and_leaves_segments_alone") {
+  const std::string enc =
+      read_file(std::string(SHIGOKU_TEST_FIXTURES_DIR) + "/reanime/master.b64");
+  const auto cipher = xor_cipher();
+  const std::string base = "https://fetch8.flixcloud.cc/_v8/abc/master.m3u8";
+
+  std::vector<std::uint8_t> out;
+  const auto ka = respond(out, reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(), base,
+                          4242, "/r.ts?t=tok&u=", &cipher, false, "eng");
+  CHECK(ka == KeepAlive::Yes);
+  const std::string wire(out.begin(), out.end());
+  CHECK(wire.find("HTTP/1.1 200") != std::string::npos);
+  CHECK(wire.find("#EXTM3U") != std::string::npos);
+  CHECK(wire.find("LANGUAGE=\"eng\"") != std::string::npos);
+  CHECK(wire.find("LANGUAGE=\"jpn\"") == std::string::npos);  // cut to the dub's audio
+  CHECK(wire.find("127.0.0.1:4242/r.ts?t=tok&u=") != std::string::npos);
+
+  // An encrypted segment that happens to carry a TS-sync triple past byte 0
+  // is relayed byte for byte when the link does not ask for de-cloaking.
+  std::vector<std::uint8_t> seg(600, 0xAB);
+  seg[5] = seg[5 + 188] = seg[5 + 376] = 0x47;
+  std::vector<std::uint8_t> out2;
+  (void)respond(out2, seg.data(), seg.size(), "https://cdn.example/seg-0.png", 4242,
+                "/r.ts?t=tok&u=", &cipher, false);
+  const std::string wire2(out2.begin(), out2.end());
+  const auto body_at = wire2.find("\r\n\r\n");
+  REQUIRE(body_at != std::string::npos);
+  CHECK(wire2.size() - (body_at + 4) == seg.size());
+
+  // The same bytes on a de-cloaking link lose the prefix.
+  std::vector<std::uint8_t> out3;
+  (void)respond(out3, seg.data(), seg.size(), "https://cdn.example/seg-0.png", 4242,
+                "/r.ts?t=tok&u=", nullptr, true);
+  const std::string wire3(out3.begin(), out3.end());
+  CHECK(wire3.size() - (wire3.find("\r\n\r\n") + 4) == seg.size() - 5);
+}
+
+TEST_CASE("needed_covers_every_relay_reason") {
+  StreamLink plain;
+  plain.url = "https://h.example/master.m3u8";
+  CHECK_FALSE(needed(plain));
+  StreamLink lang = plain;
+  lang.audio_language = "eng";
+  CHECK(needed(lang));
+  lang.audio_language = "";
+  CHECK_FALSE(needed(lang));
+  StreamLink ciphered = plain;
+  ciphered.playlist_cipher = xor_cipher();
+  CHECK(needed(ciphered));
+  StreamLink cloaked = plain;
+  cloaked.decloak_segments = true;
+  CHECK(needed(cloaked));
+}

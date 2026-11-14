@@ -419,12 +419,12 @@ Result<Unit, DownloadError> download_hls(const http::Client& client,
                                          std::atomic<long>* child_pid_out) {
   std::string input = link.url;
 
-  // A link play would proxy (decoy-prefixed segments, encrypted playlists)
-  // transfers through the same proxy; the guard object keeps it alive for
-  // ffmpeg's lifetime. ffmpeg reads the proxied master itself, so no variant
-  // walk on this arm.
+  // A link play would proxy (decoy-prefixed segments, encrypted playlists,
+  // one audio rendition of several) transfers through the same proxy;
+  // the guard object keeps it alive for ffmpeg's lifetime. ffmpeg reads
+  // the proxied master itself, so no variant walk on this arm.
   std::optional<proxy::Decloak> decloak;
-  if (link.decloak_segments || link.playlist_cipher.has_value()) {
+  if (proxy::needed(link)) {
     auto engaged = proxy::engage(link);
     if (!engaged) {
       return err(

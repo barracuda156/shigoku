@@ -50,6 +50,13 @@ struct Variant {
 // muxed into the variants, so it does not count.
 [[nodiscard]] bool has_separate_audio(std::string_view text);
 
+// A master whose audio renditions are cut down to `language` (ISO 639,
+// two- or three-letter): within each GROUP-ID that carries it, the other
+// languages' TYPE=AUDIO entries drop and the first kept one is DEFAULT=YES,
+// so mpv and ffmpeg pick it unprompted. A group without the language,
+// and a master with none, pass through unchanged.
+[[nodiscard]] std::string keep_audio_language(std::string_view text, std::string_view language);
+
 // Pick by quality preference, or nullptr if empty (ROD-152). Cap policy:
 // best/worst take the highest/lowest resolution; a rung takes the highest ≤
 // cap, and if every variant exceeds it, the lowest available (never invent a

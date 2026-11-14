@@ -312,16 +312,26 @@ struct StreamLink {
   // UNPROXIED, so its URL must pass the fetch guard at resolve time (A5).
   std::optional<std::string> sub_url;
 
-  // Playlists arrive encrypted (senshi): `magic` + base64( iv[12] ‖ ciphertext
-  // ‖ tag[16] ), AES-256-GCM under `key` (32 bytes), no AAD — master and
-  // media playlists alike; segments are plain. Set => playback routes
-  // through the loopback proxy, which decrypts every playlist it relays.
+  // Playlists arrive encrypted, master and media playlists alike; segments
+  // are left as served. Gcm (senshi): `magic` + base64( iv[12] ‖ ciphertext
+  // ‖ tag[16] ), AES-256-GCM under `key` (32 bytes), no AAD. Xor (reanime):
+  // a body that is not already a playlist is base64( text XOR `key`
+  // repeated ). Set => playback routes through the loopback proxy, which
+  // opens every playlist it relays.
   struct PlaylistCipher {
+    enum class Kind { Gcm, Xor };
     std::vector<std::uint8_t> key;
     std::string magic;
+    Kind kind = Kind::Gcm;
     friend bool operator==(const PlaylistCipher&, const PlaylistCipher&) = default;
   };
   std::optional<PlaylistCipher> playlist_cipher;
+
+  // The master carries several audio renditions and this language's
+  // (ISO 639, "eng"/"jpn") is the one to play — a dub that is an audio track,
+  // not its own stream. Set => playback routes through the loopback proxy,
+  // which cuts the master down to it (hls::keep_audio_language).
+  std::optional<std::string> audio_language;
 
   friend bool operator==(const StreamLink&, const StreamLink&) = default;
 };

@@ -297,12 +297,35 @@ std::optional<std::string> decrypt_playlist(std::string_view payload_b64,
   return std::string(plain->begin(), plain->end());
 }
 
+std::optional<std::string> unxor_playlist(const std::uint8_t* body, std::size_t len,
+                                          const std::vector<std::uint8_t>& key) {
+  constexpr std::size_t kMaxEncoded = std::size_t{4} << 20;
+  if (key.empty() || len == 0 || len > kMaxEncoded) return std::nullopt;
+  // A segment is binary: reject on its first bytes before decoding the lot.
+  const std::size_t head = len < 64 ? len : 64;
+  for (std::size_t i = 0; i < head; ++i) {
+    const std::uint8_t c = body[i];
+    const bool b64 = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                     c == '+' || c == '/' || c == '=' || c == ' ' || c == '\t' || c == '\r' ||
+                     c == '\n';
+    if (!b64) return std::nullopt;
+  }
+  auto raw = crypto::base64_decode(std::string_view(reinterpret_cast<const char*>(body), len));
+  if (!raw.has_value() || raw->empty()) return std::nullopt;
+  for (std::size_t i = 0; i < raw->size(); ++i) (*raw)[i] ^= key[i % key.size()];
+  if (!is_playlist(raw->data(), raw->size())) return std::nullopt;
+  return std::string(raw->begin(), raw->end());
+}
+
 KeepAlive respond(std::vector<std::uint8_t>& out, const std::uint8_t* body,
                   std::size_t len, std::string_view final_url,
                   std::uint16_t port, std::string_view prefix,
-                  const StreamLink::PlaylistCipher* cipher) {
+                  const StreamLink::PlaylistCipher* cipher, bool decloak,
+                  std::string_view audio_language) {
   std::string opened;  // owns the decrypted text while `body` points into it.
-  if (cipher != nullptr && !cipher->magic.empty() && len >= cipher->magic.size() &&
+  using Kind = StreamLink::PlaylistCipher::Kind;
+  if (cipher != nullptr && cipher->kind == Kind::Gcm && !cipher->magic.empty() &&
+      len >= cipher->magic.size() &&
       std::memcmp(body, cipher->magic.data(), cipher->magic.size()) == 0) {
     const std::string_view payload(reinterpret_cast<const char*>(body) + cipher->magic.size(),
                                    len - cipher->magic.size());
@@ -311,19 +334,30 @@ KeepAlive respond(std::vector<std::uint8_t>& out, const std::uint8_t* body,
     opened = std::move(*text);
     body = reinterpret_cast<const std::uint8_t*>(opened.data());
     len = opened.size();
+  } else if (cipher != nullptr && cipher->kind == Kind::Xor && !is_playlist(body, len)) {
+    if (auto text = unxor_playlist(body, len, cipher->key); text.has_value()) {
+      opened = std::move(*text);
+      body = reinterpret_cast<const std::uint8_t*>(opened.data());
+      len = opened.size();
+    }
   }
   if (is_playlist(body, len)) {
     // is_playlist already proved a text #EXTM3U head with no NUL; treat the
     // body as UTF-8 text (a stray non-UTF-8 byte would only mangle the rewrite,
     // never crash — the scan is byte-wise, unlike Rust's str::from_utf8 gate,
     // which would 502; here the head-NUL check is the only hard reject).
-    const std::string_view text(reinterpret_cast<const char*>(body), len);
+    std::string_view text(reinterpret_cast<const char*>(body), len);
+    std::string cut;
+    if (!audio_language.empty()) {
+      cut = hls::keep_audio_language(text, audio_language);
+      text = cut;
+    }
     const std::string rewritten = rewrite_playlist(text, final_url, port, prefix);
     write_response(out, kStatusOk, kContentTypeM3u8,
                    reinterpret_cast<const std::uint8_t*>(rewritten.data()),
                    rewritten.size(), true);
   } else {
-    const std::size_t off = decloak_offset(body, len);
+    const std::size_t off = decloak ? decloak_offset(body, len) : 0;
     write_response(out, kStatusOk, kContentTypeTs, body + off, len - off, true);
   }
   return KeepAlive::Yes;
@@ -524,6 +558,8 @@ class Proxy {
   std::optional<std::string> referer_;
   std::optional<std::string> user_agent_;
   std::optional<StreamLink::PlaylistCipher> cipher_;
+  bool decloak_ = false;
+  std::string audio_language_;
   std::atomic<bool> shutting_down_{false};
   std::thread accept_thread_;
 };
@@ -588,6 +624,8 @@ Result<std::shared_ptr<Proxy>, ProxyStartError> Proxy::start(
   proxy->referer_ = link.referer;
   proxy->user_agent_ = link.user_agent;
   proxy->cipher_ = link.playlist_cipher;
+  proxy->decloak_ = link.decloak_segments;
+  proxy->audio_language_ = link.audio_language.value_or("");
   // Spawn the accept loop with its own shared_ptr so the Proxy outlives any
   // in-flight handlers even after the guard drops.
   std::shared_ptr<Proxy> accept_arc = proxy;
@@ -742,7 +780,7 @@ detail::KeepAlive Proxy::serve(std::string_view target, int fd) {
       } else {
         ka = detail::respond(out, fetched->body.data(), fetched->body.size(),
                              fetched->final_url, port_, path_prefix_,
-                             cipher_ ? &*cipher_ : nullptr);
+                             cipher_ ? &*cipher_ : nullptr, decloak_, audio_language_);
       }
     }
   }
@@ -762,10 +800,13 @@ Decloak::~Decloak() {
   }
 }
 
+bool needed(const StreamLink& link) {
+  return link.decloak_segments || link.playlist_cipher.has_value() ||
+         (link.audio_language.has_value() && !link.audio_language->empty());
+}
+
 Result<Decloak, ProxyStartError> engage(const StreamLink& link) {
-  if (!link.decloak_segments && !link.playlist_cipher.has_value()) {
-    return Decloak(nullptr, link.url);
-  }
+  if (!needed(link)) return Decloak(nullptr, link.url);
   auto proxy = Proxy::start(link);
   if (!proxy) return err(std::move(proxy.error()));
   const std::string url =

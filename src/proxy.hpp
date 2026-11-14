@@ -75,8 +75,12 @@ class Decloak {
   std::string url_;
 };
 
-// Start a proxy for `link` when it is flagged — decloak_segments (byte-strip)
-// or playlist_cipher (decrypt every playlist relayed) — else a transparent
+// Whether `link` has to be relayed: decloak_segments (byte-strip),
+// playlist_cipher (open every playlist relayed) or audio_language
+// (cut the master to one audio rendition).
+[[nodiscard]] bool needed(const StreamLink& link);
+
+// Start a proxy for `link` when needed(link), else a transparent
 // pass-through. The returned guard owns the proxy lifetime; the caller points
 // mpv at guard.url() and destroys the guard once mpv exits.
 [[nodiscard]] Result<Decloak, ProxyStartError> engage(const StreamLink& link);
@@ -146,16 +150,27 @@ enum class KeepAlive { Yes, No };
 [[nodiscard]] std::optional<std::string> decrypt_playlist(
     std::string_view payload_b64, const StreamLink::PlaylistCipher& cipher);
 
-// Dispatch a fetched upstream body to `out`: a body carrying the cipher's
-// magic is decrypted first (a failure is a 502 — never relay ciphertext as
-// if it were a playlist), then a playlist is rewritten, a segment
-// de-cloaked. Split from serve so it is testable without a live upstream.
-// Appends the full HTTP response bytes to `out`.
+// The Xor cipher's playlist: `body` base64-decoded and XORed with `key`
+// repeated. nullopt when the body is not base64, the key is empty, or the
+// result is not a playlist (a segment, which then passes through as served).
+[[nodiscard]] std::optional<std::string> unxor_playlist(const std::uint8_t* body,
+                                                        std::size_t len,
+                                                        const std::vector<std::uint8_t>& key);
+
+// Dispatch a fetched upstream body to `out`: a body carrying the Gcm
+// cipher's magic is decrypted first (a failure is a 502 — never relay
+// ciphertext as if it were a playlist), a non-playlist body under the Xor
+// cipher is tried as one; then a playlist is cut to `audio_language` (when
+// non-empty) and rewritten, anything else relayed — byte-stripped of a decoy
+// prefix only when `decloak`. Split from serve so it is testable without
+// a live upstream. Appends the full HTTP response bytes to `out`.
 [[nodiscard]] KeepAlive respond(std::vector<std::uint8_t>& out,
                                 const std::uint8_t* body, std::size_t len,
                                 std::string_view final_url, std::uint16_t port,
                                 std::string_view prefix,
-                                const StreamLink::PlaylistCipher* cipher = nullptr);
+                                const StreamLink::PlaylistCipher* cipher = nullptr,
+                                bool decloak = true,
+                                std::string_view audio_language = {});
 
 // One fetched upstream object.
 struct Fetched {

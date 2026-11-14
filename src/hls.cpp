@@ -3,6 +3,7 @@
 
 #include "hls.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 
@@ -148,6 +149,103 @@ bool has_separate_audio(std::string_view text) {
     pos = nl + 1;
   }
   return false;
+}
+
+namespace {
+
+// The quoted value of `name` in a tag line (`NAME="v"`), or nullopt.
+std::optional<std::string_view> quoted_attribute(std::string_view line, std::string_view name) {
+  const std::string key = std::string(name) + "=\"";
+  for (std::size_t at = line.find(key); at != std::string_view::npos;
+       at = line.find(key, at + 1)) {
+    if (at == 0 || (line[at - 1] != ':' && line[at - 1] != ',')) continue;
+    const std::size_t start = at + key.size();
+    const std::size_t end = line.find('"', start);
+    if (end == std::string_view::npos) return std::nullopt;
+    return line.substr(start, end - start);
+  }
+  return std::nullopt;
+}
+
+// ISO 639 primary subtag, lowercased, two-letter codes folded to
+// the three-letter ones masters use ("en-US" -> "eng", "ja" -> "jpn").
+std::string language_key(std::string_view tag) {
+  std::string out;
+  for (const char c : tag) {
+    if (c == '-' || c == '_') break;
+    out.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+  }
+  if (out == "en") return "eng";
+  if (out == "ja") return "jpn";
+  return out;
+}
+
+bool is_audio_rendition(std::string_view line) {
+  return line.starts_with("#EXT-X-MEDIA:") && has_attribute(line, "TYPE=AUDIO");
+}
+
+std::string make_default(std::string_view line, bool yes) {
+  const std::string_view want = yes ? "DEFAULT=YES" : "DEFAULT=NO";
+  for (const std::string_view have : {std::string_view("DEFAULT=YES"), std::string_view("DEFAULT=NO")}) {
+    for (std::size_t at = line.find(have); at != std::string_view::npos;
+         at = line.find(have, at + 1)) {
+      if (at > 0 && (line[at - 1] == ':' || line[at - 1] == ',')) {
+        return std::string(line.substr(0, at)) + std::string(want) +
+               std::string(line.substr(at + have.size()));
+      }
+    }
+  }
+  return std::string(line) + "," + std::string(want);
+}
+
+}  // namespace
+
+std::string keep_audio_language(std::string_view text, std::string_view language) {
+  const std::string want = language_key(language);
+  if (want.empty()) return std::string(text);
+
+  std::vector<std::string_view> lines;
+  for (std::size_t pos = 0; pos <= text.size();) {
+    const auto nl = text.find('\n', pos);
+    lines.push_back(nl == std::string_view::npos ? text.substr(pos) : text.substr(pos, nl - pos));
+    if (nl == std::string_view::npos) break;
+    pos = nl + 1;
+  }
+
+  // Groups that carry the language; a group without it is left whole.
+  std::vector<std::string> matched_groups;
+  auto group_of = [](std::string_view line) {
+    return std::string(quoted_attribute(line, "GROUP-ID").value_or(""));
+  };
+  auto matches = [&](std::string_view line) {
+    const auto lang = quoted_attribute(line, "LANGUAGE");
+    return lang.has_value() && language_key(*lang) == want;
+  };
+  for (const std::string_view raw : lines) {
+    const std::string_view line = trim_line(raw);
+    if (is_audio_rendition(line) && matches(line)) matched_groups.push_back(group_of(line));
+  }
+  if (matched_groups.empty()) return std::string(text);
+
+  auto in_matched = [&](const std::string& g) {
+    return std::find(matched_groups.begin(), matched_groups.end(), g) != matched_groups.end();
+  };
+  std::vector<std::string> defaulted;
+  std::string out;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    const std::string_view line = trim_line(lines[i]);
+    std::string emitted(lines[i]);
+    if (is_audio_rendition(line) && in_matched(group_of(line))) {
+      if (!matches(line)) continue;
+      const std::string g = group_of(line);
+      const bool first = std::find(defaulted.begin(), defaulted.end(), g) == defaulted.end();
+      if (first) defaulted.push_back(g);
+      emitted = make_default(line, first);
+    }
+    out += emitted;
+    if (i + 1 < lines.size()) out.push_back('\n');
+  }
+  return out;
 }
 
 const StreamLink* select_variant(const std::vector<StreamLink>& variants, Quality quality) {

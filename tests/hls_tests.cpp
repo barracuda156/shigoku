@@ -117,3 +117,43 @@ TEST_CASE("join_url_absolute_rooted_and_relative") {
   CHECK(join_url(base, "720/seg.ts").value() == "https://h.example/x/y/720/seg.ts");
   CHECK(join_url("no-scheme", "x.ts") == std::nullopt);
 }
+
+TEST_CASE("keep_audio_language: one rendition kept and made the default") {
+  const std::string master =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"jpn\",NAME=\"Native\",DEFAULT=YES,"
+      "AUTOSELECT=YES,URI=\"a/native.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"eng\",NAME=\"English\",DEFAULT=NO,"
+      "AUTOSELECT=YES,URI=\"a/english.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=1024,RESOLUTION=854x480,AUDIO=\"audio\"\n"
+      "video-480p.m3u8\n";
+
+  const std::string dub = keep_audio_language(master, "eng");
+  CHECK(dub.find("native.m3u8") == std::string::npos);
+  CHECK(dub.find("LANGUAGE=\"eng\",NAME=\"English\",DEFAULT=YES,") != std::string::npos);
+  CHECK(dub.find("video-480p.m3u8") != std::string::npos);
+  CHECK(has_separate_audio(dub));
+
+  const std::string sub = keep_audio_language(master, "ja");  // two-letter folds to jpn
+  CHECK(sub.find("english.m3u8") == std::string::npos);
+  CHECK(sub.find("NAME=\"Native\",DEFAULT=YES,") != std::string::npos);
+
+  // No rendition in that language, or no language at all: unchanged.
+  CHECK(keep_audio_language(master, "spa") == master);
+  CHECK(keep_audio_language(master, "") == master);
+  CHECK(keep_audio_language("#EXTM3U\nseg.ts\n", "eng") == "#EXTM3U\nseg.ts\n");
+}
+
+TEST_CASE("keep_audio_language: a group without the language stays whole") {
+  const std::string master =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"hi\",LANGUAGE=\"en-US\",URI=\"hi/en.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"hi\",LANGUAGE=\"jpn\",DEFAULT=YES,URI=\"hi/ja.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"lo\",LANGUAGE=\"jpn\",DEFAULT=YES,URI=\"lo/ja.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",LANGUAGE=\"jpn\",URI=\"s/ja.m3u8\"\n";
+  const std::string out = keep_audio_language(master, "eng");
+  CHECK(out.find("hi/ja.m3u8") == std::string::npos);
+  CHECK(out.find("LANGUAGE=\"en-US\",URI=\"hi/en.m3u8\",DEFAULT=YES") != std::string::npos);
+  CHECK(out.find("lo/ja.m3u8") != std::string::npos);  // group "lo" has no English
+  CHECK(out.find("s/ja.m3u8") != std::string::npos);   // subtitles are not audio
+}
