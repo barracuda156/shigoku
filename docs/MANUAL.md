@@ -295,6 +295,31 @@ or at the path in the `senshi_node` key of `config.json`; set that key to
 the walk moves on to the next source — its search results and episode
 lists still show.
 
+### Re:ANIME: soft subtitles, the dub as an audio track
+
+Re:ANIME finds a show by its AniList entry, so it has nothing to search; it
+answers for shows picked in the interface or matched in the catalogue. Its
+streams are fansub releases with their full styled subtitles alongside (the
+signs-and-songs track on a dub), and the dub is the same stream with the
+English audio track — shigoku hands the player only the track you asked
+for, and a download keeps that one too. Fonts the subtitles name are not
+fetched, so styled signs may fall back to a default font.
+
+### Turning sources off
+
+A source that has been down for a while still costs a try on every walk.
+List it in `disabled_providers` in `config.json` to leave it out entirely —
+it is not searched, not asked for streams and not offered in Settings:
+
+```
+"disabled_providers": ["anibd", "anidbapp"]
+```
+
+The short names are the ones `-p` takes (`megaplay`, `hianime`, `reanime`,
+`senshi`, `animehub`, `anilibria`, `anibd`, `anidbapp`). The list is read at
+start-up; `shigoku --paths` shows it. Unknown names are ignored, and a list
+that names every source is ignored as a whole.
+
 ## Downloads
 
 Save an episode to disk instead of streaming it.
@@ -489,8 +514,9 @@ answered "nothing" makes it a plain "no results".
 An episode that won't play on the run's source — its stream never opens
 (after the three tries), or none can be found — is looked for on the other
 sources, your preferred one first and then the usual order, the way the
-interface fails over: each is asked for the show (MegaPlay, which can't
-search, by its MyAnimeList id; the others by a title search) and then for
+interface fails over: each is asked for the show (MegaPlay and Re:ANIME,
+which can't search, by its MyAnimeList and AniList id respectively; the
+others by a title search) and then for
 the same episode, and the first that plays it serves the rest of the run.
 A line names each source as it is tried. Only when none has it, or mpv
 itself is the problem (missing, crashing), does the run end with the
