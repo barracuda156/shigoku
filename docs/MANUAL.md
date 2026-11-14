@@ -524,7 +524,8 @@ have the first three; Dynasty Reader and nhentai have none.
 |---|---|
 | `/` | Search the active source |
 | `1`–`4` | Browse the active source's rankings instead: Popular / Latest updates / New / Top rated. Scrolling to the end loads more |
-| `[` / `]` | Step to the previous / next ranking the source has |
+| `[` / `]` | Step to the previous / next ranking the source has (and onto the Similar list, once one is open) |
+| `~` | Titles like the selected one, from AniList's recommendations. They are AniList entries until you press `Enter`, which finds the title on the active source and loads its chapters |
 | `s` | Switch to the next source (remembered for next time) |
 | `Enter` | On a result: load its chapters. On a chapter: read it |
 | `l` / `h`, `Esc` | Move into the chapter list / back to the results |
