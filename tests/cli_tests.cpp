@@ -1119,6 +1119,28 @@ TEST_CASE("registry_searchable_lists_search_capable_sources_preferred_first") {
   CHECK(reg.preferred_searchable("b")->name() == "a");
 }
 
+TEST_CASE("drop_disabled_keeps_order_and_refuses_to_empty_the_registry") {
+  auto make = [] {
+    std::vector<std::unique_ptr<StreamProvider>> ps;
+    ps.push_back(std::make_unique<Fake>(source_up("a")));
+    ps.push_back(std::make_unique<Fake>(source_up("b")));
+    ps.push_back(std::make_unique<Fake>(source_up("c")));
+    return ps;
+  };
+  auto names = [](const std::vector<std::unique_ptr<StreamProvider>>& v) {
+    std::vector<std::string> out;
+    for (const auto& p : v) out.emplace_back(p->name());
+    return out;
+  };
+  CHECK(names(drop_disabled(make(), {"b", "zzz"})) == std::vector<std::string>{"a", "c"});
+  CHECK(names(drop_disabled(make(), {})) == std::vector<std::string>{"a", "b", "c"});
+  CHECK(names(drop_disabled(make(), {"c", "a", "b"})) == std::vector<std::string>{"a", "b", "c"});
+  const ProviderRegistry reg(drop_disabled(make(), {"a"}));
+  CHECK(reg.by_name("a") == nullptr);
+  REQUIRE(reg.primary() != nullptr);
+  CHECK(reg.primary()->name() == "b");
+}
+
 TEST_CASE("registry_searchable_walks_localized_title_sources_last") {
   // The anilibria shape: it can search, but its titles are Russian — every
   // English-titled source is asked first, wherever it sits in the registry.

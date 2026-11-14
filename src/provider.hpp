@@ -150,6 +150,14 @@ class StreamProvider {
       std::string_view cover_ref) const = 0;
 };
 
+// The providers whose name() is not in `disabled`, order kept (config's
+// disabled_providers). Unknown names match nothing. A list naming every
+// provider is ignored whole — an empty registry is not a state the app runs
+// in.
+[[nodiscard]] std::vector<std::unique_ptr<StreamProvider>> drop_disabled(
+    std::vector<std::unique_ptr<StreamProvider>> providers,
+    const std::vector<std::string>& disabled);
+
 // --- Registry (providers.rs:170) ------------------------------------------
 //
 // Process-immutable provider set; construction order IS the default fallback

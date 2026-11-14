@@ -124,7 +124,7 @@ std::optional<ProviderRegistry> build_registry(const Config& config) {
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
   providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
   providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
-  return ProviderRegistry(std::move(providers));
+  return ProviderRegistry(drop_disabled(std::move(providers), config.disabled_providers));
 }
 
 // ── login ─────────────────────────────────────────────────────────────────
@@ -757,6 +757,14 @@ int print_paths(const std::vector<std::string>& args) {
       walk += std::string(p->name());
     }
     std::printf("  sources  %s\n", walk.c_str());
+  }
+  if (!config.disabled_providers.empty()) {
+    std::string off;
+    for (const std::string& name : config.disabled_providers) {
+      if (!off.empty()) off += ", ";
+      off += name;
+    }
+    std::printf("  disabled %s\n", off.c_str());
   }
   return 0;
 }

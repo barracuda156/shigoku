@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "result.hpp"
 
@@ -74,6 +75,10 @@ struct Config {
   // binary ("" = `fzf` on PATH; fzf++ installs under that name too).
   std::string cli_picker = "auto";
   std::string picker_path;
+  // Sources left out of the registry by name ("anibd", "senshi", …): never
+  // walked, searched or offered. Read at startup; unknown names are ignored,
+  // and a list that would disable every source is ignored as a whole.
+  std::vector<std::string> disabled_providers;
 
   friend bool operator==(const Config&, const Config&) = default;
 

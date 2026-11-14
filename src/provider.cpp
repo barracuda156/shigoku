@@ -2,6 +2,8 @@
 
 #include "provider.hpp"
 
+#include <algorithm>
+
 namespace shigoku {
 
 Result<Unit, ProviderError> guard_show_id(std::string_view show_id) {
@@ -19,6 +21,17 @@ bool clean_arg(std::string_view s) {
     if (u < 0x21 || u > 0x7e) return false;
   }
   return true;
+}
+
+std::vector<std::unique_ptr<StreamProvider>> drop_disabled(
+    std::vector<std::unique_ptr<StreamProvider>> providers,
+    const std::vector<std::string>& disabled) {
+  auto off = [&](const std::unique_ptr<StreamProvider>& p) {
+    return std::find(disabled.begin(), disabled.end(), p->name()) != disabled.end();
+  };
+  if (std::all_of(providers.begin(), providers.end(), off)) return providers;
+  providers.erase(std::remove_if(providers.begin(), providers.end(), off), providers.end());
+  return providers;
 }
 
 }  // namespace shigoku

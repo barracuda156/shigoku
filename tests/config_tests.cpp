@@ -56,6 +56,7 @@ TEST_CASE("round trip preserves everything") {
   cfg.catalog = "mal";
   cfg.cli_picker = "fzf";
   cfg.picker_path = "/opt/local/bin/fzf";
+  cfg.disabled_providers = {"anibd", "anidbapp"};
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());
@@ -89,6 +90,16 @@ TEST_CASE("unknown fields ignored missing fields defaulted") {
   CHECK(cfg.translation == "dub");
   CHECK(cfg.mpv_path == "mpv");
   CHECK(cfg.resume_offset_sec == 5);
+}
+
+TEST_CASE("disabled_providers keeps string names only") {
+  const std::string path = tmp("disabled.json");
+  write_file(path, R"({"disabled_providers": ["anibd", 7, "", null, "senshi"]})");
+  CHECK(Config::load(path).disabled_providers == std::vector<std::string>{"anibd", "senshi"});
+  write_file(path, R"({"disabled_providers": "anibd", "translation": "dub"})");
+  const Config cfg = Config::load(path);
+  CHECK(cfg.disabled_providers.empty());
+  CHECK(cfg.translation == "dub");
 }
 
 TEST_CASE("save failure surfaces an error") {

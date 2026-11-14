@@ -51,6 +51,15 @@ Config from_json(const json& j) {
   c.player_path = j.value("player_path", c.player_path);
   c.cli_picker = j.value("cli_picker", c.cli_picker);
   c.picker_path = j.value("picker_path", c.picker_path);
+  // A list, so json::value's same-type default does not apply: anything but
+  // an array of strings keeps the default, a non-string entry drops alone.
+  if (const auto it = j.find("disabled_providers"); it != j.end() && it->is_array()) {
+    for (const auto& name : *it) {
+      if (name.is_string() && !name.get_ref<const std::string&>().empty()) {
+        c.disabled_providers.push_back(name.get<std::string>());
+      }
+    }
+  }
   return c;
 }
 
@@ -81,6 +90,7 @@ json to_json(const Config& c) {
       {"player_path", c.player_path},
       {"cli_picker", c.cli_picker},
       {"picker_path", c.picker_path},
+      {"disabled_providers", c.disabled_providers},
   };
 }
 
