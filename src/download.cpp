@@ -224,9 +224,7 @@ LinkKind classify_url(std::string_view url) {
 }
 
 LinkKind classify_link(const StreamLink& link) {
-  if (link.cloaked_segments || link.decloak_segments || link.playlist_cipher.has_value()) {
-    return LinkKind::Hls;
-  }
+  if (link.cloaked_segments || proxy::needed(link)) return LinkKind::Hls;
   return classify_url(link.url);
 }
 

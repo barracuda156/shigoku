@@ -168,8 +168,7 @@ enum class KeepAlive { Yes, No };
                                 const std::uint8_t* body, std::size_t len,
                                 std::string_view final_url, std::uint16_t port,
                                 std::string_view prefix,
-                                const StreamLink::PlaylistCipher* cipher = nullptr,
-                                bool decloak = true,
+                                const StreamLink::PlaylistCipher* cipher, bool decloak,
                                 std::string_view audio_language = {});
 
 // One fetched upstream object.

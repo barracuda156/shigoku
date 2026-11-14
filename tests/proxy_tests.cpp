@@ -320,7 +320,7 @@ TEST_CASE("respond_dispatches_playlist_to_rewrite_and_segment_to_decloak") {
   auto pl = bytes("#EXTM3U\n480/index.m3u8\n");
   const KeepAlive ka =
       respond(out, pl.data(), pl.size(), "https://cdn.example/hls/master.m3u8",
-              4444, prefix);
+              4444, prefix, nullptr, true);
   CHECK(ka == KeepAlive::Yes);
   const std::string text(out.begin(), out.end());
   CHECK(text.find("Content-Type: application/vnd.apple.mpegurl") !=
@@ -338,7 +338,7 @@ TEST_CASE("respond_dispatches_playlist_to_rewrite_and_segment_to_decloak") {
   seg[70 + 2 * kTsPacket] = 0x47;
   std::vector<std::uint8_t> out2;
   (void)respond(out2, seg.data(), seg.size(), "https://cdn.example/seg/0.ts",
-                4444, prefix);
+                4444, prefix, nullptr, true);
   // Split head/body at the CRLFCRLF.
   const std::string needle = "\r\n\r\n";
   std::size_t head_end = std::string::npos;
@@ -451,7 +451,8 @@ TEST_CASE("respond_opens_an_enveloped_playlist_before_rewriting_and_502s_a_bad_o
 
   std::vector<std::uint8_t> out;
   const auto ka = respond(out, reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(),
-                          "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher);
+                          "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher,
+                          false);
   CHECK(ka == KeepAlive::Yes);
   const std::string wire(out.begin(), out.end());
   CHECK(wire.find("HTTP/1.1 200") != std::string::npos);
@@ -463,15 +464,25 @@ TEST_CASE("respond_opens_an_enveloped_playlist_before_rewriting_and_502s_a_bad_o
   const std::string bad = "EM3U8v1:AAAA";
   std::vector<std::uint8_t> out2;
   (void)respond(out2, reinterpret_cast<const std::uint8_t*>(bad.data()), bad.size(),
-                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher);
+                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", &cipher, false);
   CHECK(std::string(out2.begin(), out2.end()).find("502") != std::string::npos);
 
   // No cipher on the link: the same bytes are just an unknown (non-playlist)
   // body and take the segment path untouched.
   std::vector<std::uint8_t> out3;
   (void)respond(out3, reinterpret_cast<const std::uint8_t*>(enc.data()), enc.size(),
-                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=");
+                "https://cdn.example/i/x/master.txt", 4242, "/r.ts?t=tok&u=", nullptr, false);
   CHECK(std::string(out3.begin(), out3.end()).find("EM3U8v1") != std::string::npos);
+
+  // A senshi-shaped link (Gcm cipher, no de-cloak): a segment carrying a
+  // TS-sync triple past byte 0 is relayed byte for byte.
+  std::vector<std::uint8_t> seg(600, 0x11);
+  seg[9] = seg[9 + kTsPacket] = seg[9 + 2 * kTsPacket] = 0x47;
+  std::vector<std::uint8_t> out4;
+  (void)respond(out4, seg.data(), seg.size(), "https://cdn.example/seg.jpg", 4242,
+                "/r.ts?t=tok&u=", &cipher, false);
+  const std::string wire4(out4.begin(), out4.end());
+  CHECK(wire4.size() - (wire4.find("\r\n\r\n") + 4) == seg.size());
 }
 
 TEST_CASE("decrypt_playlist_opens_a_captured_senshi_master_with_the_baked_key") {

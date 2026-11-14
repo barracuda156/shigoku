@@ -383,6 +383,10 @@ TEST_CASE("classify_link: the provider's flags outrank the url's spelling") {
   StreamLink sealed = plain_link("https://cdn.example/x/playlist");
   sealed.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
   CHECK(classify_link(sealed) == LinkKind::Hls);
+  // Any link the proxy relays is a playlist: one audio rendition cut out of several.
+  StreamLink cut = plain_link("https://cdn.example/x/master");
+  cut.audio_language = "eng";
+  CHECK(classify_link(cut) == LinkKind::Hls);
 }
 
 TEST_CASE("ffmpeg argv: minimal table") {

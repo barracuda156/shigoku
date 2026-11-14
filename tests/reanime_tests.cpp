@@ -1,7 +1,7 @@
 // reanime_tests.cpp — the WebAssembly interpreter (hand-assembled modules,
 // then the captured flixcloud key mixer), the pure Re:ANIME parsers and the
-// full unlock against fixtures captured live on 2026-11-14 (Frieren ep 1,
-// HD-2), plus transport cases over a loopback fixture server.
+// full unlock against live-captured fixtures (Frieren ep 1, HD-2), plus
+// transport cases over a loopback fixture server.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -232,6 +232,126 @@ TEST_CASE("wasm_refuses_what_it_does_not_support") {
   Bytes good = build({kI32I32ToI32}, {{0, {0}, add, "add"}});
   good.pop_back();
   CHECK_FALSE(load(good).has_value());
+}
+
+TEST_CASE("wasm_integer_semantics_beyond_the_mixer") {
+  struct Bin {
+    std::uint8_t op;
+    std::uint32_t a, b;
+    std::optional<std::uint32_t> want;  // nullopt = traps
+  };
+  const Bin bins[] = {
+      {0x75, 0x80000000u, 4, 0xF8000000u},   // shr_s
+      {0x75, 0xFFFFFFF0u, 2, 0xFFFFFFFCu},
+      {0x76, 0x80000000u, 4, 0x08000000u},   // shr_u
+      {0x74, 1, 33, 2u},                     // shl masks the count
+      {0x77, 0x80000001u, 1, 3u},            // rotl
+      {0x77, 0x12345678u, 0, 0x12345678u},
+      {0x77, 0x12345678u, 32, 0x12345678u},
+      {0x77, 0x12345678u, 36, 0x23456781u},
+      {0x78, 3u, 1, 0x80000001u},            // rotr
+      {0x78, 0x12345678u, 4, 0x81234567u},
+      {0x6c, 0x10000u, 0x10000u, 0u},        // mul wraps
+      {0x6c, 0xFFFFFFFFu, 0xFFFFFFFFu, 1u},
+      {0x6d, 0xFFFFFFF9u, 2, 0xFFFFFFFDu},   // div_s truncates toward zero
+      {0x6d, 0x80000000u, 0xFFFFFFFFu, std::nullopt},
+      {0x6d, 7, 0, std::nullopt},
+      {0x6e, 0xFFFFFFFFu, 2, 0x7FFFFFFFu},   // div_u
+      {0x6f, 0xFFFFFFF9u, 2, 0xFFFFFFFFu},   // rem_s keeps the dividend's sign
+      {0x6f, 0x80000000u, 0xFFFFFFFFu, 0u},
+      {0x6f, 7, 0, std::nullopt},
+      {0x70, 7, 3, 1u},                      // rem_u
+      {0x48, 0xFFFFFFFFu, 0, 1u},            // lt_s
+      {0x49, 0xFFFFFFFFu, 0, 0u},            // lt_u
+      {0x4a, 0xFFFFFFFFu, 1, 0u},            // gt_s
+      {0x4b, 0xFFFFFFFFu, 1, 1u},            // gt_u
+      {0x4c, 0xFFFFFFFFu, 0xFFFFFFFFu, 1u},  // le_s
+      {0x4d, 5, 5, 1u},                      // le_u
+      {0x4e, 0, 0xFFFFFFFFu, 1u},            // ge_s
+      {0x46, 4, 4, 1u},
+      {0x47, 4, 4, 0u},
+  };
+  for (const Bin& t : bins) {
+    CAPTURE(static_cast<int>(t.op));
+    CAPTURE(t.a);
+    CAPTURE(t.b);
+    auto inst = load(build({kI32I32ToI32}, {{0, {0}, {0x20, 0, 0x20, 1, t.op, 0x0b}, "f"}}));
+    REQUIRE(inst.has_value());
+    CHECK(call1(*inst, "f", {t.a, t.b}) == t.want);
+  }
+
+  struct Un {
+    std::uint8_t op;
+    std::uint32_t a, want;
+  };
+  const Un uns[] = {
+      {0x67, 0, 32},          {0x67, 1, 31},           {0x68, 0x80000000u, 31},
+      {0x68, 0, 32},          {0x69, 0xF0F0u, 8},      {0xc0, 0x80u, 0xFFFFFF80u},
+      {0xc0, 0x17Fu, 0x7Fu},  {0xc1, 0x8000u, 0xFFFF8000u}, {0x45, 0, 1},
+  };
+  for (const Un& t : uns) {
+    CAPTURE(static_cast<int>(t.op));
+    auto inst = load(build({kI32ToI32}, {{0, {0}, {0x20, 0, t.op, 0x0b}, "f"}}));
+    REQUIRE(inst.has_value());
+    CHECK(call1(*inst, "f", {t.a}) == t.want);
+  }
+}
+
+TEST_CASE("wasm_select_tee_return_and_branch_values") {
+  // select(a, b, cond = a)
+  auto sel = load(build({kI32I32ToI32}, {{0, {0}, {0x20, 0, 0x20, 1, 0x20, 0, 0x1b, 0x0b}, "f"}}));
+  REQUIRE(sel.has_value());
+  CHECK(call1(*sel, "f", {0, 5}) == 5u);
+  CHECK(call1(*sel, "f", {3, 5}) == 3u);
+  // local.tee keeps the value on the stack: x + x
+  auto tee = load(build({kI32ToI32}, {{0, {1, 1, 0x7f}, {0x20, 0, 0x22, 1, 0x20, 1, 0x6a, 0x0b}, "f"}}));
+  REQUIRE(tee.has_value());
+  CHECK(call1(*tee, "f", {21}) == 42u);
+  // return skips the rest
+  auto ret = load(build({kI32ToI32}, {{0, {0}, {0x20, 0, 0x0f, 0x41, 9, 0x0b}, "f"}}));
+  REQUIRE(ret.has_value());
+  CHECK(call1(*ret, "f", {4}) == 4u);
+  // br carries a value out of an inner block to a (result i32) one
+  auto br = load(build({kVoidToI32},
+                       {{0, {0}, {0x02, 0x7f, 0x02, 0x40, 0x41, 7, 0x0c, 1, 0x0b, 0x41, 9, 0x0b, 0x0b},
+                         "f"}}));
+  REQUIRE(br.has_value());
+  CHECK(call1(*br, "f", {}) == 7u);
+  // br_if: taken keeps the value under the condition, not taken falls through
+  auto brif = load(build(
+      {kI32ToI32},
+      {{0, {0}, {0x02, 0x7f, 0x41, 5, 0x20, 0, 0x0d, 0, 0x1a, 0x41, 6, 0x0b, 0x0b}, "f"}}));
+  REQUIRE(brif.has_value());
+  CHECK(call1(*brif, "f", {1}) == 5u);
+  CHECK(call1(*brif, "f", {0}) == 6u);
+}
+
+TEST_CASE("wasm_sixteen_bit_access_memory_grow_and_the_call_depth_cap") {
+  const Bytes data = {1, 0, 0x41, 0, 0x0b, 2, 0x00, 0x80};
+  const Bytes lu = {0x41, 0, 0x2f, 1, 0, 0x0b};                                    // load16_u
+  const Bytes ls = {0x41, 0, 0x2e, 1, 0, 0x0b};                                    // load16_s
+  const Bytes st = {0x41, 8, 0x20, 0, 0x3b, 1, 0, 0x41, 8, 0x2f, 1, 0, 0x0b};       // store16
+  const Bytes grow = {0x20, 0, 0x40, 0, 0x0b};                                     // memory.grow
+  const Bytes size = {0x3f, 0, 0x0b};                                              // memory.size
+  auto inst = load(build({kVoidToI32, kI32ToI32},
+                         {{0, {0}, lu, "lu"},
+                          {0, {0}, ls, "ls"},
+                          {1, {0}, st, "st"},
+                          {1, {0}, grow, "grow"},
+                          {0, {0}, size, "size"}},
+                         true, data));
+  REQUIRE(inst.has_value());
+  CHECK(call1(*inst, "lu", {}) == 0x8000u);
+  CHECK(call1(*inst, "ls", {}) == 0xFFFF8000u);
+  CHECK(call1(*inst, "st", {0x12345678u}) == 0x5678u);
+  CHECK(call1(*inst, "grow", {wasm::kMaxPages}) == 0xFFFFFFFFu);  // past the cap
+  CHECK(call1(*inst, "grow", {1}) == 1u);
+  CHECK(call1(*inst, "size", {}) == 2u);
+
+  // Unbounded recursion traps on the depth cap, not the C++ stack.
+  auto rec = load(build({kVoidToVoid}, {{0, {0}, {0x10, 0, 0x0b}, "f"}}));
+  REQUIRE(rec.has_value());
+  CHECK_FALSE(rec->call("f", {}).has_value());
 }
 
 // ===========================================================================

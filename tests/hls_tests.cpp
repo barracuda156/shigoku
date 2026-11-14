@@ -157,3 +157,21 @@ TEST_CASE("keep_audio_language: a group without the language stays whole") {
   CHECK(out.find("lo/ja.m3u8") != std::string::npos);  // group "lo" has no English
   CHECK(out.find("s/ja.m3u8") != std::string::npos);   // subtitles are not audio
 }
+
+TEST_CASE("keep_audio_language: CRLF masters, a second track, AUTOSELECT") {
+  const std::string master =
+      "#EXTM3U\r\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",LANGUAGE=\"jpn\",DEFAULT=YES,URI=\"ja.m3u8\"\r\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",LANGUAGE=\"eng\",DEFAULT=NO,AUTOSELECT=NO,"
+      "URI=\"en.m3u8\"\r\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",LANGUAGE=\"eng\",NAME=\"Commentary\",DEFAULT=YES,"
+      "URI=\"en2.m3u8\"\r\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\r\n"
+      "v.m3u8\r\n";
+  const std::string out = keep_audio_language(master, "eng");
+  CHECK(out.find("ja.m3u8") == std::string::npos);
+  CHECK(out.find("DEFAULT=YES,AUTOSELECT=YES,URI=\"en.m3u8\"") != std::string::npos);
+  CHECK(out.find("NAME=\"Commentary\",DEFAULT=NO,URI=\"en2.m3u8\"") != std::string::npos);
+  CHECK(out.find("v.m3u8") != std::string::npos);
+  CHECK(has_separate_audio(out));
+}

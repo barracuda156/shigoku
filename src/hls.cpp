@@ -184,18 +184,26 @@ bool is_audio_rendition(std::string_view line) {
   return line.starts_with("#EXT-X-MEDIA:") && has_attribute(line, "TYPE=AUDIO");
 }
 
-std::string make_default(std::string_view line, bool yes) {
-  const std::string_view want = yes ? "DEFAULT=YES" : "DEFAULT=NO";
-  for (const std::string_view have : {std::string_view("DEFAULT=YES"), std::string_view("DEFAULT=NO")}) {
+// `name=YES|NO` set to `value` in an attribute list, appended when absent.
+std::string set_flag(std::string_view line, std::string_view name, bool value) {
+  const std::string want = std::string(name) + (value ? "=YES" : "=NO");
+  for (const char* v : {"=YES", "=NO"}) {
+    const std::string have = std::string(name) + v;
     for (std::size_t at = line.find(have); at != std::string_view::npos;
          at = line.find(have, at + 1)) {
       if (at > 0 && (line[at - 1] == ':' || line[at - 1] == ',')) {
-        return std::string(line.substr(0, at)) + std::string(want) +
-               std::string(line.substr(at + have.size()));
+        return std::string(line.substr(0, at)) + want + std::string(line.substr(at + have.size()));
       }
     }
   }
-  return std::string(line) + "," + std::string(want);
+  return std::string(line) + "," + want;
+}
+
+// DEFAULT=YES requires AUTOSELECT=YES when the attribute is present.
+std::string make_default(std::string_view line, bool yes) {
+  std::string out = set_flag(line, "DEFAULT", yes);
+  if (yes && has_attribute(out, "AUTOSELECT=NO")) out = set_flag(out, "AUTOSELECT", true);
+  return out;
 }
 
 }  // namespace
