@@ -1,6 +1,7 @@
 // crypto.hpp — the one place libcrypto is called: AES-256-GCM open/seal,
-// AES-256-CBC open/seal, and base64 (standard + URL-safe), for providers
-// whose playlists or stream envelopes arrive encrypted (senshi, megaplay).
+// AES-CBC open/seal, SHA-256, PBKDF2 and base64 (standard + URL-safe), for
+// providers whose playlists or stream envelopes arrive encrypted (senshi,
+// megaplay, reanime).
 // Byte-wise in and out; nothing here packs bytes into wider ints (§3
 // endianness), so it is identical big- and little-endian.
 #pragma once
@@ -66,5 +67,27 @@ inline constexpr std::size_t kAesCbcIvLen = 16;
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> open_b64url_cbc(
     std::string_view b64url, const std::vector<std::uint8_t>& key,
     const std::vector<std::uint8_t>& iv);
+
+// AES-128-CBC open with PKCS#7, the HLS `METHOD=AES-128` segment cipher.
+// Same contract as aes256cbc_open with a 16-byte key.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> aes128cbc_open(
+    const std::vector<std::uint8_t>& key, const std::vector<std::uint8_t>& iv,
+    const std::uint8_t* ct, std::size_t ct_len);
+
+inline constexpr std::size_t kSha256Len = 32;
+
+// SHA-256 digest; nullopt only when libcrypto itself fails.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> sha256(const std::uint8_t* data,
+                                                              std::size_t len);
+
+// Lowercase hex SHA-256 of `s` — WebCrypto's digest as the page's JS
+// renders it. Empty only when libcrypto fails.
+[[nodiscard]] std::string sha256_hex(std::string_view s);
+
+// PBKDF2-HMAC-SHA256 over a binary password. nullopt on a zero iteration
+// count, an empty or oversize output, or a libcrypto failure.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> pbkdf2_sha256(
+    const std::vector<std::uint8_t>& password, std::string_view salt,
+    std::uint32_t iterations, std::size_t out_len);
 
 }  // namespace shigoku::crypto

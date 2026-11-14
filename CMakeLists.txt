@@ -579,6 +579,30 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_wasm: a bounded interpreter for small import-free WebAssembly
+# modules (i32 integer/memory/control subset). std-only; reanime runs the
+# embed's per-request key mixer through it.
+# ---------------------------------------------------------------------------
+add_library(shigoku_wasm STATIC src/wasm.cpp)
+target_include_directories(shigoku_wasm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_wasm PUBLIC shigoku_flags)
+
+# ---------------------------------------------------------------------------
+# shigoku_reanime: reanime.cz StreamProvider on flixcloud.cc — AniList-keyed
+# (tier A), no search, no listing. The embed's page data is unlocked with
+# shigoku_wasm + shigoku_crypto (SHA-256, PBKDF2, AES-256-CBC); its links
+# carry an Xor playlist cipher and an audio language, so playback routes
+# through the loopback proxy.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_reanime STATIC src/reanime.cpp)
+  target_include_directories(shigoku_reanime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_reanime
+    PUBLIC shigoku_http shigoku_crypto shigoku_wasm shigoku_domain shigoku_flags
+    shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_anilibria: AniLibria (AniLiberty API v1) StreamProvider — no
 # canonical key (the API carries no MAL/AniList ids; tier-C search binds it),
 # pure JSON chain with DIRECT per-quality HLS urls in the release object. No
@@ -997,7 +1021,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   endif()
   target_link_libraries(shigoku PRIVATE
     shigoku_picker shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
-    shigoku_anilibria shigoku_hianime shigoku_animehub
+    shigoku_anilibria shigoku_hianime shigoku_animehub shigoku_reanime
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
     shigoku_loopback shigoku_mal_login shigoku_mal_loopback
@@ -1950,6 +1974,32 @@ if(SHIGOKU_HAVE_CURL)
   target_link_libraries(animehub_live_smoke PRIVATE
     shigoku_animehub shigoku_http shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# reanime_tests: the wasm interpreter (hand-assembled modules + the captured
+# flixcloud mixer), the pure parsers (flix servers, page data, token reply,
+# field names, subtitle pick) and the full unlock against captured fixtures,
+# plus transport cases over a loopback fixture server. Fixtures under
+# tests/fixtures/reanime/.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(reanime_tests tests/reanime_tests.cpp)
+  target_compile_definitions(reanime_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(reanime_tests PRIVATE
+    shigoku_reanime shigoku_wasm shigoku_crypto shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME reanime_tests COMMAND reanime_tests)
+endif()
+
+# reanime_live_smoke: real resolve for Frieren ep 1 (sub and dub), then the
+# whole play path through the loopback proxy — master, variant, AES-128 key
+# and the first segment, decrypted to MPEG-TS. Gated on SHIGOKU_LIVE=1
+# (not a ctest; picked up by scripts/provider_canary.sh).
+if(SHIGOKU_HAVE_CURL)
+  add_executable(reanime_live_smoke tests/reanime_live_smoke.cpp)
+  target_link_libraries(reanime_live_smoke PRIVATE
+    shigoku_reanime shigoku_proxy shigoku_hls shigoku_crypto shigoku_http shigoku_domain
+    shigoku_flags shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
 # anilibria_tests: pure parsers/guards offline (search/release JSON, ordinal

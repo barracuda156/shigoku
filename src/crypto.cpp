@@ -276,4 +276,74 @@ std::optional<std::vector<std::uint8_t>> open_b64url_cbc(std::string_view b64url
   return aes256cbc_open(key, iv, blob->data(), blob->size());
 }
 
+std::optional<std::vector<std::uint8_t>> aes128cbc_open(const std::vector<std::uint8_t>& key,
+                                                        const std::vector<std::uint8_t>& iv,
+                                                        const std::uint8_t* ct,
+                                                        std::size_t ct_len) {
+  // Segments, not envelopes: bounded by the GCM payload cap, not the CBC one.
+  if (key.size() != 16 || iv.size() != kAesCbcIvLen || ct_len == 0 || ct_len % 16 != 0 ||
+      ct_len > kMaxGcmPayload) {
+    return std::nullopt;
+  }
+  CtxGuard g;
+  if (g.ctx == nullptr) return std::nullopt;
+  if (EVP_DecryptInit_ex(g.ctx, EVP_aes_128_cbc(), nullptr, key.data(), iv.data()) != 1) {
+    return std::nullopt;
+  }
+  std::vector<std::uint8_t> out(ct_len + 16);
+  int len = 0;
+  if (EVP_DecryptUpdate(g.ctx, out.data(), &len, ct, static_cast<int>(ct_len)) != 1) {
+    return std::nullopt;
+  }
+  int total = len;
+  if (EVP_DecryptFinal_ex(g.ctx, out.data() + total, &len) != 1) return std::nullopt;
+  total += len;
+  out.resize(static_cast<std::size_t>(total));
+  return out;
+}
+
+std::optional<std::vector<std::uint8_t>> sha256(const std::uint8_t* data, std::size_t len) {
+  std::vector<std::uint8_t> out(EVP_MAX_MD_SIZE);
+  unsigned int n = 0;
+  if (EVP_Digest(data, len, out.data(), &n, EVP_sha256(), nullptr) != 1 || n != kSha256Len) {
+    return std::nullopt;
+  }
+  out.resize(n);
+  return out;
+}
+
+std::string sha256_hex(std::string_view s) {
+  auto digest = sha256(reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+  if (!digest.has_value()) return {};
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(digest->size() * 2);
+  for (const std::uint8_t b : *digest) {
+    out.push_back(kHex[b >> 4]);
+    out.push_back(kHex[b & 0x0F]);
+  }
+  return out;
+}
+
+std::optional<std::vector<std::uint8_t>> pbkdf2_sha256(const std::vector<std::uint8_t>& password,
+                                                       std::string_view salt,
+                                                       std::uint32_t iterations,
+                                                       std::size_t out_len) {
+  constexpr std::size_t kMaxInput = std::size_t{1} << 20;
+  if (iterations == 0 || out_len == 0 || out_len > 1024 || password.size() > kMaxInput ||
+      salt.size() > kMaxInput ||
+      iterations > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+    return std::nullopt;
+  }
+  std::vector<std::uint8_t> out(out_len);
+  const char* pass = password.empty() ? "" : reinterpret_cast<const char*>(password.data());
+  if (PKCS5_PBKDF2_HMAC(pass, static_cast<int>(password.size()),
+                        reinterpret_cast<const unsigned char*>(salt.data()),
+                        static_cast<int>(salt.size()), static_cast<int>(iterations),
+                        EVP_sha256(), static_cast<int>(out_len), out.data()) != 1) {
+    return std::nullopt;
+  }
+  return out;
+}
+
 }  // namespace shigoku::crypto

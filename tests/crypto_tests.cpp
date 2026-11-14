@@ -182,3 +182,56 @@ TEST_CASE("open_b64url_cbc opens the megaplay enc envelope over a captured live 
   wrong_key[0] ^= 1;
   CHECK(!open_b64url_cbc(enc, wrong_key, megaplay_iv()).has_value());
 }
+
+namespace {
+
+std::string hex(const std::vector<std::uint8_t>& v) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (const std::uint8_t b : v) {
+    out.push_back(kHex[b >> 4]);
+    out.push_back(kHex[b & 0x0F]);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("sha256 and sha256_hex match the FIPS 180 vectors") {
+  const std::string abc = "abc";
+  auto d = sha256(reinterpret_cast<const std::uint8_t*>(abc.data()), abc.size());
+  REQUIRE(d.has_value());
+  CHECK(hex(*d) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+TEST_CASE("pbkdf2_sha256 matches the published vectors and refuses nonsense sizes") {
+  const std::vector<std::uint8_t> pw = {'p', 'a', 's', 's', 'w', 'o', 'r', 'd'};
+  auto one = pbkdf2_sha256(pw, "salt", 1, 32);
+  REQUIRE(one.has_value());
+  CHECK(hex(*one) == "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+  auto two = pbkdf2_sha256(pw, "salt", 2, 32);
+  REQUIRE(two.has_value());
+  CHECK(hex(*two) == "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+  auto many = pbkdf2_sha256(pw, "salt", 4096, 32);
+  REQUIRE(many.has_value());
+  CHECK(hex(*many) == "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a");
+  CHECK(!pbkdf2_sha256(pw, "salt", 0, 32).has_value());
+  CHECK(!pbkdf2_sha256(pw, "salt", 1, 0).has_value());
+}
+
+TEST_CASE("aes128cbc_open opens a PKCS#7 block and refuses wrong sizes") {
+  std::vector<std::uint8_t> key(16), iv(16);
+  for (std::uint8_t i = 0; i < 16; ++i) {
+    key[i] = i;
+    iv[i] = static_cast<std::uint8_t>(16 + i);
+  }
+  const std::vector<std::uint8_t> ct = {0x13, 0xd1, 0x9b, 0x23, 0x8d, 0x3f, 0xcc, 0xea,
+                                        0x83, 0x75, 0x6f, 0xf6, 0xac, 0x67, 0xe5, 0x05};
+  auto pt = aes128cbc_open(key, iv, ct.data(), ct.size());
+  REQUIRE(pt.has_value());
+  CHECK(text(*pt) == "segment bytes!");
+  CHECK(!aes128cbc_open(std::vector<std::uint8_t>(32, 0), iv, ct.data(), ct.size()).has_value());
+  CHECK(!aes128cbc_open(key, iv, ct.data(), 15).has_value());
+}
