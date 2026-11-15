@@ -1,5 +1,6 @@
 // manga_nhentai_live_smoke.cpp — SHIGOKU_LIVE=1 hits the real
-// nhentai.net end-to-end — search → gallery-as-oneshot chapter → pages
+// nhentai.net end-to-end — search → the first hit again by its number →
+// gallery-as-oneshot chapter → pages
 // (which exercises the cdn pool + round-robin) → GET of the first page's
 // bytes — and prints what it found, including whether the transport had to
 // escalate onto the libcurl-impersonate seam (the edge's TLS scoring
@@ -49,6 +50,21 @@ int main() {
   std::printf("search: %zu results; \"%s\" id=%s thumb=%s\n", results->size(),
               first.title.c_str(), first.id.c_str(),
               nh->cover_thumb_url(first).c_str());
+
+  auto by_id = nh->search(first.id);
+  if (!by_id.has_value()) {
+    print_error("search-by-id", by_id.error());
+    return 1;
+  }
+  if (by_id->size() != 1 || by_id->front().id != first.id ||
+      by_id->front().title != first.title) {
+    std::fprintf(stderr,
+                 "nh_live_smoke: FAIL search \"%s\" gave %zu rows, not that one "
+                 "gallery\n",
+                 first.id.c_str(), by_id->size());
+    return 1;
+  }
+  std::printf("search-by-id: %s -> the same row\n", first.id.c_str());
 
   auto chapters = nh->chapters(first.id, "en");
   if (!chapters.has_value()) {

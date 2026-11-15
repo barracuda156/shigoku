@@ -541,7 +541,7 @@ full before it opens, so anything you have read stays readable offline.
 | WeebCentral | |
 | Dynasty Reader | |
 | MangaHub | Needs libcurl-impersonate installed (loaded only when used). Titles the site marks adult stay hidden unless `nsfw_sources` is on |
-| nhentai | Hidden entirely unless `nsfw_sources` is on |
+| nhentai | Hidden entirely unless `nsfw_sources` is on. A gallery number (`177013`, `#177013`) or a gallery link typed into search finds that one gallery; a number that is no gallery is searched as a word |
 
 MangaDex has all four rankings (`1`–`4` below); WeebCentral and MangaHub
 have the first three; Dynasty Reader and nhentai have none.

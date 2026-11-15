@@ -209,6 +209,10 @@ Result<NhGallery, ProviderError> parse_gallery(std::string_view raw) {
     g.title = str_or_empty(t, "pretty");
     if (g.title.empty()) g.title = str_or_empty(t, "english");
     if (g.title.empty()) g.title = str_or_empty(t, "japanese");
+    // The library dir is named from the row title, so an id lookup must
+    // spell it exactly as a keyword hit for the same gallery does.
+    g.row_title = str_or_empty(t, "english");
+    if (g.row_title.empty()) g.row_title = str_or_empty(t, "japanese");
   }
 
   if (j.contains("tags") && j.at("tags").is_array()) {
@@ -261,6 +265,39 @@ MdChapter gallery_chapter(const NhGallery& g) {
   c.lang = g.lang;
   c.publish_at = g.publish_at;
   return c;
+}
+
+std::string gallery_id_query(std::string_view q) {
+  const auto blank = [](char c) { return c == ' ' || c == '\t'; };
+  while (!q.empty() && blank(q.front())) q.remove_prefix(1);
+  while (!q.empty() && blank(q.back())) q.remove_suffix(1);
+
+  if (!q.empty() && q.front() == '#') {
+    q.remove_prefix(1);
+  } else {
+    std::string_view rest = q;
+    for (const std::string_view scheme : {"https://", "http://"}) {
+      if (rest.substr(0, scheme.size()) == scheme) {
+        rest.remove_prefix(scheme.size());
+        break;
+      }
+    }
+    if (rest.substr(0, 4) == "www.") rest.remove_prefix(4);
+    constexpr std::string_view kGalleryPath = "nhentai.net/g/";
+    if (rest.substr(0, kGalleryPath.size()) == kGalleryPath) {
+      rest.remove_prefix(kGalleryPath.size());
+      q = rest.substr(0, rest.find_first_of("/?#"));
+    }
+  }
+  return id_shaped(q) ? std::string(q) : std::string();
+}
+
+MdManga gallery_manga(const NhGallery& g) {
+  MdManga m;
+  m.id = g.id;
+  m.title = g.row_title;
+  m.cover_filename = g.thumbnail;
+  return m;
 }
 
 }  // namespace nh
@@ -337,6 +374,27 @@ Result<nh::NhCdn, ProviderError> Nhentai::ensure_cdn() const {
 
 Result<std::vector<MdManga>, ProviderError> Nhentai::search(
     std::string_view query) const {
+  // The search API never matches a gallery number, so one is looked up.
+  if (const std::string id = nh::gallery_id_query(query); !id.empty()) {
+    auto body = get(nh::gallery_url(host_, id));
+    if (body.has_value()) {
+      const std::string_view text(reinterpret_cast<const char*>(body->data()),
+                                  body->size());
+      auto g = nh::parse_gallery(text);
+      if (!g.has_value()) return err(g.error());
+      (void)ensure_cdn();
+      return std::vector<MdManga>{nh::gallery_manga(*g)};
+    }
+    const bool missing = body.error().kind == ProviderError::Kind::Http &&
+                         body.error().status == 404;
+    if (!missing) return err(body.error());
+    // A plain number that is no gallery may still be a title word; a link or
+    // #id named one gallery and nothing else.
+    if (query.find_first_of("#/") != std::string_view::npos) {
+      return std::vector<MdManga>{};
+    }
+  }
+
   auto body = get(nh::search_url(host_, query, 1));
   if (!body.has_value()) return err(body.error());
   const std::string_view text(reinterpret_cast<const char*>(body->data()),

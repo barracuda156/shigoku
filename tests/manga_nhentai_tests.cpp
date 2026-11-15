@@ -2,16 +2,30 @@
 // Fully offline (the manga_dynasty_tests shape): URL builders exact-string,
 // the three JSON parsers over tests/fixtures/nhentai/ (search/gallery/cdn
 // fixtures captured from live responses) plus synthetic edge cases, the
-// id/path vets, the gallery≡oneshot adapter, and the source attrs —
+// id/path vets, the gallery≡oneshot adapter, search()'s gallery-number
+// path over a loopback server, and the source attrs —
 // including the one this source exists to prove: nsfw() true and the
 // `nsfw_sources` gate making it invisible to pick_source/eligible_sources.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <sys/socket.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "../src/manga/nhentai.hpp"
@@ -286,6 +300,52 @@ TEST_CASE("gallery_chapter_synthesizes_the_oneshot_row") {
 }
 
 // ===========================================================================
+// Direct gallery ids: the query vet and the row adapter
+// ===========================================================================
+
+TEST_CASE("gallery_id_query_accepts_numbers_hash_ids_and_gallery_links") {
+  CHECK(gallery_id_query("671903") == "671903");
+  CHECK(gallery_id_query("  671903\t") == "671903");
+  CHECK(gallery_id_query("#671903") == "671903");
+  CHECK(gallery_id_query("https://nhentai.net/g/671903/") == "671903");
+  CHECK(gallery_id_query("http://www.nhentai.net/g/671903") == "671903");
+  CHECK(gallery_id_query("nhentai.net/g/671903/3/") == "671903");
+  CHECK(gallery_id_query("https://nhentai.net/g/671903?x=1") == "671903");
+  CHECK(gallery_id_query("https://nhentai.net/g/671903#top") == "671903");
+
+  CHECK(gallery_id_query("").empty());
+  CHECK(gallery_id_query("#").empty());
+  CHECK(gallery_id_query("touhou").empty());
+  CHECK(gallery_id_query("67 1903").empty());
+  CHECK(gallery_id_query("671903abc").empty());
+  CHECK(gallery_id_query("12345678901").empty());  // past kNhIdMax.
+  CHECK(gallery_id_query("www.671903").empty());
+  CHECK(gallery_id_query("https://example.com/g/671903/").empty());
+  CHECK(gallery_id_query("https://nhentai.net/artist/671903/").empty());
+  CHECK(gallery_id_query("https://nhentai.net/g/abc/").empty());
+  CHECK(gallery_id_query("https://nhentai.net/g/../1/").empty());
+}
+
+TEST_CASE("gallery_manga_is_the_row_a_keyword_hit_gives") {
+  const auto g = parse_gallery(read_fixture("nhentai/gallery.json"));
+  REQUIRE(g.has_value());
+  const auto rows = parse_search(read_fixture("nhentai/search_page1.json"));
+  REQUIRE(rows.has_value());
+  const auto hit = std::find_if(rows->begin(), rows->end(),
+                                [](const MdManga& m) { return m.id == "671903"; });
+  REQUIRE(hit != rows->end());
+  // Same row → same library dir, however the gallery was found.
+  CHECK(gallery_manga(*g) == *hit);
+  CHECK(gallery_manga(*g).title ==
+        "[Ricker Kai] Tsubo no Naka no Taikai (Dragon Ball Super)");
+
+  const auto ja = parse_gallery(
+      R"({"id":7,"media_id":"1","title":{"pretty":"P","japanese":"JA"}})");
+  REQUIRE(ja.has_value());
+  CHECK(gallery_manga(*ja).title == "JA");  // pretty is never a row title.
+}
+
+// ===========================================================================
 // Source attrs, the nsfw gate, and the transport's id re-vet
 // ===========================================================================
 
@@ -332,4 +392,157 @@ TEST_CASE("nhentai_transport_revets_ids_before_they_shape_a_path") {
   const auto pg = nh->pages("671903x", false);
   REQUIRE_FALSE(pg.has_value());
   CHECK(pg.error().kind == ProviderError::Kind::Decode);
+}
+
+// ===========================================================================
+// search() over a loopback fixture server: the direct-id path
+// ===========================================================================
+
+namespace {
+
+std::string http_reply(const char* status, const std::string& body) {
+  return std::string("HTTP/1.1 ") + status + "\r\nContent-Length: " +
+         std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+}
+
+struct RouteServer {
+  int listen_fd = -1;
+  std::uint16_t port = 0;
+  std::thread thread;
+  std::shared_ptr<std::vector<std::string>> seen =
+      std::make_shared<std::vector<std::string>>();
+  std::shared_ptr<std::mutex> seen_mu = std::make_shared<std::mutex>();
+  std::atomic<bool> stop{false};
+
+  explicit RouteServer(std::vector<std::pair<std::string, std::string>> routes) {
+    listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(listen_fd >= 0);
+    int one = 1;
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    REQUIRE(::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    socklen_t len = sizeof(addr);
+    REQUIRE(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+    port = ntohs(addr.sin_port);
+    REQUIRE(::listen(listen_fd, 16) == 0);
+
+    thread = std::thread([this, routes = std::move(routes)]() {
+      while (!stop.load()) {
+        const int cfd = ::accept(listen_fd, nullptr, nullptr);
+        if (cfd < 0) return;
+        char buf[16384];
+        const ssize_t n = ::read(cfd, buf, sizeof(buf));
+        std::string path;
+        if (n > 0) {
+          const std::string head(buf, static_cast<std::size_t>(n));
+          const auto s = head.find(' ');
+          if (s != std::string::npos) {
+            const auto e = head.find(' ', s + 1);
+            if (e != std::string::npos) path = head.substr(s + 1, e - s - 1);
+          }
+        }
+        std::string reply =
+            http_reply("404 Not Found", R"({"error":"Gallery not found"})");
+        for (const auto& r : routes) {
+          if (r.first == path) {
+            reply = r.second;
+            break;
+          }
+        }
+        {
+          std::lock_guard<std::mutex> lk(*seen_mu);
+          seen->push_back(path);
+        }
+        ::write(cfd, reply.data(), reply.size());
+        ::close(cfd);
+      }
+    });
+  }
+
+  std::string url() const { return "http://127.0.0.1:" + std::to_string(port); }
+  bool saw(const std::string& path) const {
+    std::lock_guard<std::mutex> lk(*seen_mu);
+    return std::find(seen->begin(), seen->end(), path) != seen->end();
+  }
+
+  ~RouteServer() {
+    stop.store(true);
+    int cfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (cfd >= 0) {
+      sockaddr_in a{};
+      a.sin_family = AF_INET;
+      a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      a.sin_port = htons(port);
+      ::connect(cfd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+      ::close(cfd);
+    }
+    if (thread.joinable()) thread.join();
+    if (listen_fd >= 0) ::close(listen_fd);
+  }
+};
+
+std::vector<std::pair<std::string, std::string>> fixture_routes() {
+  return {
+      {"/api/v2/galleries/671903",
+       http_reply("200 OK", read_fixture("nhentai/gallery.json"))},
+      {"/api/v2/cdn", http_reply("200 OK", read_fixture("nhentai/cdn.json"))},
+      {"/api/v2/search?query=1984&page=1",
+       http_reply("200 OK", read_fixture("nhentai/search_page1.json"))},
+      {"/api/v2/galleries/5", http_reply("500 Internal Server Error", "{}")},
+  };
+}
+
+}  // namespace
+
+TEST_CASE("search_by_number_fetches_the_gallery_not_the_search_api") {
+  RouteServer srv(fixture_routes());
+  auto nh = Nhentai::with_host(srv.url());
+  REQUIRE(nh.has_value());
+
+  for (const char* q : {"671903", "#671903", "https://nhentai.net/g/671903/"}) {
+    CAPTURE(q);
+    const auto r = nh->search(q);
+    REQUIRE(r.has_value());
+    REQUIRE(r->size() == 1);
+    CHECK(r->front().id == "671903");
+    CHECK(r->front().title ==
+          "[Ricker Kai] Tsubo no Naka no Taikai (Dragon Ball Super)");
+    // The cdn pool was primed, so the cover answers.
+    CHECK(nh->cover_thumb_url(r->front()) ==
+          "https://t1.nhentai.net/galleries/4111399/thumb.webp");
+  }
+  CHECK(srv.saw("/api/v2/galleries/671903"));
+  CHECK_FALSE(srv.saw("/api/v2/search?query=671903&page=1"));
+}
+
+TEST_CASE("search_by_number_that_is_no_gallery") {
+  RouteServer srv(fixture_routes());
+  auto nh = Nhentai::with_host(srv.url());
+  REQUIRE(nh.has_value());
+
+  // A bare number may still be a title word: the 404 falls back.
+  const auto word = nh->search("1984");
+  REQUIRE(word.has_value());
+  CHECK_FALSE(word->empty());
+  CHECK(srv.saw("/api/v2/galleries/1984"));
+  CHECK(srv.saw("/api/v2/search?query=1984&page=1"));
+
+  // A link or #id named one gallery; its absence is "no results".
+  for (const char* q : {"https://nhentai.net/g/999/", "#999"}) {
+    CAPTURE(q);
+    const auto r = nh->search(q);
+    REQUIRE(r.has_value());
+    CHECK(r->empty());
+  }
+  CHECK(srv.saw("/api/v2/galleries/999"));
+  CHECK_FALSE(srv.saw("/api/v2/search?query=%23999&page=1"));
+
+  // Any other failure is the source's error, not a keyword search.
+  const auto down = nh->search("5");
+  REQUIRE_FALSE(down.has_value());
+  CHECK(down.error().kind == ProviderError::Kind::Server);
+  CHECK_FALSE(srv.saw("/api/v2/search?query=5&page=1"));
 }

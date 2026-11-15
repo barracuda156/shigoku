@@ -122,6 +122,7 @@ struct NhGallery {
   std::string id;         // digits (vetted).
   std::string media_id;   // digits (vetted) — the CDN path namespace.
   std::string title;      // title.pretty → .english → .japanese → "".
+  std::string row_title;  // title.english → .japanese → "" (a search row's).
   std::string lang;       // from the language tags; "" when none.
   std::uint32_t num_pages = 0;
   std::string publish_at;  // iso_from_unix(upload_date); "" when absent.
@@ -166,6 +167,14 @@ struct NhGallery {
 // publish_at carried over.
 [[nodiscard]] MdChapter gallery_chapter(const NhGallery& g);
 
+// A search query that names one gallery → its id, else "". Accepted:
+// "177013", "#177013", and gallery links ("https://nhentai.net/g/177013/",
+// scheme/www optional, anything after the id ignored). Whitespace-trimmed.
+[[nodiscard]] std::string gallery_id_query(std::string_view q);
+
+// A gallery as the row parse_search would give for it (row_title, thumbnail).
+[[nodiscard]] MdManga gallery_manga(const NhGallery& g);
+
 }  // namespace nh
 
 // --- Transport ----------------------------------------------------------------
@@ -189,8 +198,11 @@ class Nhentai final : public MangaSource {
   // The whole point of the `nsfw_sources` gate.
   [[nodiscard]] bool nsfw() const override { return true; }
 
-  // GET search_url (page 1); parse_search verbatim. On success, best-effort
-  // primes the cdn cache so cover_thumb_url can answer from the UI thread.
+  // GET search_url (page 1); parse_search verbatim. A query gallery_id_query
+  // accepts is a GET gallery_url instead, answering that one row; on a 404
+  // a bare number falls back to the keyword search, a link or #id answers
+  // empty. On success, best-effort primes the cdn cache so cover_thumb_url
+  // can answer from the UI thread.
   [[nodiscard]] Result<std::vector<MdManga>, ProviderError> search(
       std::string_view query) const override;
 
