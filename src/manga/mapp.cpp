@@ -1274,6 +1274,12 @@ void sync_selection(MgApp& app) {
 
 void on_key(MgApp& app, const KeyEvent& k) {
   using S = KeyEvent::Special;
+  // Raw mode hands Ctrl-C over as a key; it quits from anywhere, prompt and
+  // connect overlay included.
+  if (k.ctrl && k.codepoint == U'c') {
+    app.quit = true;
+    return;
+  }
   if (app.prompt_open) {
     if (k.special == S::Enter) {
       app.prompt_open = false;

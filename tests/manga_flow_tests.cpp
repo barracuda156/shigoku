@@ -1419,6 +1419,29 @@ TEST_CASE("the connect overlay captures the keyboard until Esc") {
   CHECK(canceled);
 }
 
+TEST_CASE("Ctrl-C quits from the list, the search prompt and the connect overlay") {
+  KeyEvent ctrl_c = key_char(U'c');
+  ctrl_c.ctrl = true;
+  {
+    MgApp& app = fresh_app();
+    tick(app, MgEvent{ctrl_c});
+    CHECK(app.quit);
+  }
+  {
+    MgApp& app = fresh_app();
+    app.prompt_open = true;
+    tick(app, MgEvent{ctrl_c});
+    CHECK(app.quit);
+    CHECK(app.prompt.empty());  // never typed into the query.
+  }
+  {
+    MgApp& app = fresh_app();
+    app.connect = MgApp::MgConnectSession{};
+    tick(app, MgEvent{ctrl_c});
+    CHECK(app.quit);
+  }
+}
+
 TEST_CASE("the search prompt takes a codepoint outside the BMP whole") {
   MgApp& app = fresh_app();
   app.prompt_open = true;
