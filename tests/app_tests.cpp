@@ -22,6 +22,7 @@
 #include "../src/tui/prewarm.hpp"
 #include "../src/tui/resolve_transport.hpp"
 #include "../src/tui/views.hpp"
+#include "fixture_provider.hpp"
 
 using namespace shigoku;
 using namespace shigoku::tui;
@@ -1210,6 +1211,49 @@ TEST_CASE("a grid key inside a History zoom acts on the zoomed show") {
   tick(h->app, Event{press(U'd')});
   CHECK(h->app.toasts.size() == toasts_before + 1);
   CHECK_FALSE(h->app.download.active);
+}
+
+TEST_CASE("the episode cell the user moved to is the one a finished play is measured from") {
+  auto h = HistoryHarness::make();
+  Enrichment e;
+  e.anilist_id = 2;
+  e.mal_id = 1;  // the fixture provider's one show: episodes "1" and "2".
+  e.title_romaji = "Zoomed";
+  e.total_episodes = 2;
+  REQUIRE(h->store.add_to_library(e, 50).has_value());
+  h->reload();
+
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<shigoku::test::FixtureProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->app.queue = &queue;
+  h->app.episode_session = std::make_unique<EpisodeSession>();
+
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});  // into the pane: the grid fetch.
+  for (int i = 0; i < 10 && !h->app.episode.fetched; ++i) {
+    const auto ev = pump(queue);
+    REQUIRE(ev.has_value());
+    tick(h->app, *ev);
+  }
+  REQUIRE(h->app.episode.episodes.size() == 2);
+  REQUIRE(h->app.episode.cursor == 0);
+
+  tick(h->app, Event{press(U'l')});
+  CHECK(h->app.episode.cursor == 1);
+  CHECK(h->app.episode_session->cursor() == 1);
+
+  // That cell's play runs to its end: the cursor stays on it (it is the last
+  // cell) instead of snapping back to where the grid first landed.
+  h->app.play.active = true;
+  h->app.play.for_id = 2;
+  h->app.play.episode = "2";
+  h->app.play.episode_index = 2;
+  h->app.play.duration = 1400.0;
+  h->app.play.provider = "fixture";
+  tick(h->app, Event{PlayDone{1395.0, 2, "2"}});
+  CHECK(h->app.episode.cursor == 1);
 }
 
 TEST_CASE("the search line takes a codepoint outside the BMP whole") {

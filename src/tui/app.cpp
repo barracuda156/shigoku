@@ -2267,6 +2267,17 @@ View back_target(const App& app) {
   return app.view == View::Detail ? app.detail_origin : app.view;
 }
 
+// Move the episode grid's focus. The session owns the cursor and App.episode
+// mirrors it, so navigation writes both: a later transport step (a finished
+// play, a pin flip) must see the cell the user is on, not the one the grid
+// landed on.
+void set_grid_cursor(App& app, int ix) {
+  app.episode.cursor = ix;
+  if (app.episode_session && ix >= 0) {
+    app.episode_session->set_cursor(static_cast<std::size_t>(ix));
+  }
+}
+
 void on_key(App& app, const KeyEvent& k) {
   app.last_key_debug = describe_key(k);
   debug_log("ui key: " + app.last_key_debug);
@@ -3031,7 +3042,7 @@ void on_key(App& app, const KeyEvent& k) {
           if (!app.episode.episodes.empty()) {
             const int per_row = static_cast<int>(detail::episode_grid_per_row(app));
             const int last = static_cast<int>(app.episode.episodes.size()) - 1;
-            app.episode.cursor = std::min(last, app.episode.cursor + per_row);
+            set_grid_cursor(app, std::min(last, app.episode.cursor + per_row));
           }
         }
         return;
@@ -3055,7 +3066,7 @@ void on_key(App& app, const KeyEvent& k) {
           // P33: one visual row up (grid geometry, not flat -1).
           if (!app.episode.episodes.empty()) {
             const int per_row = static_cast<int>(detail::episode_grid_per_row(app));
-            app.episode.cursor = std::max(0, app.episode.cursor - per_row);
+            set_grid_cursor(app, std::max(0, app.episode.cursor - per_row));
           }
         }
         return;
@@ -3090,8 +3101,8 @@ void on_key(App& app, const KeyEvent& k) {
             return;
           }
           if (!app.episode.episodes.empty()) {
-            app.episode.cursor =
-                top ? 0 : static_cast<int>(app.episode.episodes.size()) - 1;
+            set_grid_cursor(app,
+                            top ? 0 : static_cast<int>(app.episode.episodes.size()) - 1);
           }
           return;
         }
@@ -3118,7 +3129,7 @@ void on_key(App& app, const KeyEvent& k) {
         if ((app.view == View::Browse && app.pane == Pane::Detail) ||
             (app.view == View::History && app.pane == Pane::Detail) ||
             app.view == View::Detail) {
-          if (app.episode.cursor > 0) --app.episode.cursor;
+          if (app.episode.cursor > 0) set_grid_cursor(app, app.episode.cursor - 1);
           return;
         }
         app.pane = Pane::List;
@@ -3132,7 +3143,7 @@ void on_key(App& app, const KeyEvent& k) {
             app.view == View::Detail) {
           if (!app.episode.episodes.empty() &&
               static_cast<std::size_t>(app.episode.cursor) + 1 < app.episode.episodes.size())
-            ++app.episode.cursor;
+            set_grid_cursor(app, app.episode.cursor + 1);
           return;
         }
         if (((app.view == View::Browse) || (app.view == View::History)) &&
@@ -3569,7 +3580,7 @@ void on_mouse(App& app, const MouseEvent& m) {
       // synthesized Enter would promote a recommendation instead of playing
       // the clicked cell (P36 review).
       app.char_recs.focused = false;
-      app.episode.cursor = static_cast<int>(*cell);
+      set_grid_cursor(app, static_cast<int>(*cell));
       if (dbl && already) {
         synth_enter();
         return;

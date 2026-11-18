@@ -146,6 +146,11 @@ class EpisodeSession {
   bool has_for_id() const { return for_id_.has_value(); }
   const std::vector<std::string>& episodes() const { return episodes_; }
   int cursor() const { return static_cast<int>(cursor_); }
+  // Move the grid focus (user navigation), clamped to the last cell. The
+  // cursor lives here; App.episode.cursor is its mirror.
+  void set_cursor(std::size_t ix) {
+    if (!episodes_.empty()) cursor_ = ix < episodes_.size() ? ix : episodes_.size() - 1;
+  }
   bool loading() const { return loading_; }
   bool no_source() const { return no_source_; }
   const std::optional<std::string>& serving() const { return serving_; }
