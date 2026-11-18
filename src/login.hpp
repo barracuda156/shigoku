@@ -79,7 +79,8 @@ using Verifier = std::function<Result<std::optional<anilist::Viewer>, ProviderEr
 // Shared login core (06 §4.2): extract the token from a raw redirect/query/
 // paste, floor-check it, verify against AniList, then build and save. The
 // file is never written before the verify succeeds (the save lives only in
-// the verified branch).
+// the verified branch). Only the .anilist block is replaced: whatever else
+// the file holds (the MyAnimeList sign-in) is kept.
 [[nodiscard]] ConnectResult complete_login(std::string_view raw, const Verifier& verifier,
                                             const std::string& auth_path, std::int64_t now);
 

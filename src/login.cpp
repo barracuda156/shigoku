@@ -54,15 +54,15 @@ std::optional<std::pair<std::string, std::optional<std::int64_t>>> extract_token
   return std::make_pair(std::move(*token), expires_in);
 }
 
-Auth build_auth(std::string token, std::optional<std::int64_t> expires_in,
-                const anilist::Viewer& viewer, std::int64_t now) {
-  Auth a;
-  a.anilist.access_token = std::move(token);
-  a.anilist.token_type = kDefaultTokenType;
-  a.anilist.expires_at = expires_in.has_value() ? now + *expires_in : 0;
-  a.anilist.user_id = viewer.id;
-  a.anilist.user_name = viewer.name;
-  a.anilist.score_format = viewer.score_format;
+AniListAuth build_auth(std::string token, std::optional<std::int64_t> expires_in,
+                       const anilist::Viewer& viewer, std::int64_t now) {
+  AniListAuth a;
+  a.access_token = std::move(token);
+  a.token_type = kDefaultTokenType;
+  a.expires_at = expires_in.has_value() ? now + *expires_in : 0;
+  a.user_id = viewer.id;
+  a.user_name = viewer.name;
+  a.score_format = viewer.score_format;
   return a;
 }
 
@@ -126,7 +126,9 @@ ConnectResult complete_login(std::string_view raw, const Verifier& verifier,
   if (!verified.has_value()) return ConnectResult::network_error();
   if (!verified->has_value()) return ConnectResult::rejected();
 
-  const Auth auth = build_auth(token, expires_in, **verified, now);
+  // The file holds the MyAnimeList sign-in too: replace this block only.
+  Auth auth = Auth::load(auth_path);
+  auth.anilist = build_auth(token, expires_in, **verified, now);
   auto saved = auth.save(auth_path);
   if (!saved.has_value()) return ConnectResult::save_failed();
   return ConnectResult::ok(auth.anilist.user_name);

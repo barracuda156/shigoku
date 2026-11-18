@@ -83,6 +83,25 @@ TEST_CASE("complete login verifies then saves") {
   CHECK(auth.anilist.expires_at == 1000 + 3600);
 }
 
+TEST_CASE("complete login keeps the MyAnimeList sign-in already in the file") {
+  const std::string path = tmp("keeps_mal.json");
+  Auth before;
+  before.mal.access_token = "mal-access-token";
+  before.mal.refresh_token = "mal-refresh-token";
+  before.mal.expires_at = 5000;
+  before.mal.user_id = 42;
+  REQUIRE(before.save(path).has_value());
+
+  const std::string raw =
+      std::string("http://localhost:8767/#access_token=") + kGoodToken + "&state=n";
+  CHECK(complete_login(raw, ok_verifier(), path, 1000) == ConnectResult::ok("rod"));
+
+  const Auth after = Auth::load(path);
+  REQUIRE(after.anilist.bearer().has_value());
+  CHECK(*after.anilist.bearer() == kGoodToken);
+  CHECK(after.mal == before.mal);
+}
+
 TEST_CASE("complete login persists the viewer's score_format") {
   const std::string path = tmp("score_format.json");
   const std::string raw =
