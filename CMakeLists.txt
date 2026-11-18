@@ -891,6 +891,7 @@ target_link_libraries(shigoku_resolve PUBLIC shigoku_domain shigoku_flags shigok
 if(WITH_TUI)
 add_library(shigoku_tui_render STATIC
   src/tui/cells.cpp
+  src/tui/layout.cpp
   src/tui/term.cpp
   src/tui/input.cpp
   src/tui/toast.cpp

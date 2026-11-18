@@ -28,8 +28,8 @@
 #include "../tui/input.hpp"
 #include "../tui/iterm.hpp"
 #include "../tui/kitty.hpp"
+#include "../tui/layout.hpp"
 #include "../tui/sixel.hpp"
-#include "../tui/views.hpp"  // pane_split, kContentY0/content_height, wrap_text.
 #include "msync.hpp"
 #include "pages.hpp"
 #include "viewer.hpp"

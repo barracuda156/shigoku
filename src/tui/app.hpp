@@ -40,6 +40,7 @@
 #include "covers.hpp"
 #include "discover.hpp"
 #include "discover_filters.hpp"
+#include "layout.hpp"
 #include "queue.hpp"
 #include "settings.hpp"
 #include "term.hpp"
@@ -740,10 +741,6 @@ inline constexpr TickCount kDoubleClickTicks = 4;       // 400ms double-click wi
 // Kitty image id for the single detail cover (A4: i=<id> stable per slot; the
 // one v0 cover reuses one id so a replace deletes-then-transmits the same slot).
 inline constexpr std::uint32_t kDetailCoverImageId = 1;
-
-// DESIGN §3.2: below this width Browse collapses to a single-column list (no
-// detail pane); the Detail zoom demotes to `.detail` (not `.list`) at/above it.
-inline constexpr int kPaneSplitMin = 60;
 
 // tick(App, Event): mutate state for one event. Dispatches via std::visit +
 // overloaded{} with NO catch-all (A2): a new Event alternative won't compile

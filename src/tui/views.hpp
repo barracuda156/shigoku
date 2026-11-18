@@ -11,31 +11,9 @@
 
 #include "app.hpp"
 #include "cells.hpp"
+#include "layout.hpp"
 
 namespace shigoku::tui {
-
-// Frame chrome rows (layout.rs frame_rows): row 0 = top bar, row 1 = spacer,
-// content [kContentY0, rows-1), row rows-1 = bottom bar. The spacer row is
-// part of the design — draw sites and hit-tests must share this origin, never
-// a hand-typed 1.
-inline constexpr int kContentY0 = 2;
-
-// Rows the content region holds at `win_rows` total — the scroll budgets'
-// shared height (frame_rows' content_h: minus top bar, spacer, bottom bar).
-[[nodiscard]] constexpr int content_height(int win_rows) {
-  return win_rows - 1 - kContentY0 > 0 ? win_rows - 1 - kContentY0 : 0;
-}
-
-// pane_split(w) (DESIGN §3.2, single source of truth): the list column width
-// and the detail column's origin/width. Below kPaneSplitMin the list takes
-// the full content width and there is no detail column (list_w == w case is
-// signaled by the caller checking width, not by this function).
-struct PaneSplit {
-  int list_w = 0;
-  int detail_x = 0;
-  int detail_w = 0;
-};
-[[nodiscard]] PaneSplit pane_split(int w);
 
 // Render the Browse view's content region (list + detail panes, or the
 // full-width list alone below kPaneSplitMin) into `buf` rows [y0, y1).
@@ -112,12 +90,6 @@ namespace detail {
 // marks when the walk exhausted every source. Pure; "" when nothing was
 // tried. Exposed for tests.
 [[nodiscard]] std::string tried_caption(const EpisodeState& es);
-
-// Word-wrap a sanitized description (a flat single line — the enrichment
-// mapper collapses newline runs) into lines of at most `max_cols` display
-// columns, breaking on spaces; a word wider than the box hard-breaks on a
-// codepoint boundary. Space runs collapse. Exposed for tests.
-[[nodiscard]] std::vector<std::string> wrap_text(std::string_view text, int max_cols);
 
 // The Enrichment the shared detail pane/zoom should render for the current
 // selection (05 §15's "one detail renderer" pattern extended to History,
