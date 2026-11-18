@@ -2047,17 +2047,7 @@ std::string describe_key(const KeyEvent& k) {
   if (k.codepoint) {
     // Encode the printable codepoint back to UTF-8 for the debug echo.
     std::string s;
-    const char32_t c = k.codepoint;
-    if (c < 0x80) {
-      s.push_back(static_cast<char>(c));
-    } else if (c < 0x800) {
-      s.push_back(static_cast<char>(0xC0 | (c >> 6)));
-      s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-    } else {
-      s.push_back(static_cast<char>(0xE0 | (c >> 12)));
-      s.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-      s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-    }
+    encode_utf8(k.codepoint, s);
     return s;
   }
   return "?";
@@ -2327,18 +2317,7 @@ void on_key(App& app, const KeyEvent& k) {
       return;
     }
     if (k.special == S::None && k.codepoint >= 0x20) {
-      // Append the codepoint as UTF-8.
-      const char32_t c = k.codepoint;
-      if (c < 0x80) {
-        query.push_back(static_cast<char>(c));
-      } else if (c < 0x800) {
-        query.push_back(static_cast<char>(0xC0 | (c >> 6)));
-        query.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-      } else {
-        query.push_back(static_cast<char>(0xE0 | (c >> 12)));
-        query.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-        query.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-      }
+      encode_utf8(k.codepoint, query);
       if (in_history) {
         app.history.on_filter_edited();
       } else {

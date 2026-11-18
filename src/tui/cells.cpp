@@ -53,24 +53,6 @@ char32_t decode_utf8(std::string_view s, std::size_t& i) {
   return b0;
 }
 
-void encode_utf8(char32_t c, std::string& out) {
-  if (c < 0x80) {
-    out.push_back(static_cast<char>(c));
-  } else if (c < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (c >> 6)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else if (c < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (c >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (c >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  }
-}
-
 struct Range {
   char32_t lo, hi;
 };
@@ -123,6 +105,24 @@ bool in_ranges(char32_t cp, const Range* r, std::size_t n) {
 }
 
 }  // namespace
+
+void encode_utf8(char32_t c, std::string& out) {
+  if (c < 0x80) {
+    out.push_back(static_cast<char>(c));
+  } else if (c < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+  } else if (c < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (c >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (c >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+  }
+}
 
 int char_width(char32_t cp) {
   if (cp == 0) return 0;

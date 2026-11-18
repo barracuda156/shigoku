@@ -1419,6 +1419,13 @@ TEST_CASE("the connect overlay captures the keyboard until Esc") {
   CHECK(canceled);
 }
 
+TEST_CASE("the search prompt takes a codepoint outside the BMP whole") {
+  MgApp& app = fresh_app();
+  app.prompt_open = true;
+  tick(app, MgEvent{key_char(U'\U0001F600')});
+  CHECK(app.prompt == "\xF0\x9F\x98\x80");
+}
+
 TEST_CASE("A with no auth file wired is a toast, not a half-open modal") {
   MgApp& app = fresh_app();
   MgDeps deps;  // bare frame: no client, no auth.json.

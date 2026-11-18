@@ -61,26 +61,6 @@ const char* spinner_frame(std::uint64_t tick) {
   return tui::kSpinnerFrames[tick % tui::kSpinnerFrameCount];
 }
 
-// UTF-8 encode one codepoint onto `out` (prompt input; decoder hands
-// codepoints, the prompt buffer is UTF-8 bytes).
-void utf8_append(std::string& out, char32_t cp) {
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xC0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xE0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else {
-    out += static_cast<char>(0xF0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  }
-}
-
 // Pop the last UTF-8 codepoint (backspace: continuation bytes then the lead).
 void utf8_pop(std::string& s) {
   while (!s.empty()) {
@@ -1313,7 +1293,7 @@ void on_key(MgApp& app, const KeyEvent& k) {
       utf8_pop(app.prompt);
       app.dirty = true;
     } else if (k.codepoint != 0 && !k.ctrl) {
-      utf8_append(app.prompt, k.codepoint);
+      tui::encode_utf8(k.codepoint, app.prompt);
       app.dirty = true;
     }
     return;

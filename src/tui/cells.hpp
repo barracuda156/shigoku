@@ -52,6 +52,10 @@ struct Cell {
   friend bool operator==(const Cell&, const Cell&) = default;
 };
 
+// Append `c` to `out` as UTF-8 (1-4 bytes). The one encoder for text typed
+// into a prompt and for glyphs flushed from the cell buffer.
+void encode_utf8(char32_t c, std::string& out);
+
 // Display width of a codepoint: 0 (zero-width / combining), 1 (normal), or 2
 // (East-Asian wide / fullwidth / most emoji). Vendored ranges, no locale.
 [[nodiscard]] int char_width(char32_t cp);

@@ -1140,6 +1140,15 @@ TEST_CASE("Space is the zoom toggle on every selection surface (§9 consistency)
   CHECK(h->app.detail_origin == View::Discover);
 }
 
+TEST_CASE("the search line takes a codepoint outside the BMP whole") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  tick(h->app, Event{press(U'/')});
+  REQUIRE(h->app.bar == BarMode::Search);
+  tick(h->app, Event{press(U'\U0001F600')});
+  CHECK(h->app.search_query == "\xF0\x9F\x98\x80");
+}
+
 TEST_CASE("/ searches from anywhere: non-Browse/History views jump to Browse (F1)") {
   auto h = HistoryHarness::make();
   // Settings: `/` used to arm the bar over a view that never shows results
