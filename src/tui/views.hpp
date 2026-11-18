@@ -1,11 +1,11 @@
 // views.hpp — Browse two-pane (list + detail) + episode grid render (P7,
 // DESIGN §3.1-3.7/§4.1-4.6/§5.3). PURE: reads App + writes cells, no I/O, no
-// store, no network — same rule as app.cpp's draw() (enforced by not
+// store, no network — same rule as draw() (enforced by not
 // #including http/store here; the CMake link graph enforces it further, A2).
 //
-// app.cpp's draw() calls these for the content region (rows kContentY0..
-// height-2); the chrome (top/bottom bar, toasts, degraded frame) stays in
-// app.cpp.
+// draw() calls these for the content region (rows kContentY0..
+// height-2); the chrome (top/bottom bar, toasts, degraded frame) lives in
+// app_draw.cpp.
 
 #pragma once
 

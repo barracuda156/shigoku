@@ -958,6 +958,8 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   # includes store.hpp.
   add_library(shigoku_tui STATIC
     src/tui/app.cpp
+    src/tui/app_workers.cpp        # the detached workers app.cpp spawns.
+    src/tui/app_draw.cpp           # draw(): the chrome and the cover placement bytes.
     src/tui/covers.cpp
     src/tui/discover_feed.cpp      # P17: DiscoverState::on_feed (upserts catalog_cache).
     src/tui/resolve_transport.cpp  # P15: the resolve walk transport (episodes.rs).
