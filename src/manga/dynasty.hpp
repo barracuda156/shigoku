@@ -119,7 +119,7 @@ namespace dy {
 // is ignored); pages unknown here (0 — the chapter fetch is the count
 // authority). Output sorted ascending by chapter_less with publish_at then id
 // as tie-breaks. NO dedupe: Dynasty's release variants are distinct chapters
-// (md's dedupe_chapters would eat two thirds of "Chapter 17"). A missing or
+// (dedupe_chapters would eat two thirds of "Chapter 17"). A missing or
 // ill-typed taggings[] → Decode; an empty one → Ok(empty).
 [[nodiscard]] Result<std::vector<MdChapter>, ProviderError> parse_series(
     std::string_view raw);

@@ -18,11 +18,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include "json_util.hpp"
+
 namespace shigoku::manga {
 
 namespace {
 
 using json = nlohmann::json;
+using detail::str_or_empty;
 
 // num_opt (anilist.cpp idiom): absent/null/wrong-typed -> nullopt.
 template <class T>
@@ -31,16 +34,6 @@ std::optional<T> num_opt(const json& j, const char* key) {
   const json& v = j.at(key);
   if (!v.is_number()) return std::nullopt;
   return v.get<T>();
-}
-
-// Absent/null/wrong-typed string field degrades to "" (never throws, never
-// drops the row over it — only id-shape and the external-chapter rule drop
-// rows in this file).
-std::string str_or_empty(const json& j, const char* key) {
-  if (!j.is_object() || !j.contains(key) || j.at(key).is_null()) return {};
-  const json& v = j.at(key);
-  if (!v.is_string()) return {};
-  return v.get<std::string>();
 }
 
 std::uint32_t uint_or(const json& j, const char* key, std::uint32_t def) {
@@ -128,23 +121,6 @@ std::optional<std::int64_t> parse_link_id(const json& links, const char* key) {
 }  // namespace
 
 namespace detail {
-
-std::string url_encode(std::string_view s) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(s.size());
-  for (const unsigned char c : s) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-        c == '.' || c == '_' || c == '~' || c == '-') {
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back('%');
-      out.push_back(kHex[c >> 4]);
-      out.push_back(kHex[c & 0x0F]);
-    }
-  }
-  return out;
-}
 
 std::string search_url(std::string_view host, std::string_view query, std::uint32_t limit) {
   std::string out;
@@ -246,19 +222,6 @@ bool uuid_shaped(std::string_view s) {
       return false;
     }
   }
-  return true;
-}
-
-bool filename_safe(std::string_view s) {
-  if (s.empty()) return false;
-  if (s.front() == '.') return false;
-  for (const char c : s) {
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-          c == '.' || c == '_' || c == '-')) {
-      return false;
-    }
-  }
-  if (s.find("..") != std::string_view::npos) return false;
   return true;
 }
 
@@ -395,66 +358,6 @@ Result<MdAtHome, ProviderError> parse_at_home(std::string_view raw) {
   out.data = std::move(data);
   out.data_saver = std::move(data_saver);
   return out;
-}
-
-namespace {
-
-// Leading decimal via strtod on a null-terminated copy (from_chars<double>
-// isn't reliably available across this tree's legacy toolchains). "Consumed
-// at least one digit" is endptr != the buffer start, not merely != nullptr.
-struct LeadingNumber {
-  bool has_value = false;
-  double value = 0.0;
-};
-
-LeadingNumber parse_leading_number(std::string_view s) {
-  const std::string buf(s);
-  char* endptr = nullptr;
-  const double v = std::strtod(buf.c_str(), &endptr);
-  LeadingNumber out;
-  if (endptr != buf.c_str()) {
-    out.has_value = true;
-    out.value = v;
-  }
-  return out;
-}
-
-}  // namespace
-
-bool chapter_less(std::string_view a, std::string_view b) {
-  const LeadingNumber na = parse_leading_number(a);
-  const LeadingNumber nb = parse_leading_number(b);
-  if (na.has_value && nb.has_value) {
-    if (na.value != nb.value) return na.value < nb.value;
-    return a < b;  // tie -> lexicographic on the full string.
-  }
-  if (na.has_value != nb.has_value) {
-    return na.has_value;  // numeric sorts before non-numeric.
-  }
-  return a < b;  // both non-numeric (incl. "") -> lexicographic.
-}
-
-std::vector<MdChapter> dedupe_chapters(std::vector<MdChapter> in) {
-  // Group by exact chapter string, keeping the newest publish_at seen so far
-  // (strict '>' so an equal-or-older duplicate never displaces the
-  // first-seen incumbent — the tie rule).
-  std::vector<MdChapter> kept;
-  kept.reserve(in.size());
-  for (auto& c : in) {
-    auto it = std::find_if(kept.begin(), kept.end(),
-                           [&](const MdChapter& k) { return k.chapter == c.chapter; });
-    if (it == kept.end()) {
-      kept.push_back(std::move(c));
-    } else if (c.publish_at > it->publish_at) {
-      *it = std::move(c);
-    }
-  }
-  std::sort(kept.begin(), kept.end(), [](const MdChapter& x, const MdChapter& y) {
-    if (chapter_less(x.chapter, y.chapter)) return true;
-    if (chapter_less(y.chapter, x.chapter)) return false;
-    return x.id < y.id;  // final tie-break for determinism.
-  });
-  return kept;
 }
 
 std::optional<std::uint32_t> next_offset(std::uint32_t offset, std::uint32_t limit,

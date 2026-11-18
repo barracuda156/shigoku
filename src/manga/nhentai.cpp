@@ -4,9 +4,7 @@
 // first, sticky Chrome escalation on 403 — the edge has been observed to
 // fluctuate between probes, see the header).
 //
-// Shared helpers are borrowed, never re-implemented: url_encode /
-// filename_safe live in mangadex.hpp's detail:: (the source born with a
-// generic helper owns it). No HTML anywhere → no weebcentral.hpp dependency.
+// Shared helpers (url_encode, filename_safe) live in util.hpp's detail::.
 //
 // nlohmann parse is non-throwing (allow_exceptions=false + is_discarded()
 // gate) and every field read is is_*()-guarded before .get<T>() — the
@@ -23,7 +21,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mangadex.hpp"
+#include "json_util.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 
@@ -33,13 +32,7 @@ namespace {
 
 using json = nlohmann::json;
 
-// Absent/null/wrong-typed string field degrades to "" (mangadex.cpp idiom).
-std::string str_or_empty(const json& j, const char* key) {
-  if (!j.is_object() || !j.contains(key) || j.at(key).is_null()) return {};
-  const json& v = j.at(key);
-  if (!v.is_string()) return {};
-  return v.get<std::string>();
-}
+using detail::str_or_empty;
 
 // Integer field as its decimal string; "" when absent/null/non-integral (a
 // float id is nobody's id).

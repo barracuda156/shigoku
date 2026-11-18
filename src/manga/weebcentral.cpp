@@ -1,9 +1,9 @@
 // weebcentral.cpp — implements weebcentral.hpp: string-scan parsers over the
 // site's HTMX fragments (the anime scraper idiom — no HTML lib, the
 // committed fixtures are the contract) plus a small blocking transport. The
-// generic pieces (url_encode, filename_safe, chapter_less) are shared with
-// the MangaDex source — they live in mangadex.hpp's detail namespace and
-// chapter_less is already documented as the cross-source chapter order.
+// generic pieces (url_encode, filename_safe, chapter_less, html_unescape,
+// trim) are shared across the manga sources and live in util.hpp's detail
+// namespace.
 
 #include "weebcentral.hpp"
 
@@ -14,13 +14,15 @@
 #include <optional>
 #include <thread>
 
-#include "mangadex.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 
 namespace wc {
 
 namespace {
+
+using detail::trim;
 
 // The scan primitives (anibd.cpp idiom, fragment-shaped): everything is a
 // find + slice over string_views into the response; nothing allocates until
@@ -38,18 +40,6 @@ std::optional<std::string_view> until(std::string_view hay, char stop) {
   return hay.substr(0, at);
 }
 
-std::string_view trim(std::string_view s) {
-  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
-                        s.front() == '\n' || s.front() == '\r')) {
-    s.remove_prefix(1);
-  }
-  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
-                        s.back() == '\n' || s.back() == '\r')) {
-    s.remove_suffix(1);
-  }
-  return s;
-}
-
 // Tag text content: the marker's trailing text up to the next '<', trimmed
 // and entity-unescaped; "" when the marker or the closing tag never comes.
 std::string text_after(std::string_view hay, std::string_view marker) {
@@ -58,54 +48,6 @@ std::string text_after(std::string_view hay, std::string_view marker) {
   const auto txt = until(*rest, '<');
   if (!txt.has_value()) return {};
   return html_unescape(trim(*txt));
-}
-
-// "&#39;" / "&#x27;" → codepoint. Nullopt on anything malformed or hostile
-// (0, > U+10FFFF, overlong digit runs) — the caller passes the raw text
-// through untouched instead.
-std::optional<std::uint32_t> parse_numeric_entity(std::string_view ent) {
-  std::string_view digits = ent.substr(1);  // past '#'.
-  std::uint32_t base = 10;
-  if (!digits.empty() && (digits.front() == 'x' || digits.front() == 'X')) {
-    base = 16;
-    digits.remove_prefix(1);
-  }
-  if (digits.empty() || digits.size() > 7) return std::nullopt;
-  std::uint32_t v = 0;
-  for (const char c : digits) {
-    std::uint32_t d = 0;
-    if (c >= '0' && c <= '9') {
-      d = static_cast<std::uint32_t>(c - '0');
-    } else if (base == 16 && c >= 'a' && c <= 'f') {
-      d = static_cast<std::uint32_t>(c - 'a') + 10;
-    } else if (base == 16 && c >= 'A' && c <= 'F') {
-      d = static_cast<std::uint32_t>(c - 'A') + 10;
-    } else {
-      return std::nullopt;
-    }
-    v = v * base + d;
-    if (v > 0x10FFFF) return std::nullopt;
-  }
-  if (v == 0) return std::nullopt;
-  return v;
-}
-
-void append_utf8(std::string& out, std::uint32_t cp) {
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xC0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xE0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else {
-    out += static_cast<char>(0xF0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  }
 }
 
 }  // namespace
@@ -119,49 +61,6 @@ bool ulid_shaped(std::string_view s) {
     if (!digit && !upper) return false;
   }
   return true;
-}
-
-std::string html_unescape(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  std::size_t i = 0;
-  while (i < s.size()) {
-    if (s[i] != '&') {
-      out += s[i++];
-      continue;
-    }
-    const auto semi = s.find(';', i);
-    // No terminator nearby → a bare ampersand, not an entity.
-    if (semi == std::string_view::npos || semi - i > 10) {
-      out += s[i++];
-      continue;
-    }
-    const std::string_view ent = s.substr(i + 1, semi - i - 1);
-    if (ent == "amp") {
-      out += '&';
-    } else if (ent == "lt") {
-      out += '<';
-    } else if (ent == "gt") {
-      out += '>';
-    } else if (ent == "quot") {
-      out += '"';
-    } else if (ent == "apos") {
-      out += '\'';
-    } else if (!ent.empty() && ent.front() == '#') {
-      const auto cp = parse_numeric_entity(ent);
-      if (!cp.has_value()) {
-        out += s[i++];
-        continue;
-      }
-      append_utf8(out, *cp);
-    } else {
-      // Unknown named entity passes through verbatim.
-      out += s[i++];
-      continue;
-    }
-    i = semi + 1;
-  }
-  return out;
 }
 
 bool looks_like_challenge(std::string_view body) {
@@ -329,12 +228,7 @@ Result<std::vector<MdChapter>, ProviderError> parse_chapters(std::string_view ra
   // The site lists newest-first; reading order is ours. publish_at then id
   // break ties so unnumbered specials order chronologically, always
   // deterministically.
-  std::sort(out.begin(), out.end(), [](const MdChapter& a, const MdChapter& b) {
-    if (detail::chapter_less(a.chapter, b.chapter)) return true;
-    if (detail::chapter_less(b.chapter, a.chapter)) return false;
-    if (a.publish_at != b.publish_at) return a.publish_at < b.publish_at;
-    return a.id < b.id;
-  });
+  std::sort(out.begin(), out.end(), detail::chapter_before);
   return out;
 }
 

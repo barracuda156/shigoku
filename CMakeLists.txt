@@ -664,6 +664,15 @@ endif()
 # and its tests only; a command-line-only build without tests skips them.
 if(WITH_TUI OR SHIGOKU_BUILD_TESTS)
 # ---------------------------------------------------------------------------
+# shigoku_manga_util: the helpers every manga source shares (url_encode,
+# filename_safe, chapter ordering and dedupe, html_unescape, trim). Pure, on
+# model.hpp alone; each source links it rather than a sibling source.
+# ---------------------------------------------------------------------------
+add_library(shigoku_manga_util STATIC src/manga/util.cpp)
+target_include_directories(shigoku_manga_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_manga_util PUBLIC shigoku_flags shigoku_thirdparty)
+
+# ---------------------------------------------------------------------------
 # shigoku_mangadex: the manga app's MangaDex source — pure parsers +
 # URL builders in detail:: (offline golden tests over committed fixtures) +
 # a small blocking transport. Shape follows the anime provider pattern.
@@ -673,37 +682,31 @@ if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_mangadex STATIC src/manga/mangadex.cpp)
   target_include_directories(shigoku_mangadex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_mangadex
-    PUBLIC shigoku_http shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_manga_util shigoku_http shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
 # shigoku_weebcentral: the WeebCentral source — string-scan
 # parsers over the site's HTMX fragments (offline golden tests over committed
-# fixtures) + a small blocking transport with CF-challenge detection. Links
-# shigoku_mangadex for the shared detail helpers (url_encode, filename_safe,
-# chapter_less).
+# fixtures) + a small blocking transport with CF-challenge detection.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_weebcentral STATIC src/manga/weebcentral.cpp)
   target_include_directories(shigoku_weebcentral PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_weebcentral
-    PUBLIC shigoku_mangadex shigoku_http shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_manga_util shigoku_http shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
 # shigoku_dynasty: the Dynasty Reader source — two JSON
 # parsers over the site's Rails .json endpoints plus one string-scan HTML
-# parser (search has no JSON twin) + a small blocking transport. Links
-# shigoku_weebcentral for wc::html_unescape (and through it shigoku_mangadex
-# for url_encode / filename_safe / chapter_less): generic scrape helpers stay
-# where they were born, the law md/wc already run on.
+# parser (search has no JSON twin) + a small blocking transport.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_dynasty STATIC src/manga/dynasty.cpp)
   target_include_directories(shigoku_dynasty PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_dynasty
-    PUBLIC shigoku_weebcentral shigoku_mangadex shigoku_http shigoku_flags
-           shigoku_thirdparty)
+    PUBLIC shigoku_manga_util shigoku_http shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -711,15 +714,13 @@ endif()
 # over the v2 FastAPI (search/cdn/gallery) + a blocking transport with the
 # adaptive TLS-fingerprint posture (plain first, sticky Chrome escalation on
 # 403 through the impersonate seam). nsfw() true: the `nsfw_sources`
-# config gate (default off) keeps it invisible until the user opts in. Links
-# shigoku_mangadex for detail::url_encode / filename_safe (no HTML anywhere,
-# so no weebcentral dependency).
+# config gate (default off) keeps it invisible until the user opts in.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_nhentai STATIC src/manga/nhentai.cpp)
   target_include_directories(shigoku_nhentai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_nhentai
-    PUBLIC shigoku_mangadex shigoku_http shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_manga_util shigoku_http shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -730,7 +731,7 @@ if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_mangahub STATIC src/manga/mangahub.cpp)
   target_include_directories(shigoku_mangahub PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_mangahub
-    PUBLIC shigoku_mangadex shigoku_http shigoku_flags shigoku_thirdparty)
+    PUBLIC shigoku_manga_util shigoku_http shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------

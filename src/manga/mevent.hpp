@@ -22,7 +22,8 @@
 
 #include "../error.hpp"
 #include "../event.hpp"
-#include "mangadex.hpp"
+#include "model.hpp"
+#include "source.hpp"
 
 namespace shigoku::manga {
 

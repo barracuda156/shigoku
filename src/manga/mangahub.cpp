@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mangadex.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 

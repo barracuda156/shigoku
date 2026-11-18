@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "../src/manga/mangadex.hpp"
 #include "../src/manga/mapp.hpp"
 #include "../src/manga/mconfig.hpp"
 #include "../src/manga/mstore.hpp"

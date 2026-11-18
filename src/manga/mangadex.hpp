@@ -37,6 +37,7 @@
 #include "../result.hpp"
 #include "model.hpp"
 #include "source.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 
@@ -80,10 +81,6 @@ struct MdAtHome {
 // --- Pure helpers, exposed for the golden tests ------------------------------
 namespace detail {
 
-// RFC 3986: unreserved [A-Za-z0-9._~-] pass, everything else %XX (uppercase
-// hex, UTF-8 bytes escaped individually). Space is %20, never '+'.
-[[nodiscard]] std::string url_encode(std::string_view s);
-
 // URL builders — exact-string tested, host injectable for the fixture server.
 //
 //   search_url:  {host}/manga?title={enc}&limit={n}&includes%5B%5D=cover_art
@@ -125,7 +122,6 @@ namespace detail {
 // cover fileName and every at-home page filename must pass before they can
 // reach a URL or a cache path.
 [[nodiscard]] bool uuid_shaped(std::string_view s);
-[[nodiscard]] bool filename_safe(std::string_view s);
 
 // Parsers, pure over response bytes (fixtures: tests/fixtures/mangadex/).
 //
@@ -159,20 +155,6 @@ namespace detail {
 // a chapter with page gaps is worse than a failed chapter. Empty data[] →
 // Decode.
 [[nodiscard]] Result<MdAtHome, ProviderError> parse_at_home(std::string_view raw);
-
-// The pinned chapter order: parse the leading decimal number of each ("10.5"
-// → 10.5, strtod semantics); both numeric → compare by value, ties →
-// lexicographic on the full string; numeric sorts BEFORE non-numeric
-// (oneshots/"extras" trail the numbered run); both non-numeric (incl. "") →
-// lexicographic.
-[[nodiscard]] bool chapter_less(std::string_view a, std::string_view b);
-
-// Duplicate scanlations of the same chapter STRING (exact match — "1" and
-// "1.0" are distinct): keep the newest publish_at (lexicographic max; ties →
-// first seen), drop the rest. Output sorted by chapter_less (id as the
-// final tie-break for determinism). Input is one lang already (the feed
-// filtered server-side).
-[[nodiscard]] std::vector<MdChapter> dedupe_chapters(std::vector<MdChapter> in);
 
 // The offset-loop step, pure so the math tests offline: given the offset
 // just fetched, the request limit, the server total, and how many pages

@@ -33,7 +33,7 @@
 #include "../tui/term.hpp"
 #include "../tui/toast.hpp"
 #include "../tui/workers.hpp"
-#include "mangadex.hpp"
+#include "model.hpp"
 #include "mconfig.hpp"
 #include "mevent.hpp"
 #include "msimilar.hpp"

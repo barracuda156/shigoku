@@ -2,13 +2,9 @@
 // .json endpoints) plus one string-scan HTML parser (search has no JSON
 // twin), plus a small blocking transport.
 //
-// Shared helpers are borrowed, never re-implemented — the law this codebase
-// already runs on ("the source that was born with a generic helper owns it"):
-// url_encode / filename_safe / chapter_less live in mangadex.hpp's detail::,
-// and html_unescape lives in weebcentral.hpp's wc:: (the search titles are
-// Rails-escaped HTML — "&amp;" must not reach the UI). That is the only
-// reason this file includes weebcentral.hpp; a third consumer would earn a
-// shared scrape module instead.
+// Shared helpers live in util.hpp's detail:: (url_encode, filename_safe,
+// chapter_less, html_unescape for the Rails-escaped search titles — "&amp;"
+// must not reach the UI).
 //
 // nlohmann parse is non-throwing (allow_exceptions=false + is_discarded()
 // gate) and every field read is is_*()-guarded before .get<T>() — the
@@ -25,8 +21,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mangadex.hpp"
-#include "weebcentral.hpp"
+#include "json_util.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 
@@ -36,25 +32,8 @@ namespace {
 
 using json = nlohmann::json;
 
-// Absent/null/wrong-typed string field degrades to "" (mangadex.cpp idiom).
-std::string str_or_empty(const json& j, const char* key) {
-  if (!j.is_object() || !j.contains(key) || j.at(key).is_null()) return {};
-  const json& v = j.at(key);
-  if (!v.is_string()) return {};
-  return v.get<std::string>();
-}
-
-std::string_view trim(std::string_view s) {
-  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
-                        s.front() == '\n' || s.front() == '\r')) {
-    s.remove_prefix(1);
-  }
-  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
-                        s.back() == '\n' || s.back() == '\r')) {
-    s.remove_suffix(1);
-  }
-  return s;
-}
+using detail::str_or_empty;
+using detail::trim;
 
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
@@ -184,7 +163,7 @@ Result<std::vector<MdManga>, ProviderError> parse_search(std::string_view raw) {
 
     MdManga m;
     m.id = std::string(slug);
-    m.title = wc::html_unescape(trim(after_gt.substr(0, lt)));
+    m.title = detail::html_unescape(trim(after_gt.substr(0, lt)));
     // year/status/description/cover_filename stay empty, al/mal stay nullopt
     // (the search page carries none of them).
     out.push_back(std::move(m));
@@ -222,12 +201,7 @@ Result<std::vector<MdChapter>, ProviderError> parse_series(std::string_view raw)
   // The site lists in volume order (with the extras trailing); reading order
   // is ours. NO dedupe by chapter string: Dynasty reuses one number across
   // release variants and they are distinct chapters.
-  std::sort(out.begin(), out.end(), [](const MdChapter& a, const MdChapter& b) {
-    if (detail::chapter_less(a.chapter, b.chapter)) return true;
-    if (detail::chapter_less(b.chapter, a.chapter)) return false;
-    if (a.publish_at != b.publish_at) return a.publish_at < b.publish_at;
-    return a.id < b.id;
-  });
+  std::sort(out.begin(), out.end(), detail::chapter_before);
   return out;
 }
 

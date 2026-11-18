@@ -47,6 +47,7 @@
 #include "../result.hpp"
 #include "model.hpp"
 #include "source.hpp"
+#include "util.hpp"
 
 namespace shigoku::manga {
 
@@ -64,11 +65,7 @@ namespace wc {
 // base32 — digits + uppercase letters excluding I, L, O, U.
 [[nodiscard]] bool ulid_shaped(std::string_view s);
 
-// Minimal HTML entity unescape for scraped text (titles/labels): the five
-// named entities (&amp; &lt; &gt; &quot; &#39;/&apos;) plus decimal and hex
-// numeric references, emitted as UTF-8. Unknown entities pass through
-// verbatim (never drop text over markup trivia).
-[[nodiscard]] std::string html_unescape(std::string_view s);
+using detail::html_unescape;
 
 // CF-challenge / parked-domain sniff (known challenge/parked-domain strings
 // plus the standard Cloudflare markers), case-insensitive. True = "this
@@ -88,7 +85,7 @@ namespace wc {
 //
 // The fixed params carry the site's own '+'-encoded spellings verbatim (what
 // went on the wire in the probes); only the query text is url-encoded
-// (%XX, the mangadex url_encode).
+// (%XX, detail::url_encode).
 [[nodiscard]] std::string search_url(std::string_view host, std::string_view query,
                                      std::uint32_t limit);
 [[nodiscard]] std::string chapter_list_url(std::string_view host,
@@ -136,7 +133,7 @@ namespace wc {
 // fragment, in document order, one PageUnit each — url verbatim (the host
 // varies per series; the ORCHESTRATOR guards it), referer = kWcHost,
 // name_hint = the URL's last path segment (query stripped), which must pass
-// the mangadex filename_safe vet or the WHOLE parse fails (Decode).
+// the filename_safe vet or the WHOLE parse fails (Decode).
 // Relative srcs (static badges/placeholders) are skipped. Zero units →
 // Decode — a chapter with no pages is a failed scrape, not an answer.
 [[nodiscard]] Result<PageSet, ProviderError> parse_images(std::string_view raw);
