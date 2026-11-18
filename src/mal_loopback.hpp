@@ -14,10 +14,11 @@
 // callback PATH (/mal/callback, not /callback) is what tells the two flows
 // apart if both are ever bound at different times against the same log.
 //
-// Threading / cancel / read-deadline shape is copied from loopback.hpp
+// Threading / cancel / read-deadline shape is the same as loopback.hpp's
 // (start() binds fast on the caller's thread; serve() blocks and belongs on
-// a worker thread; cancel() self-dials to unblock a parked accept()) — see
-// that header for the full rationale, not repeated here.
+// a worker thread; cancel() self-dials to unblock a parked accept()), and
+// the socket plumbing is shared through oauth_listener.hpp — see loopback.hpp
+// for the full rationale, not repeated here.
 
 #pragma once
 
@@ -28,27 +29,14 @@
 #include <string>
 
 #include "mal_login.hpp"
+#include "oauth_listener.hpp"
 #include "result.hpp"
 
 namespace shigoku::mal_loopback {
 
-inline constexpr int kReadDeadlineSecs = 2;
-
-class Canceler {
- public:
-  Canceler(std::uint16_t port, std::shared_ptr<std::atomic<bool>> flag)
-      : port_(port), flag_(std::move(flag)) {}
-
-  void cancel();
-
- private:
-  std::uint16_t port_;
-  std::shared_ptr<std::atomic<bool>> flag_;
-};
-
-struct StartError {
-  std::string detail;
-};
+using oauth_listener::kReadDeadlineSecs;
+using Canceler = oauth_listener::Canceler;
+using StartError = oauth_listener::StartError;
 
 class Loopback {
  public:
@@ -99,14 +87,7 @@ namespace detail {
 [[nodiscard]] std::string success_page();
 [[nodiscard]] std::string fail_page();
 
-// Parse an HTTP/1.1 request head off a fixed byte buffer, returning the
-// request-line target (e.g. "/mal/callback?code=...&state=..."), or empty
-// on a malformed/absent request line. Byte-identical helper to
-// loopback::detail::request_target, duplicated rather than shared: the two
-// listeners are deliberately independent translation units (see the header
-// comment), and this one function is too small to justify a shared leaf
-// module over that independence.
-[[nodiscard]] std::string request_target(const std::uint8_t* data, std::size_t len);
+using oauth_listener::request_target;
 
 }  // namespace detail
 

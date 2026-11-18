@@ -27,39 +27,14 @@
 #include <string>
 
 #include "login.hpp"
+#include "oauth_listener.hpp"
 #include "result.hpp"
 
 namespace shigoku::loopback {
 
-// Per-connection read deadline (ROD-448, tightened from the frozen 06 §4.4
-// doc's 5s): bounds one stalled LOCAL socket so it cannot wedge the
-// single-threaded accept/serve loop forever. There is deliberately no
-// overall timeout on the whole OAuth wait (the browser may be slow) —only
-// the per-connection deadline below.
-inline constexpr int kReadDeadlineSecs = 2;
-
-// Wakes a blocked serve() from the UI thread. A separate handle (not the
-// Loopback itself) so the UI thread can hold this while the worker thread
-// owns the Loopback across the blocking serve() call.
-class Canceler {
- public:
-  Canceler(std::uint16_t port, std::shared_ptr<std::atomic<bool>> flag)
-      : port_(port), flag_(std::move(flag)) {}
-
-  // Set the cancel flag, then dial 127.0.0.1:port once to unblock a parked
-  // accept(). Best-effort: a refused dial means serve() already left.
-  void cancel();
-
- private:
-  std::uint16_t port_;
-  std::shared_ptr<std::atomic<bool>> flag_;
-};
-
-// Reason start() could not bind. Mirrors login.rs's LoopbackUnavailable path
-// (06 §4.3): the caller falls back to the paste flow / a toast.
-struct StartError {
-  std::string detail;
-};
+using oauth_listener::kReadDeadlineSecs;
+using Canceler = oauth_listener::Canceler;
+using StartError = oauth_listener::StartError;
 
 class Loopback {
  public:
@@ -109,10 +84,7 @@ namespace detail {
 [[nodiscard]] std::string success_page();
 [[nodiscard]] std::string fail_page();
 
-// Parse an HTTP/1.1 request head off a fixed byte buffer, returning the
-// request-line target (e.g. "/callback?access_token=..."), or empty on a
-// malformed/absent request line.
-[[nodiscard]] std::string request_target(const std::uint8_t* data, std::size_t len);
+using oauth_listener::request_target;
 
 }  // namespace detail
 

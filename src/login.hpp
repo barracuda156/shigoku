@@ -13,6 +13,7 @@
 #include "anilist.hpp"
 #include "auth.hpp"
 #include "http.hpp"
+#include "oauth_listener.hpp"
 
 namespace shigoku::login {
 
@@ -87,11 +88,7 @@ using Verifier = std::function<Result<std::optional<anilist::Viewer>, ProviderEr
 // --- Internals exposed for the golden tests (login.rs tests mod) ----------
 namespace detail {
 
-// Value of `key=` in a redirect/query/fragment, up to the next delimiter.
-// The match is anchored to a param boundary (start or after &/?/#) so a key
-// that is a suffix of another (xstate= vs state=) can never be read as it: a
-// query parser in a security callback must not be a substring search.
-[[nodiscard]] std::optional<std::string> param(std::string_view raw, std::string_view key);
+using oauth_listener::param;
 
 }  // namespace detail
 

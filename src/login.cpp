@@ -12,31 +12,6 @@
 
 namespace shigoku::login {
 
-namespace detail {
-
-std::optional<std::string> param(std::string_view raw, std::string_view key) {
-  const std::string needle = std::string(key) + "=";
-  std::size_t from = 0;
-  std::size_t idx;
-  for (;;) {
-    const std::size_t hit_rel = raw.substr(from).find(needle);
-    if (hit_rel == std::string_view::npos) return std::nullopt;
-    const std::size_t hit = from + hit_rel;
-    if (hit == 0 || raw[hit - 1] == '&' || raw[hit - 1] == '?' || raw[hit - 1] == '#') {
-      idx = hit;
-      break;
-    }
-    from = hit + 1;
-  }
-  const std::string_view rest = raw.substr(idx + needle.size());
-  const std::size_t end = rest.find_first_of("&# \r\n");
-  const std::string_view value = end == std::string_view::npos ? rest : rest.substr(0, end);
-  if (value.empty()) return std::nullopt;
-  return std::string(value);
-}
-
-}  // namespace detail
-
 namespace {
 
 std::optional<std::pair<std::string, std::optional<std::int64_t>>> extract_token(

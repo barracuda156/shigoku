@@ -360,6 +360,15 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_oauth_listener: the socket and HTTP plumbing the two OAuth callback
+# listeners share (bind, one request head, one HTML page, the query-string
+# parser). A leaf on POSIX sockets; no curl, no sqlite.
+# ---------------------------------------------------------------------------
+add_library(shigoku_oauth_listener STATIC src/oauth_listener.cpp)
+target_include_directories(shigoku_oauth_listener PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(shigoku_oauth_listener PUBLIC shigoku_flags shigoku_thirdparty)
+
+# ---------------------------------------------------------------------------
 # shigoku_login: the OAuth login core — token
 # extract/floor-check/verify/build/save. I/O-free relative to the UI:
 # the Verifier seam (anilist::viewer, injected) lets tests fake the network.
@@ -371,7 +380,7 @@ endif()
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_login STATIC src/login.cpp)
   target_include_directories(shigoku_login PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_link_libraries(shigoku_login PUBLIC shigoku_anilist shigoku_auth shigoku_domain shigoku_flags shigoku_thirdparty)
+  target_link_libraries(shigoku_login PUBLIC shigoku_anilist shigoku_auth shigoku_oauth_listener shigoku_domain shigoku_flags shigoku_thirdparty)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -443,7 +452,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_loopback STATIC src/loopback.cpp)
   target_include_directories(shigoku_loopback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_loopback
-    PUBLIC shigoku_login shigoku_domain shigoku_flags shigoku_thirdparty
+    PUBLIC shigoku_login shigoku_oauth_listener shigoku_domain shigoku_flags shigoku_thirdparty
     PRIVATE shigoku_nonce Threads::Threads)
 endif()
 
@@ -451,16 +460,15 @@ endif()
 # shigoku_mal_loopback: the MAL OAuth callback listener.
 # Deliberately its own translation unit, not a second route grafted onto
 # shigoku_loopback — see mal_loopback.hpp's header comment for why the two
-# grant types don't share a handler. Links shigoku_login only for its
-# provider-agnostic query-param parser (login::detail::param); it does NOT
-# use anything AniList-specific from that module.
+# grant types don't share a handler. The plumbing under the handler is
+# shigoku_oauth_listener's; nothing AniList-side is linked.
 # ---------------------------------------------------------------------------
 if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_library(shigoku_mal_loopback STATIC src/mal_loopback.cpp)
   target_include_directories(shigoku_mal_loopback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_mal_loopback
-    PUBLIC shigoku_mal_login shigoku_domain shigoku_flags shigoku_thirdparty
-    PRIVATE shigoku_login shigoku_nonce Threads::Threads)
+    PUBLIC shigoku_mal_login shigoku_oauth_listener shigoku_domain shigoku_flags shigoku_thirdparty
+    PRIVATE shigoku_nonce Threads::Threads)
 endif()
 
 # ---------------------------------------------------------------------------
