@@ -1,10 +1,8 @@
 // mstore.cpp — manga.db. Hand-rolled sqlite3 C API, no ORM, no async.
 //
-// The prepared-statement wrapper below is deliberately a local copy of the
-// anime store's rather than a shared extraction: the two stores are separate
-// libraries with separate schemas, and hoisting a helper out of store.cpp
-// would edit the anime app's link graph for nobody's benefit. What IS shared
-// is the discipline — a failed bind is sticky and refuses to step, so a typo'd
+// The statement wrapper and the open/migrate scaffolding come from the header
+// shared with the anime store (sqlite_util.hpp). The discipline they carry is
+// the same — a failed bind is sticky and refuses to step, so a typo'd
 // parameter fails loud instead of writing NULL.
 
 #include "mstore.hpp"
@@ -17,6 +15,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../sqlite_util.hpp"
+
 namespace shigoku::manga {
 
 namespace {
@@ -25,11 +25,6 @@ namespace {
 // contention here (there is no background writer), so this caps a stall
 // rather than covering a backlog.
 constexpr int kBusyTimeoutMs = 250;
-
-// Bounded hand-rolled retry for the WAL flip and BEGIN IMMEDIATE — the two
-// lock upgrades busy_timeout does not cover.
-constexpr int kLockRetryLimit = 100;
-constexpr int kLockRetryBackoffMs = 5;
 
 // v1: the four tables. `manga` carries the full MdManga column set so a
 // library row re-renders (title, cover, description, tracker ids) with no
@@ -86,146 +81,27 @@ constexpr const char* kMigrationV2 = R"SQL(
 ALTER TABLE manga ADD COLUMN al_synced_chapter INTEGER NOT NULL DEFAULT 0;
 )SQL";
 
-bool is_contended(int rc) { return rc == SQLITE_BUSY || rc == SQLITE_LOCKED; }
-
-std::string driver_msg(sqlite3* db) {
-  const char* m = sqlite3_errmsg(db);
-  return m != nullptr ? std::string(m) : std::string("(no message)");
-}
-
-void backoff() {
-  const struct timespec ts{0, static_cast<long>(kLockRetryBackoffMs) * 1'000'000L};
-  nanosleep(&ts, nullptr);
-}
-
-// Minimal RAII prepared statement: bind by 1-based index, step, read columns.
-class Stmt {
- public:
-  Stmt(sqlite3* db, const char* sql) : db_(db) {
-    rc_ = sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr);
-  }
-  ~Stmt() {
-    if (stmt_ != nullptr) sqlite3_finalize(stmt_);
-  }
-  Stmt(const Stmt&) = delete;
-  Stmt& operator=(const Stmt&) = delete;
-
-  [[nodiscard]] bool prepared() const { return rc_ == SQLITE_OK && stmt_ != nullptr; }
-
-  void bind_int64(int i, std::int64_t v) { note(sqlite3_bind_int64(stmt_, i, v)); }
-  void bind_text(int i, std::string_view v) {
-    // SQLITE_TRANSIENT: sqlite copies, so v need not outlive the step.
-    note(sqlite3_bind_text(stmt_, i, v.data(), static_cast<int>(v.size()),
-                           SQLITE_TRANSIENT));
-  }
-  void bind_null(int i) { note(sqlite3_bind_null(stmt_, i)); }
-  void bind_bool(int i, bool v) { bind_int64(i, v ? 1 : 0); }
-  void bind_opt_int64(int i, std::optional<std::int64_t> v) {
-    if (v.has_value()) bind_int64(i, *v); else bind_null(i);
-  }
-  void bind_opt_int(int i, std::optional<int> v) {
-    if (v.has_value()) bind_int64(i, *v); else bind_null(i);
-  }
-
-  // A statement with any failed bind never steps: it would execute with a
-  // silent NULL in that slot.
-  [[nodiscard]] int step() {
-    if (bind_rc_ != SQLITE_OK) return bind_rc_;
-    return sqlite3_step(stmt_);
-  }
-
-  [[nodiscard]] std::int64_t col_int64(int i) const { return sqlite3_column_int64(stmt_, i); }
-  [[nodiscard]] bool col_is_null(int i) const {
-    return sqlite3_column_type(stmt_, i) == SQLITE_NULL;
-  }
-  [[nodiscard]] std::string col_text(int i) const {
-    const auto* p = sqlite3_column_text(stmt_, i);
-    if (p == nullptr) return {};
-    const int n = sqlite3_column_bytes(stmt_, i);
-    return std::string(reinterpret_cast<const char*>(p), static_cast<std::size_t>(n));
-  }
-  [[nodiscard]] std::optional<std::int64_t> col_opt_int64(int i) const {
-    return col_is_null(i) ? std::nullopt : std::optional<std::int64_t>(col_int64(i));
-  }
-  [[nodiscard]] std::optional<int> col_opt_int(int i) const {
-    return col_is_null(i) ? std::nullopt
-                          : std::optional<int>(static_cast<int>(col_int64(i)));
-  }
-
- private:
-  void note(int rc) {
-    if (bind_rc_ == SQLITE_OK && rc != SQLITE_OK) bind_rc_ = rc;
-  }
-
-  sqlite3* db_;
-  sqlite3_stmt* stmt_ = nullptr;
-  int rc_ = SQLITE_ERROR;
-  int bind_rc_ = SQLITE_OK;
-};
+using sqlite_util::Stmt;
+using sqlite_util::driver_msg;
 
 Result<Unit, MgStoreError> exec(sqlite3* db, const char* sql) {
-  char* msg = nullptr;
-  const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &msg);
-  if (rc != SQLITE_OK) {
-    std::string why = msg != nullptr ? std::string(msg) : driver_msg(db);
-    sqlite3_free(msg);
-    return err(MgStoreError::sqlite(std::move(why)));
-  }
-  return Unit{};
+  return sqlite_util::exec<MgStoreError>(db, sql);
 }
 
-// PRAGMA journal_mode = WAL, retrying contention by hand (busy_timeout does
-// not cover this lock upgrade). In-memory DBs report "memory".
 Result<Unit, MgStoreError> enable_wal(sqlite3* db) {
-  for (int attempt = 0;; ++attempt) {
-    Stmt s(db, "PRAGMA journal_mode = WAL");
-    if (!s.prepared()) return err(MgStoreError::sqlite(driver_msg(db)));
-    const int rc = s.step();
-    if (rc == SQLITE_ROW || rc == SQLITE_DONE) return Unit{};
-    if (attempt < kLockRetryLimit && is_contended(rc)) {
-      backoff();
-      continue;
-    }
-    return err(MgStoreError::sqlite(driver_msg(db)));
-  }
+  return sqlite_util::enable_wal<MgStoreError>(db);
 }
 
 Result<std::uint32_t, MgStoreError> user_version(sqlite3* db) {
-  Stmt s(db, "PRAGMA user_version");
-  if (!s.prepared()) return err(MgStoreError::sqlite(driver_msg(db)));
-  if (s.step() != SQLITE_ROW) return err(MgStoreError::sqlite(driver_msg(db)));
-  const std::int64_t v = s.col_int64(0);
-  if (v < 0 || v > static_cast<std::int64_t>(UINT32_MAX)) {
-    return err(MgStoreError::schema_invalid(static_cast<std::uint32_t>(v & 0xFFFFFFFF)));
-  }
-  const auto uv = static_cast<std::uint32_t>(v);
-  if (uv > kMangaSchemaVersion) {
-    return err(MgStoreError::schema_too_new(uv, kMangaSchemaVersion));
-  }
-  return uv;
+  return sqlite_util::user_version<MgStoreError>(db, kMangaSchemaVersion);
 }
 
-// user_version alone proves nothing: a stamped version over missing DDL (a
-// foreign file, a truncated copy) must fail here, not as a raw "no such
-// table" at the first write.
 Result<Unit, MgStoreError> verify_schema_present(sqlite3* db) {
-  Stmt s(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='manga'");
-  if (!s.prepared()) return err(MgStoreError::sqlite(driver_msg(db)));
-  if (s.step() != SQLITE_ROW) return err(MgStoreError::sqlite(driver_msg(db)));
-  if (s.col_int64(0) == 0) return err(MgStoreError::schema_missing(kMangaSchemaVersion));
-  return Unit{};
+  return sqlite_util::verify_schema_present<MgStoreError>(db, "manga", kMangaSchemaVersion);
 }
 
 Result<Unit, MgStoreError> begin_immediate(sqlite3* db) {
-  for (int attempt = 0;; ++attempt) {
-    const int rc = sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr);
-    if (rc == SQLITE_OK) return Unit{};
-    if (attempt < kLockRetryLimit && is_contended(rc)) {
-      backoff();
-      continue;
-    }
-    return err(MgStoreError::sqlite(driver_msg(db)));
-  }
+  return sqlite_util::begin_immediate<MgStoreError>(db);
 }
 
 // The ladder + the version bump under one BEGIN IMMEDIATE: DDL and stamp land
@@ -281,13 +157,8 @@ Result<Unit, MgStoreError> migrate(sqlite3* db) {
   return exec(db, "COMMIT");
 }
 
-// SQLite silently downgrades to read-only when the file denies READWRITE; that
-// must fail loud at open, not at the first write.
 Result<Unit, MgStoreError> probe_writable(sqlite3* db, std::string_view path) {
-  if (sqlite3_db_readonly(db, "main") == 1) {
-    return err(MgStoreError::read_only(std::string(path)));
-  }
-  return Unit{};
+  return sqlite_util::probe_writable<MgStoreError>(db, path);
 }
 
 Result<Unit, MgStoreError> finish_open(sqlite3* db, std::string_view path) {
