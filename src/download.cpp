@@ -385,25 +385,7 @@ bool help_lists_extension_picky(std::string_view help) {
 std::optional<std::string> choose_from_master(std::string_view playlist,
                                               std::string_view base,
                                               Quality quality) {
-  const auto variants = hls::parse_master_playlist(playlist);
-  if (variants.empty()) return std::nullopt;  // media playlist.
-  // Audio in its own renditions: one variant alone would save silent, so
-  // ffmpeg gets the master and picks the tracks itself.
-  if (hls::has_separate_audio(playlist)) return std::nullopt;
-
-  std::vector<StreamLink> links;
-  for (const auto& v : variants) {
-    const auto joined = hls::join_url(base, v.url);
-    if (!joined.has_value()) continue;
-    if (!arg_clean(*joined)) continue;
-    StreamLink link;
-    link.url = *joined;
-    link.resolution = v.resolution;
-    links.push_back(std::move(link));
-  }
-  const auto* pick = hls::select_variant(links, quality);
-  if (pick == nullptr) return std::nullopt;
-  return pick->url;
+  return hls::choose_variant(playlist, base, quality);
 }
 
 }  // namespace detail

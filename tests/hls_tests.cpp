@@ -110,6 +110,44 @@ TEST_CASE("select_variant_cap_policy_picks_the_right_rung") {
   CHECK(select_variant(allnull, Quality::P720) != nullptr);
 }
 
+TEST_CASE("choose_variant: capped pick, media playlist, separate audio, unsafe url") {
+  const std::string master =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=842x480\n"
+      "480/index.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=1280x720\n"
+      "720/index.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1920x1080\n"
+      "1080/index.m3u8\n";
+  const std::string base = "https://cdn.test/hls/master.m3u8";
+  CHECK(choose_variant(master, base, Quality::Best) ==
+        std::optional<std::string>("https://cdn.test/hls/1080/index.m3u8"));
+  CHECK(choose_variant(master, base, Quality::Worst) ==
+        std::optional<std::string>("https://cdn.test/hls/480/index.m3u8"));
+  CHECK(choose_variant(master, base, Quality::P720) ==
+        std::optional<std::string>("https://cdn.test/hls/720/index.m3u8"));
+
+  const std::string media =
+      "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:9.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
+  CHECK_FALSE(choose_variant(media, base, Quality::Best).has_value());
+
+  const std::string split_audio =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",URI=\"audio/en.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=842x480,AUDIO=\"a\"\n"
+      "480/index.m3u8\n";
+  CHECK_FALSE(choose_variant(split_audio, base, Quality::Best).has_value());
+
+  const std::string spaced =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=842x480\n"
+      "480/index.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1920x1080\n"
+      "1080/with space.m3u8\n";
+  CHECK(choose_variant(spaced, base, Quality::Best) ==
+        std::optional<std::string>("https://cdn.test/hls/480/index.m3u8"));
+}
+
 TEST_CASE("join_url_absolute_rooted_and_relative") {
   const std::string base = "https://h.example/x/y/master.m3u8";
   CHECK(join_url(base, "https://cdn.other/v.ts").value() == "https://cdn.other/v.ts");

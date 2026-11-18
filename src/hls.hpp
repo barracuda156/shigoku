@@ -65,4 +65,11 @@ struct Variant {
 [[nodiscard]] const StreamLink* select_variant(const std::vector<StreamLink>& variants,
                                                Quality quality);
 
+// The variant URL a quality cap picks from a master playlist, joined against
+// `base`; nullopt when the caller should keep the master: a media playlist (no
+// variants), a master with separate audio renditions (a lone variant would
+// play silent), or no variant left after the join and the argv guard.
+[[nodiscard]] std::optional<std::string> choose_variant(std::string_view playlist,
+                                                        std::string_view base, Quality quality);
+
 }  // namespace shigoku::hls

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <limits>
 
+#include "provider.hpp"  // clean_arg.
+
 namespace shigoku::hls {
 
 std::optional<std::string> join_url(std::string_view base,
@@ -263,6 +265,27 @@ const StreamLink* select_variant(const std::vector<StreamLink>& variants, Qualit
     if (preferred(variants[i], *pick, quality)) pick = &variants[i];
   }
   return pick;
+}
+
+std::optional<std::string> choose_variant(std::string_view playlist, std::string_view base,
+                                          Quality quality) {
+  const auto variants = parse_master_playlist(playlist);
+  if (variants.empty()) return std::nullopt;
+  if (has_separate_audio(playlist)) return std::nullopt;
+
+  std::vector<StreamLink> links;
+  for (const auto& v : variants) {
+    const auto joined = join_url(base, v.url);
+    if (!joined.has_value()) continue;
+    if (!clean_arg(*joined)) continue;
+    StreamLink link;
+    link.url = *joined;
+    link.resolution = v.resolution;
+    links.push_back(std::move(link));
+  }
+  const auto* pick = select_variant(links, quality);
+  if (pick == nullptr) return std::nullopt;
+  return pick->url;
 }
 
 }  // namespace shigoku::hls

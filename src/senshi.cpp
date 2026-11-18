@@ -628,24 +628,7 @@ std::optional<std::string> Senshi::cap_variant(const std::string& master_url, Qu
     opened = std::move(*plain);
     body_view = std::string_view(reinterpret_cast<const char*>(opened.data()), opened.size());
   }
-  const auto variants = hls::parse_master_playlist(body_view);
-  if (variants.empty()) return std::nullopt;  // media playlist: let mpv take the master.
-  // Audio in its own renditions: a variant alone would play silent.
-  if (hls::has_separate_audio(body_view)) return std::nullopt;
-
-  std::vector<StreamLink> links;
-  for (const auto& v : variants) {
-    const auto joined = hls::join_url(master_url, v.url);
-    if (!joined.has_value()) continue;
-    if (!clean_arg(*joined)) continue;
-    StreamLink link;
-    link.url = *joined;
-    link.resolution = v.resolution;
-    links.push_back(std::move(link));
-  }
-  const auto* pick = hls::select_variant(links, quality);
-  if (pick == nullptr) return std::nullopt;
-  return pick->url;
+  return hls::choose_variant(body_view, master_url, quality);
 }
 
 Result<StreamLink, ProviderError> Senshi::resolve(std::string_view provider_id,
