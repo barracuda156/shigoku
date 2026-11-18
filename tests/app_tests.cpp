@@ -1140,6 +1140,78 @@ TEST_CASE("Space is the zoom toggle on every selection surface (§9 consistency)
   CHECK(h->app.detail_origin == View::Discover);
 }
 
+TEST_CASE("the zoom opens the grid of the show it was opened over, not the Browse row") {
+  const auto discover_card = [](App& app, std::int64_t aid) {
+    std::vector<CatalogRow> cards;
+    cards.push_back(row_for(aid, "Card"));
+    app.discover.on_feed(DiscoverAxis::Trending, 1, cards, /*has_next=*/false, nullptr, 500,
+                         app.discover.filter_gen());
+  };
+
+  SUBCASE("Discover Enter") {
+    auto h = HistoryHarness::make();
+    h->app.catalog.push_back(row_for(4, "Elsewhere"));
+    h->app.view = View::Discover;
+    discover_card(h->app, 200);
+    tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+    REQUIRE(h->app.view == View::Detail);
+    CHECK(h->app.episode.for_id == 200);
+  }
+  SUBCASE("Discover Space, with nothing in Browse at all") {
+    auto h = HistoryHarness::make();
+    h->app.view = View::Discover;
+    discover_card(h->app, 200);
+    tick(h->app, Event{press(U' ')});
+    REQUIRE(h->app.view == View::Detail);
+    CHECK(h->app.episode.for_id == 200);
+  }
+  SUBCASE("History Space") {
+    auto h = HistoryHarness::make();
+    h->add(2, "Zoomed", 12);
+    h->reload();
+    h->app.catalog.push_back(row_for(4, "Elsewhere"));
+    tick(h->app, Event{press(U' ')});
+    REQUIRE(h->app.view == View::Detail);
+    CHECK(h->app.episode.for_id == 2);
+  }
+  SUBCASE("narrow History Enter") {
+    auto h = HistoryHarness::make();
+    h->add(2, "Zoomed", 12);
+    h->reload();
+    h->app.catalog.push_back(row_for(4, "Elsewhere"));
+    h->app.win = WinSize{50, 24, 0, 0};
+    tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+    REQUIRE(h->app.view == View::Detail);
+    CHECK(h->app.episode.for_id == 2);
+  }
+}
+
+TEST_CASE("a grid key inside a History zoom acts on the zoomed show") {
+  auto h = HistoryHarness::make();
+  h->add(2, "Zoomed", 12);
+  h->reload();
+  h->app.catalog.push_back(row_for(4, "Elsewhere"));
+  tick(h->app, Event{press(U' ')});
+  REQUIRE(h->app.view == View::Detail);
+
+  // A landed grid, then `d`. No download dir is wired, so the answer is a
+  // toast — one the key only reaches once the grid is matched to the show
+  // on screen.
+  h->app.episode.episodes = {"1"};
+  h->app.episode.fetched = true;
+  h->app.episode.provider_id = "1";
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<TierProbeProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->app.queue = &queue;
+  const std::size_t toasts_before = h->app.toasts.size();
+  tick(h->app, Event{press(U'd')});
+  CHECK(h->app.toasts.size() == toasts_before + 1);
+  CHECK_FALSE(h->app.download.active);
+}
+
 TEST_CASE("the search line takes a codepoint outside the BMP whole") {
   auto h = HistoryHarness::make();
   h->app.view = View::Browse;

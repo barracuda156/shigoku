@@ -2380,24 +2380,11 @@ void on_key(App& app, const KeyEvent& k) {
   // --- P7 helpers, local to on_key (need app + the worker spawns above) ----
 
   // The currently selected show's Enrichment, or nullptr (empty list / OOB).
-  // History (P16) shares this seam with Browse: both list views feed the same
-  // detail-open/play machinery below (05 §15 "one detail renderer" pattern).
+  // The same answer the detail renderer draws: the open/play/download
+  // machinery below must act on the show the user is looking at, and inside
+  // the Detail zoom that is the origin view's selection.
   auto selected_show = [&]() -> const Enrichment* {
-    if (app.view == View::History) {
-      const Show* s = app.history.selected();
-      return s == nullptr ? nullptr : &s->enrichment;
-    }
-    if (app.view == View::Schedule) {
-      const Show* s = app.schedule.selected();
-      return s == nullptr ? nullptr : &s->enrichment;
-    }
-    if (app.view == View::Discover) {
-      return app.discover.selected_entry();
-    }
-    if (app.list_cursor < 0 ||
-        static_cast<std::size_t>(app.list_cursor) >= app.catalog.size())
-      return nullptr;
-    return &app.catalog[app.list_cursor].meta;
+    return detail::selected_enrichment(app);
   };
 
   // The Discover grid geometry for the current window (the same helper draw
@@ -3176,9 +3163,8 @@ void on_key(App& app, const KeyEvent& k) {
           open_detail();
           return;
         }
-        // Discover / Schedule: the same landing as their Enter arms (P17 zoom
-        // over the card; Schedule's open_detail-BEFORE-flip ordering — its
-        // selected_show keys off app.view, see the Enter arm).
+        // Discover / Schedule: the same landing as their Enter arms (the zoom
+        // over the card / the row).
         if (app.view == View::Discover) {
           if (app.discover.selected_entry() != nullptr) {
             app.detail_origin = View::Discover;
@@ -3332,11 +3318,6 @@ void on_key(App& app, const KeyEvent& k) {
     if (app.view == View::Schedule) {
       // Schedule is list-only (no two-pane mode, P37) — Enter always drills
       // straight into the full-screen zoom, matching Discover's Enter above.
-      // open_detail() fires BEFORE the view flips to Detail: its local
-      // selected_show() lambda keys off app.view directly (no detail_origin
-      // indirection), so the fetch must land while app.view is still
-      // Schedule — flipping first would silently fall through to the
-      // Browse-catalog branch instead.
       if (app.schedule.selected() != nullptr) {
         open_detail();
         app.detail_origin = View::Schedule;
