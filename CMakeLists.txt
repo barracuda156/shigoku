@@ -1639,6 +1639,17 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   add_test(NAME mal_mirror_tests COMMAND mal_mirror_tests)
 endif()
 
+# sync_cycle_tests: the whole tracker run over scripted seams — the order its
+# halves go in, and the renewed MAL pair's path through it.
+if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
+  add_executable(sync_cycle_tests tests/sync_cycle_tests.cpp)
+  target_link_libraries(sync_cycle_tests PRIVATE
+    shigoku_sync shigoku_mal_mirror shigoku_mal_login shigoku_mal shigoku_anilist
+    shigoku_auth shigoku_store shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
+    shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
+  add_test(NAME sync_cycle_tests COMMAND sync_cycle_tests)
+endif()
+
 # cli_tests: the pure CLI surface — parse dispatch, sync/connect/search/
 # pick renderers, classify_pick, paste_line, fetch/player error copy + the play_flow
 # exit table with a fake provider + scripted picker (no mpv spawn — the exit cases return

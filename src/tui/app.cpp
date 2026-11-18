@@ -38,6 +38,7 @@
 #include "../provider.hpp"
 #include "../store.hpp"
 #include "../sync.hpp"
+#include "../sync_cycle.hpp"
 #include "../updatecheck.hpp"
 #include "cover_probe.hpp"
 #include "covers.hpp"
@@ -1021,54 +1022,28 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
   spawn_detached([&queue, &http, db_path = std::move(db_path), auth_path = std::move(auth_path),
                   mal_client_id = std::move(mal_client_id), auth = std::move(auth), enabled,
                   pull_only, now]() mutable {
-    sync::SyncSummary summary = sync::SyncSummary::terminal(sync::SyncOutcome::Failed);
-    std::uint32_t mal_pushed = 0;
-    std::uint32_t airing_refreshed = 0;
-    mal_mirror::MirrorPullSummary mal_pull =
-        mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled);
-    bool mal_token_unsaved = false;
+    // The whole run (mirror pull, AniList, mirror push, airing stamps) on this
+    // worker's own store connection. A renewed MAL pair is saved to the auth
+    // file inside it; the UI thread's own Auth copy follows via the event
+    // (on_sync_flushed). A store that will not open posts the Failed /
+    // Disabled defaults.
+    sync::CycleResult ran;
     auto store = Store::open(db_path);
     if (store.has_value()) {
-      // The MAL mirror rides this same worker/store connection, no drain
-      // rights of its own (A1) — never a separate worker, never its own
-      // spawn. Order: the mirror PULLS first, so a change made on MAL's side
-      // is in the library before the AniList run pushes; then the AniList
-      // pull/push; then the mirror push carries anything AniList brought in
-      // back to MAL. Both mirror halves run regardless of pull_only: the
-      // pull is the launch refresh's whole point, and the push has always
-      // ridden every run.
-      const mal_mirror::HttpMalMirrorClient mal_client(http);
-      const bool mal_on = auth.mal.bearer().has_value();
-      // A MAL token lives about a month: the pull renews one past its date
-      // (or one MAL has retired) off the refresh_token, and the renewed pair
-      // goes to the auth file at once and carries the push below. The UI
-      // thread's own Auth copy follows via the event (on_sync_flushed).
-      const mal_mirror::Refresher refresh = mal_mirror::make_http_refresher(http, mal_client_id);
-      auto p = mal_mirror::pull_mirror(mal_client, auth.mal, *store, mal_on, now, refresh);
-      if (p.has_value()) {
-        mal_pull = *p;
-        if (mal_pull.rolled.has_value()) {
-          auth.mal = *mal_pull.rolled;
-          mal_token_unsaved = auth_path.empty() || !mal_mirror::save_rolled(auth_path, auth.mal);
-          if (mal_token_unsaved) debug_log("mal refresh: renewed the token but couldn't save it");
-        }
-      }
-      const sync::HttpAniListSync ani(http);
-      auto r = sync::run_sync(ani, auth, *store, now, enabled, pull_only, sync::thread_sleep);
-      if (r.has_value()) summary = *r;
-      auto m = mal_mirror::push_mirror(mal_client, auth.mal, *store, mal_on);
-      if (m.has_value()) mal_pushed = m->pushed;
-      // The Calendar's airing stamps ride the same run, accounts or not:
-      // public AniList data for every Watching / Planning row missing one.
-      const sync::AiringFetch fetch = [&http](const std::vector<std::int64_t>& ids,
-                                              const std::vector<std::int64_t>& mal_ids) {
-        return anilist::fetch_airing(http, ids, mal_ids);
-      };
-      auto refreshed = sync::refresh_airing(fetch, *store, now);
-      if (refreshed.has_value()) airing_refreshed = *refreshed;
+      sync::CycleOptions opt;
+      opt.enabled = enabled;
+      opt.pull_only = pull_only;
+      opt.now = now;
+      opt.auth_path = auth_path;
+      ran = sync::run_cycle(http, std::move(mal_client_id), *store, auth, opt);
+      if (ran.mal_token_unsaved) debug_log("mal refresh: renewed the token but couldn't save it");
     }
-    queue.try_post(
-        Event{to_sync_flushed(summary, mal_pushed, mal_pull, airing_refreshed, mal_token_unsaved)});
+    queue.try_post(Event{to_sync_flushed(
+        ran.anilist.value_or(sync::SyncSummary::terminal(sync::SyncOutcome::Failed)),
+        ran.mal_pushed,
+        ran.mal_pull.value_or(
+            mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled)),
+        ran.airing_refreshed, ran.mal_token_unsaved)});
   });
 }
 

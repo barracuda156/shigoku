@@ -53,6 +53,7 @@
 #include "senshi.hpp"
 #include "store.hpp"
 #include "sync.hpp"
+#include "sync_cycle.hpp"
 #include "updatecheck.hpp"
 #if SHIGOKU_WITH_TUI
 #include "tui/app.hpp"
@@ -292,63 +293,40 @@ int run_sync_cli() {
     flush_stdout();
   }
 
-  // The MAL mirror rides this same CLI invocation, with no drain rights of
-  // its own (A1) — same rationale and same order as the TUI worker wiring
-  // (app.cpp's spawn_sync): pull the account's list first, then the AniList
-  // run, then the mirror push. Each half runs regardless of the others'
-  // outcomes: two separate client relationships.
-  const mal_mirror::HttpMalMirrorClient mal_client(*client);
+  // enabled=true: the CLI ignores the master switch. A MAL token past its
+  // month is renewed inside the run (the same rollover the interface's worker
+  // gets), under the registration the pair was issued for.
+  sync::CycleOptions opt;
+  opt.enabled = true;
+  opt.pull_only = false;
+  opt.now = now;
+  opt.auth_path = auth_path;
+  const std::string client_id =
+      config.mal_client_id.empty() ? mal_catalog::kClientId : config.mal_client_id;
+  const sync::CycleResult ran = sync::run_cycle(*client, client_id, *store, auth, opt);
+
   cli::MalPullCounts mal_pull;
   if (mal_on) {
     mal_pull.ran = true;
-    // A token past its month is renewed off the refresh_token (the same
-    // rollover the interface's worker runs); the renewed pair goes to the
-    // auth file and carries the push below.
-    const std::string client_id =
-        config.mal_client_id.empty() ? mal_catalog::kClientId : config.mal_client_id;
-    const mal_mirror::Refresher refresh = mal_mirror::make_http_refresher(*client, client_id);
-    auto pulled =
-        mal_mirror::pull_mirror(mal_client, auth.mal, *store, /*enabled=*/true, now, refresh);
-    if (!pulled.has_value()) {
+    if (!ran.mal_pull.has_value()) {
       mal_pull.failed = true;
     } else {
-      if (pulled->rolled.has_value()) {
-        auth.mal = *pulled->rolled;
+      const mal_mirror::MirrorPullSummary& pulled = *ran.mal_pull;
+      if (pulled.rolled.has_value()) {
         mal_pull.renewed = true;
-        mal_pull.renew_unsaved = !mal_mirror::save_rolled(auth_path, auth.mal);
+        mal_pull.renew_unsaved = ran.mal_token_unsaved;
       }
       using M = mal_mirror::MirrorOutcome;
-      mal_pull.unauthorized = pulled->outcome == M::Unauthorized;
-      mal_pull.failed = pulled->pull_failed || pulled->outcome == M::RateLimited;
-      mal_pull.pulled = pulled->pulled.reconciled;
-      mal_pull.imported = pulled->pulled.imported;
+      mal_pull.unauthorized = pulled.outcome == M::Unauthorized;
+      mal_pull.failed = pulled.pull_failed || pulled.outcome == M::RateLimited;
+      mal_pull.pulled = pulled.pulled.reconciled;
+      mal_pull.imported = pulled.pulled.imported;
     }
   }
 
-  const sync::HttpAniListSync ani(*client);
-  // enabled=true: the CLI ignores the master switch. pull_only=false.
-  auto summary = sync::run_sync(ani, auth, *store, now, /*enabled=*/true, /*pull_only=*/false,
-                                sync::thread_sleep);
-
-  std::uint32_t mal_pushed = 0;
-  if (mal_on) {
-    auto mirrored = mal_mirror::push_mirror(mal_client, auth.mal, *store, /*enabled=*/true);
-    if (mirrored.has_value()) mal_pushed = mirrored->pushed;
-  }
-
-  // The Calendar's airing stamps: public data, every run, accounts or not.
-  std::uint32_t airing_refreshed = 0;
-  {
-    const sync::AiringFetch fetch = [&client](const std::vector<std::int64_t>& ids,
-                                              const std::vector<std::int64_t>& mal_ids) {
-      return anilist::fetch_airing(*client, ids, mal_ids);
-    };
-    auto refreshed = sync::refresh_airing(fetch, *store, now);
-    if (refreshed.has_value()) airing_refreshed = *refreshed;
-  }
-
-  if (summary.has_value()) {
-    std::printf("%s", cli::render_sync_summary(*summary, mal_pushed, mal_pull, airing_refreshed)
+  if (ran.anilist.has_value()) {
+    std::printf("%s", cli::render_sync_summary(*ran.anilist, ran.mal_pushed, mal_pull,
+                                               ran.airing_refreshed)
                           .c_str());
   } else {
     std::printf(
