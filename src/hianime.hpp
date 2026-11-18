@@ -39,6 +39,7 @@
 #include "http.hpp"
 #include "provider.hpp"
 #include "result.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::hianime {
 
@@ -132,13 +133,8 @@ struct Embed {
 // absolute + argv-clean + past the SSRF guard.
 [[nodiscard]] bool stream_url_ok(std::string_view url);
 
-// Single-pass HTML entity decode (named amp/lt/gt/quot/apos/nbsp + &#NN; /
-// &#xNN;). Unknown entities stay literal.
-[[nodiscard]] std::string decode_entities(std::string_view s);
-
-// Percent-encode a query value (RFC 3986 unreserved passes, everything else
-// %XX; no '+' for space — this is a URL query string, not a form body).
-[[nodiscard]] std::string url_encode(std::string_view s);
+using scrape::decode_entities;
+using scrape::url_encode;
 
 // `scheme://host[:port]/` off an absolute url (nullopt if not absolute) — the
 // Referer the master/segments want (the embed's own origin).

@@ -32,6 +32,7 @@
 
 #include "crypto.hpp"
 #include "provider.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::megaplay {
 
@@ -62,12 +63,7 @@ bool strict_default_bool(const json& obj, const char* key, bool& ok) {
   return obj.at(key).get<bool>();
 }
 
-std::string to_lower(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  for (const char c : s) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-  return out;
-}
+using scrape::to_lower;
 
 // starts_with over an already-lowercased needle (label match helpers).
 bool lower_starts_with(std::string_view s, std::string_view prefix) {
@@ -185,13 +181,7 @@ std::optional<std::string_view> parse_data_id(std::string_view html) {
   }
 }
 
-std::vector<std::string> labels(std::uint32_t n) {
-  const std::uint32_t count = std::clamp<std::uint32_t>(n, 1, kMaxEpisodeHint);
-  std::vector<std::string> out;
-  out.reserve(count);
-  for (std::uint32_t i = 1; i <= count; ++i) out.push_back(std::to_string(i));
-  return out;
-}
+std::vector<std::string> labels(std::uint32_t n) { return scrape::numbered_labels(n); }
 
 namespace {
 

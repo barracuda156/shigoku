@@ -31,6 +31,7 @@
 #include "http.hpp"
 #include "provider.hpp"
 #include "result.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::anilibria {
 
@@ -95,10 +96,7 @@ struct Release {
 // 480/720/1080. nullopt when the row carries no urls at all.
 [[nodiscard]] std::optional<std::string> pick_hls(const Episode& ep, Quality quality);
 
-// Percent-encode into an application/x-www-form-urlencoded value (unreserved
-// pass, ' ' -> '+', else %XX). Used for the search query= param; Cyrillic
-// queries are multi-byte UTF-8 and every byte encodes.
-[[nodiscard]] std::string form_urlencode(std::string_view s);
+using scrape::form_urlencode;
 
 }  // namespace detail
 

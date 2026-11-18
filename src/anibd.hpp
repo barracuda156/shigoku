@@ -29,6 +29,7 @@
 #include "http.hpp"
 #include "provider.hpp"
 #include "result.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::anibd {
 
@@ -112,10 +113,7 @@ struct SubTrack {
 // pick_subtitle). Returns an index into `tracks`; nullopt when empty.
 [[nodiscard]] std::optional<std::size_t> pick_subtitle(const std::vector<SubTrack>& tracks);
 
-// Percent-encode a byte string into an application/x-www-form-urlencoded value
-// (url::form_urlencoded::byte_serialize): unreserved bytes pass, ' ' -> '+',
-// everything else -> %XX. Used for the apilink.php `data` param.
-[[nodiscard]] std::string form_urlencode(std::string_view s);
+using scrape::form_urlencode;
 
 }  // namespace detail
 

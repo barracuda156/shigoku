@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "provider.hpp"  // clean_arg.
+#include "scrape.hpp"
 
 namespace shigoku::animehub {
 namespace detail {
@@ -31,64 +32,7 @@ std::optional<std::string> attr_value(std::string_view tag, std::string_view nam
   return std::nullopt;
 }
 
-std::optional<char32_t> entity_char(std::string_view entity) {
-  if (entity == "amp") return U'&';
-  if (entity == "lt") return U'<';
-  if (entity == "gt") return U'>';
-  if (entity == "quot") return U'"';
-  if (entity == "apos") return U'\'';
-  if (entity == "nbsp") return U' ';
-  if (entity.empty() || entity.front() != '#') return std::nullopt;
-  std::string_view digits = entity.substr(1);
-  if (digits.empty()) return std::nullopt;
-  int base = 10;
-  if (digits.front() == 'x' || digits.front() == 'X') {
-    base = 16;
-    digits = digits.substr(1);
-    if (digits.empty()) return std::nullopt;
-  }
-  char32_t code = 0;
-  for (const char c : digits) {
-    int d;
-    if (c >= '0' && c <= '9') {
-      d = c - '0';
-    } else if (base == 16 && c >= 'a' && c <= 'f') {
-      d = c - 'a' + 10;
-    } else if (base == 16 && c >= 'A' && c <= 'F') {
-      d = c - 'A' + 10;
-    } else {
-      return std::nullopt;
-    }
-    code = code * static_cast<char32_t>(base) + static_cast<char32_t>(d);
-    if (code > 0x10FFFF) return std::nullopt;
-  }
-  return code;
-}
-
-void push_utf8(std::string& out, char32_t c) {
-  if (c < 0x80) {
-    out.push_back(static_cast<char>(c));
-  } else if (c < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (c >> 6)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else if (c < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (c >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (c >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  }
-}
-
-std::string_view trim(std::string_view s) {
-  const auto b = s.find_first_not_of(" \t\r\n");
-  if (b == std::string_view::npos) return {};
-  const auto e = s.find_last_not_of(" \t\r\n");
-  return s.substr(b, e - b + 1);
-}
+using scrape::trim;
 
 bool ends_with(std::string_view s, std::string_view suffix) {
   return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
@@ -180,33 +124,6 @@ Card parse_card(std::string_view block) {
 }
 
 }  // namespace
-
-std::string decode_entities(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  std::string_view rest = s;
-  while (true) {
-    const auto at = rest.find('&');
-    if (at == std::string_view::npos) break;
-    out.append(rest.substr(0, at));
-    std::string_view tail = rest.substr(at);
-    const auto semi = tail.find(';');
-    if (semi != std::string_view::npos && semi <= 10) {
-      auto c = entity_char(tail.substr(1, semi - 1));
-      if (c) {
-        push_utf8(out, *c);
-      } else {
-        out.append(tail.substr(0, semi + 1));
-      }
-      rest = tail.substr(semi + 1);
-    } else {
-      out.push_back('&');
-      rest = tail.substr(1);
-    }
-  }
-  out.append(rest);
-  return out;
-}
 
 std::vector<Card> parse_search_cards(std::string_view html) {
   const auto sidebar = html.find("id=\"sidebar\"");
@@ -488,34 +405,6 @@ std::optional<std::string> parse_sources(std::string_view html) {
 
 bool stream_url_ok(std::string_view url) {
   return is_absolute_url(url) && clean_arg(url) && http::guard_fetch_url(url).has_value();
-}
-
-std::string url_encode(std::string_view s) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(s.size());
-  for (const unsigned char c : s) {
-    const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
-                            c == '~';
-    if (unreserved) {
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back('%');
-      out.push_back(kHex[c >> 4]);
-      out.push_back(kHex[c & 0x0F]);
-    }
-  }
-  return out;
-}
-
-std::optional<std::string> origin_of(std::string_view absolute_url) {
-  const auto scheme_end = absolute_url.find("://");
-  if (scheme_end == std::string_view::npos) return std::nullopt;
-  const auto path_start = absolute_url.find_first_of("/?#", scheme_end + 3);
-  const std::string_view origin = absolute_url.substr(0, path_start);
-  if (origin.size() == scheme_end + 3) return std::nullopt;
-  return std::string(origin);
 }
 
 }  // namespace detail

@@ -9,84 +9,15 @@
 
 #include "crypto.hpp"
 #include "provider.hpp"  // clean_arg, guard_show_id (shared provider guards).
+#include "scrape.hpp"
 
 namespace shigoku::hianime {
 namespace detail {
 
 namespace {
 
-// Value of `name="..."` anywhere in `block` (nullopt if absent/unterminated).
-// Whitespace-agnostic by construction — attributes on their own line (this
-// site's style) match the same as inline ones.
-std::optional<std::string> attr_value(std::string_view block, std::string_view name) {
-  const std::string needle = std::string(name) + "=\"";
-  const auto at = block.find(needle);
-  if (at == std::string_view::npos) return std::nullopt;
-  std::string_view rest = block.substr(at + needle.size());
-  const auto end = rest.find('"');
-  if (end == std::string_view::npos) return std::nullopt;
-  return std::string(rest.substr(0, end));
-}
-
-// Named/numeric entity -> char. nullopt if unrecognized (caller keeps literal).
-std::optional<char32_t> entity_char(std::string_view entity) {
-  if (entity == "amp") return U'&';
-  if (entity == "lt") return U'<';
-  if (entity == "gt") return U'>';
-  if (entity == "quot") return U'"';
-  if (entity == "apos") return U'\'';
-  if (entity == "nbsp") return U' ';
-  if (entity.empty() || entity.front() != '#') return std::nullopt;
-  std::string_view digits = entity.substr(1);
-  if (digits.empty()) return std::nullopt;
-  int base = 10;
-  if (digits.front() == 'x' || digits.front() == 'X') {
-    base = 16;
-    digits = digits.substr(1);
-    if (digits.empty()) return std::nullopt;
-  }
-  char32_t code = 0;
-  for (const char c : digits) {
-    int d;
-    if (c >= '0' && c <= '9') {
-      d = c - '0';
-    } else if (base == 16 && c >= 'a' && c <= 'f') {
-      d = c - 'a' + 10;
-    } else if (base == 16 && c >= 'A' && c <= 'F') {
-      d = c - 'A' + 10;
-    } else {
-      return std::nullopt;
-    }
-    code = code * static_cast<char32_t>(base) + static_cast<char32_t>(d);
-    if (code > 0x10FFFF) return std::nullopt;
-  }
-  return code;
-}
-
-void push_utf8(std::string& out, char32_t c) {
-  if (c < 0x80) {
-    out.push_back(static_cast<char>(c));
-  } else if (c < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (c >> 6)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else if (c < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (c >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (c >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-  }
-}
-
-std::string_view trim(std::string_view s) {
-  const auto b = s.find_first_not_of(" \t\r\n");
-  if (b == std::string_view::npos) return {};
-  const auto e = s.find_last_not_of(" \t\r\n");
-  return s.substr(b, e - b + 1);
-}
+using scrape::attr_value;
+using scrape::trim;
 
 // The `html` field of a `{"status":..., "html": "..."}` envelope. Err(Decode)
 // when the body isn't that JSON shape (e.g. an HTML error page).
@@ -104,33 +35,6 @@ Result<std::string, ProviderError> unwrap_html_envelope(std::string_view raw_jso
 }
 
 }  // namespace
-
-std::string decode_entities(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  std::string_view rest = s;
-  while (true) {
-    const auto at = rest.find('&');
-    if (at == std::string_view::npos) break;
-    out.append(rest.substr(0, at));
-    std::string_view tail = rest.substr(at);
-    const auto semi = tail.find(';');
-    if (semi != std::string_view::npos && semi <= 10) {
-      auto c = entity_char(tail.substr(1, semi - 1));
-      if (c) {
-        push_utf8(out, *c);
-      } else {
-        out.append(tail.substr(0, semi + 1));
-      }
-      rest = tail.substr(semi + 1);
-    } else {
-      out.push_back('&');
-      rest = tail.substr(1);
-    }
-  }
-  out.append(rest);
-  return out;
-}
 
 std::optional<std::string> trailing_id(std::string_view href) {
   const auto slash = href.find_last_of('/');
@@ -311,25 +215,6 @@ Result<Embed, ProviderError> parse_embed(std::string_view plaintext) {
 
 bool stream_url_ok(std::string_view url) {
   return is_absolute_url(url) && clean_arg(url) && http::guard_fetch_url(url).has_value();
-}
-
-std::string url_encode(std::string_view s) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(s.size());
-  for (const unsigned char c : s) {
-    const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
-                            c == '~';
-    if (unreserved) {
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back('%');
-      out.push_back(kHex[c >> 4]);
-      out.push_back(kHex[c & 0x0F]);
-    }
-  }
-  return out;
 }
 
 std::optional<std::string> origin_of(std::string_view absolute_url) {

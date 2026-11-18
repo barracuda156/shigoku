@@ -30,6 +30,7 @@
 #include "http.hpp"
 #include "provider.hpp"
 #include "result.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::anidbapp {
 
@@ -104,10 +105,7 @@ struct LanguageRow {
 // Last 4-digit run in a `TYPE · YEAR` line (nullopt if none).
 [[nodiscard]] std::optional<std::uint32_t> trailing_year(std::string_view meta);
 
-// Single-pass HTML entity decode (named amp/lt/gt/quot/apos/nbsp + &#NN; /
-// &#xNN;). Unknown entities stay literal; must NOT over-decode a double-escaped
-// literal (`Journey&amp;#039;s` -> `Journey&#039;s`, one pass).
-[[nodiscard]] std::string decode_entities(std::string_view s);
+using scrape::decode_entities;
 
 // -- detail page + embed --
 // AniList and MAL ids from the detail page's external-link block (the integer
@@ -130,9 +128,7 @@ parse_external_ids(std::string_view html);
 // + past the SSRF guard (a quality cap would fetch it ourselves).
 [[nodiscard]] bool stream_url_ok(std::string_view url);
 
-// Percent-encode into an application/x-www-form-urlencoded value (unreserved
-// pass, ' ' -> '+', else %XX). Used for the /search/suggestions q= param.
-[[nodiscard]] std::string form_urlencode(std::string_view s);
+using scrape::form_urlencode;
 
 }  // namespace detail
 

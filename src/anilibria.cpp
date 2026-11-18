@@ -182,29 +182,6 @@ std::optional<std::string> pick_hls(const Episode& ep, Quality quality) {
   return std::nullopt;
 }
 
-std::string form_urlencode(std::string_view s) {
-  // application/x-www-form-urlencoded byte_serialize: unreserved (A-Za-z0-9 and
-  // *-._) pass, ' ' -> '+', everything else -> %XX (uppercase hex).
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(s.size());
-  for (const unsigned char c : s) {
-    const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                            (c >= '0' && c <= '9') || c == '*' || c == '-' ||
-                            c == '.' || c == '_';
-    if (unreserved) {
-      out.push_back(static_cast<char>(c));
-    } else if (c == ' ') {
-      out.push_back('+');
-    } else {
-      out.push_back('%');
-      out.push_back(kHex[c >> 4]);
-      out.push_back(kHex[c & 0x0F]);
-    }
-  }
-  return out;
-}
-
 }  // namespace detail
 
 // ===========================================================================

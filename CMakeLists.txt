@@ -251,6 +251,7 @@ endif()
 add_library(shigoku_domain STATIC
   src/domain.cpp
   src/provider.cpp
+  src/scrape.cpp
 )
 target_include_directories(shigoku_domain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_domain PUBLIC shigoku_flags shigoku_thirdparty)

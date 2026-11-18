@@ -29,6 +29,7 @@
 #include "http.hpp"
 #include "provider.hpp"
 #include "result.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::animehub {
 
@@ -112,15 +113,9 @@ struct Film {
 // Absolute + argv-clean + past the SSRF guard.
 [[nodiscard]] bool stream_url_ok(std::string_view url);
 
-// Single-pass HTML entity decode (amp/lt/gt/quot/apos/nbsp + &#NN; / &#xNN;).
-// Unknown entities stay literal.
-[[nodiscard]] std::string decode_entities(std::string_view s);
-
-// Percent-encode a query value (RFC 3986 unreserved bytes pass).
-[[nodiscard]] std::string url_encode(std::string_view s);
-
-// `scheme://host[:port]` of an absolute url, no trailing slash.
-[[nodiscard]] std::optional<std::string> origin_of(std::string_view absolute_url);
+using scrape::decode_entities;
+using scrape::origin_of;
+using scrape::url_encode;
 
 }  // namespace detail
 

@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "crypto.hpp"
+#include "scrape.hpp"
 #include "wasm.hpp"
 
 namespace shigoku::reanime {
@@ -46,14 +47,7 @@ bool hex_char(char c) {
   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-std::optional<std::string> origin_of(std::string_view url) {
-  const auto scheme_end = url.find("://");
-  if (scheme_end == std::string_view::npos) return std::nullopt;
-  const auto path = url.find_first_of("/?#", scheme_end + 3);
-  const std::string_view origin = url.substr(0, path);
-  if (origin.size() == scheme_end + 3) return std::nullopt;
-  return std::string(origin);
-}
+using scrape::origin_of;
 
 std::optional<json> parse_json(std::string_view raw) {
   try {
@@ -385,13 +379,7 @@ bool valid_show_id(std::string_view id) {
          std::all_of(id.begin(), id.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
 
-std::vector<std::string> labels(std::uint32_t n) {
-  const std::uint32_t count = std::clamp<std::uint32_t>(n, 1, kMaxEpisodeHint);
-  std::vector<std::string> out;
-  out.reserve(count);
-  for (std::uint32_t i = 1; i <= count; ++i) out.push_back(std::to_string(i));
-  return out;
-}
+std::vector<std::string> labels(std::uint32_t n) { return scrape::numbered_labels(n); }
 
 }  // namespace detail
 

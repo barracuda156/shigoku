@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include "provider.hpp"
+#include "scrape.hpp"
 
 namespace shigoku::anibd {
 
@@ -31,12 +32,7 @@ std::optional<std::string> opt_str_opt(const json& j, const char* key) {
   return j.at(key).get<std::string>();
 }
 
-std::string to_lower(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  for (const char c : s) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-  return out;
-}
+using scrape::to_lower;
 
 // Episode number from name (preferred) or slug; leading zeros stripped by the
 // parse, zero and negative rejected (anibd.rs parse_ep_number). name/slug are
@@ -286,28 +282,6 @@ std::optional<std::size_t> pick_subtitle(const std::vector<SubTrack>& tracks) {
   }
   if (!tracks.empty()) return std::size_t{0};
   return std::nullopt;
-}
-
-std::string form_urlencode(std::string_view s) {
-  // url::form_urlencoded::byte_serialize: unreserved (A-Za-z0-9 and *-._) pass;
-  // space -> '+'; everything else -> %XX uppercase.
-  static const char* kHex = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(s.size());
-  for (const unsigned char c : s) {
-    const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                            (c >= '0' && c <= '9') || c == '*' || c == '-' || c == '.' || c == '_';
-    if (unreserved) {
-      out.push_back(static_cast<char>(c));
-    } else if (c == ' ') {
-      out.push_back('+');
-    } else {
-      out.push_back('%');
-      out.push_back(kHex[c >> 4]);
-      out.push_back(kHex[c & 0x0F]);
-    }
-  }
-  return out;
 }
 
 }  // namespace detail
