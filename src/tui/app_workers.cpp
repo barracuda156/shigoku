@@ -404,6 +404,7 @@ void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
     opts.socket_dir = deps.socket_dir;
     opts.title = episode;
     opts.start_secs = start_secs;
+    opts.quality = quality;
     // AniSkip prepare (P22, 03 §9): best-effort, runs here (the playback
     // worker) rather than the UI thread. Any failure (no MAL id incl. Jikan
     // miss, network down, unwritable cache) collapses to plain play.

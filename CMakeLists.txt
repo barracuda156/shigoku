@@ -862,7 +862,7 @@ if(SHIGOKU_HAVE_CURL)
   target_include_directories(shigoku_player PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_player
     PUBLIC shigoku_domain shigoku_flags shigoku_thirdparty
-    PRIVATE shigoku_http shigoku_proxy Threads::Threads shigoku_atomic)
+    PRIVATE shigoku_http shigoku_proxy shigoku_ladder Threads::Threads shigoku_atomic)
 endif()
 
 # ---------------------------------------------------------------------------

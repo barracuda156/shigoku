@@ -53,6 +53,7 @@
 
 #include "debug_log.hpp"
 #include "http.hpp"
+#include "ladder.hpp"
 #include "proxy.hpp"
 
 extern char** environ;
@@ -117,6 +118,13 @@ Result<std::vector<std::string>, PlayError> build_argv(
   }
   if (is_absolute_url(play_url)) {
     argv.push_back("--stream-lavf-o=multiple_requests=1,icy=0");
+  }
+  if (link.audio_url) {
+    if (!arg_clean(*link.audio_url) || link.audio_url->empty() ||
+        link.audio_url->front() == '-') {
+      return err(PlayError::unsafe_arg("audio_url"));
+    }
+    argv.push_back("--audio-file=" + *link.audio_url);
   }
   if (link.sub_url) {
     if (!arg_clean(*link.sub_url)) return err(PlayError::unsafe_arg("sub_url"));
@@ -655,6 +663,8 @@ struct BackendSpec {
   std::string_view name;            // for logs / error detail.
   std::string_view default_binary;  // when PlayOpts carries no explicit path.
   PositionSource source;
+  // The argv can carry a separate audio input beside the video.
+  bool audio_file;
   Result<std::vector<std::string>, PlayError> (*stream_argv)(
       const StreamLink&, std::string_view, const PlayOpts&, std::string_view);
   Result<std::vector<std::string>, PlayError> (*local_argv)(std::string_view,
@@ -662,11 +672,11 @@ struct BackendSpec {
                                                             std::string_view);
 };
 
-constexpr BackendSpec kMpvSpec{"mpv", "mpv", PositionSource::IpcSocket,
+constexpr BackendSpec kMpvSpec{"mpv", "mpv", PositionSource::IpcSocket, true,
                                &build_argv, &build_local_argv};
-constexpr BackendSpec kMplayerSpec{"mplayer", "mplayer", PositionSource::SlavePipes,
+constexpr BackendSpec kMplayerSpec{"mplayer", "mplayer", PositionSource::SlavePipes, false,
                                    &build_mplayer_argv, &build_mplayer_local_argv};
-constexpr BackendSpec kQmplay2Spec{"qmplay2", "QMPlay2", PositionSource::None,
+constexpr BackendSpec kQmplay2Spec{"qmplay2", "QMPlay2", PositionSource::None, false,
                                    &build_qmplay2_argv, &build_qmplay2_local_argv};
 
 // Kind -> spec. parse_backend already snapped unknown config strings to Mpv,
@@ -848,6 +858,31 @@ Result<AttemptResult, PlayError> run_child_attempt(const BackendSpec& spec,
   return out;
 }
 
+// A capped play: the variant the quality names, taken off the stream's own
+// ladder as the player would be served it, in place of the master — and its
+// audio rendition beside it when the audio is separate. Best effort, never
+// worse than uncapped: no ladder, an unreadable one, a pick the fetch guard
+// refuses, or separate audio on a backend that takes one input all leave the
+// link as it was.
+void take_rung(const BackendSpec& spec, const proxy::Decloak& decloak, Quality quality,
+               StreamLink& link, std::string& play_url) {
+  if (!ladder::is_playlist(link)) return;
+  auto client = http::Client::create();
+  if (!client) return;
+  const auto master = ladder::read(*client, link, play_url);
+  if (!master) return;
+  auto taken = ladder::take(*master, decloak.relayed(), Rung(quality));
+  if (!taken || !taken->has_value()) return;
+  hls::Pair& pair = **taken;
+  if (pair.audio_url && !spec.audio_file) return;
+  shigoku::debug_log("play: capped to " +
+                     (pair.variant.resolution ? std::to_string(*pair.variant.resolution) + "p"
+                                              : std::string("a lower rung")) +
+                     (pair.audio_url ? " + separate audio" : ""));
+  play_url = std::move(pair.video_url);
+  link.audio_url = std::move(pair.audio_url);
+}
+
 // The streamed arm: guard the resolved url, engage the decloak proxy, build
 // the vetted argv, then the shared spawn/observe/wait. Backend-agnostic on
 // purpose (P39): the guard and the P12 proxy hop protect EVERY backend's
@@ -872,12 +907,23 @@ Result<AttemptResult, PlayError> attempt_play(const BackendSpec& spec, const Str
   if (!decloak) {
     return err(PlayError::spawn("decloak proxy: " + decloak.error().detail));
   }
-  const std::string play_url(decloak->url());
+  std::string play_url(decloak->url());
+  StreamLink shaped = link;
+  // An audio rendition the link names itself is provider bytes like the
+  // stream url: guarded, then relayed with the rest of the stream.
+  if (shaped.audio_url) {
+    if (auto g = http::guard_fetch_url(*shaped.audio_url); !g) {
+      return err(PlayError::unsafe_url(g.error()));
+    }
+    shaped.audio_url = decloak->relay(*shaped.audio_url);
+  } else if (opts.quality != Quality::Best) {
+    take_rung(spec, *decloak, opts.quality, shaped, play_url);
+  }
   const std::string ipc = spec.source == PositionSource::IpcSocket
                               ? detail::socket_path(opts.socket_dir)
                               : std::string();
 
-  auto argv_r = spec.stream_argv(link, play_url, opts, ipc);
+  auto argv_r = spec.stream_argv(shaped, play_url, opts, ipc);
   if (!argv_r) return err(std::move(argv_r.error()));
   return run_child_attempt(spec, *argv_r, backend_binary(spec, opts), ipc, on_event);
 }

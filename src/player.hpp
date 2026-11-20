@@ -148,6 +148,12 @@ struct PlayOpts {
   // chapter keys jump them. App-written under the cache dir like the skip
   // script; nullopt = none. mpv only (the alternates have no equivalent).
   std::optional<std::string> chapters_file;
+  // The quality asked for. Anything but Best has the stream's ladder read
+  // before the launch (ladder.hpp) and the variant it names played instead
+  // of the master — with its audio rendition beside it when that is separate
+  // and the backend can take one. A stream with no ladder, or one that
+  // cannot be read, plays as it is.
+  Quality quality = Quality::Best;
 };
 
 // resume_start (03 §6.3.1, A6) — the resume rule as a pure function:
@@ -163,7 +169,9 @@ struct PlayOpts {
 // the positional handed to mpv (== link.url in v0; the proxy loopback url under
 // a future decloak provider). Rejects CR/LF / non-printable bytes in every
 // provider-derived field (ROD-92 header injection). Err = PlayError::UnsafeArg
-// with the offending field name in `detail`.
+// with the offending field name in `detail`. A link that carries an
+// audio_url gets `--audio-file=<it>`: the caller has already turned it into
+// the url mpv must open (the loopback ref on a relayed link).
 [[nodiscard]] Result<std::vector<std::string>, PlayError> build_argv(
     const StreamLink& link, std::string_view play_url, const PlayOpts& opts,
     std::string_view socket_path);

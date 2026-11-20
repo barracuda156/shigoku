@@ -309,6 +309,7 @@ std::optional<PlayFailure> play_one(const PlayEnv& env, const BoundShow& show,
   opts.socket_dir = *env.runtime_dir;
   opts.title = strip_controls(show.title + " · ep " + episode);
   opts.start_secs = start_secs;
+  opts.quality = env.quality;
   if (!env.cache_dir->empty()) {
     const std::uint32_t ep_num = aniskip::episode_number(episode, episode_index);
     auto adjuncts = aniskip::prepare_all(show.mal_id, show.title, ep_num,

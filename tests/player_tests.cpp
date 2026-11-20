@@ -252,6 +252,44 @@ TEST_CASE("argv_start_only_when_positive_and_finite") {
   }
 }
 
+TEST_CASE("argv_audio_file_rides_after_stream_lavf_before_the_sub_file") {
+  StreamLink link = full_link();
+  link.audio_url = "https://cdn.example/a/ja.m3u8";
+  auto r = build_argv(link, link.url, opts("t", 0.0), "/tmp/s.sock");
+  REQUIRE(r.has_value());
+  const std::vector<std::string> expected = {
+      "--http-header-fields-append=Referer: https://ref.example/",
+      "--user-agent=Mozilla/5.0 (X11; Linux) Gecko",
+      "--stream-lavf-o=multiple_requests=1,icy=0",
+      "--audio-file=https://cdn.example/a/ja.m3u8",
+      "--sub-file=https://sub.example/s.vtt",
+      "--sub-pos=92",
+      "--sub-bold=yes",
+      "--demuxer-lavf-o=allowed_extensions=ALL,extension_picky=0",
+      "--force-media-title=t",
+      "--title=shigoku - ${media-title}",
+      "--input-ipc-server=/tmp/s.sock",
+      "https://cdn.example/x.m3u8",
+  };
+  CHECK(*r == expected);
+}
+
+TEST_CASE("argv_rejects_an_unsafe_audio_url") {
+  for (const char* bad : {"https://cdn.example/a b.m3u8", "https://cdn.example/a\x01.m3u8",
+                          "--script=/tmp/evil.lua", ""}) {
+    StreamLink link = full_link();
+    link.audio_url = std::string(bad);
+    auto r = build_argv(link, link.url, opts("t", 0.0), "/tmp/s.sock");
+    REQUIRE(!r.has_value());
+    CHECK(r.error().kind == PlayError::Kind::UnsafeArg);
+    CHECK(r.error().detail == "audio_url");
+  }
+}
+
+TEST_CASE("play_opts_quality_defaults_to_best") {
+  CHECK(PlayOpts{}.quality == Quality::Best);
+}
+
 // ===========================================================================
 // local argv (P35 slice 4): build_argv's tail half for a downloaded file.
 // ===========================================================================
@@ -742,6 +780,25 @@ TEST_CASE("qmplay2_argv_is_just_the_vetted_positional") {
   auto empty = build_qmplay2_local_argv("", o, "");
   REQUIRE(!empty.has_value());
   CHECK(empty.error().kind == PlayError::Kind::UnsafeArg);
+}
+
+TEST_CASE("alternate_backends_ignore_audio_url") {
+  const StreamLink plain = full_link();
+  StreamLink with_audio = full_link();
+  with_audio.audio_url = "https://cdn.example/a/ja.m3u8";
+  const auto o = opts("t", 42.5);
+
+  auto m_plain = build_mplayer_argv(plain, plain.url, o, "");
+  auto m_audio = build_mplayer_argv(with_audio, with_audio.url, o, "");
+  REQUIRE(m_plain.has_value());
+  REQUIRE(m_audio.has_value());
+  CHECK(*m_audio == *m_plain);
+
+  auto q_plain = build_qmplay2_argv(plain, plain.url, o, "");
+  auto q_audio = build_qmplay2_argv(with_audio, with_audio.url, o, "");
+  REQUIRE(q_plain.has_value());
+  REQUIRE(q_audio.has_value());
+  CHECK(*q_audio == *q_plain);
 }
 
 TEST_CASE("qmplay2_stub_playdone_without_position_keeps_the_gate_shut") {
