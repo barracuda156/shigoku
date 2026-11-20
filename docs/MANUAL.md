@@ -196,28 +196,28 @@ disk.
 
 | Section | Row | Type | What it does |
 |---|---|---|---|
-| Player | mpv path | text | Binary used by the default player backend |
+| Playback | player | cycle | `mpv` / `mplayer` / `qmplay2` — see [Playback](#playback) |
+| | player path | text | Binary for the selected player. For `mpv` it is never blank; for `mplayer` / `qmplay2` blank = that backend's default name |
 | | default quality | cycle | `worst` / `480` / `720` / `1080` / `best` |
 | | translation | cycle | `sub` / `dub` |
 | | resume offset | cycle | `0`/`3`/`5`/`10`/`15`/`30`s — back up this many seconds from your last checkpoint when resuming |
 | | skip mode | cycle | `none` / `intro` / `outro` / `both` — AniSkip auto-skip (`mpv` only) |
-| Catalog | preferred provider | cycle | Pin a specific streaming source as the default; blank follows the built-in order automatically |
+| Sources | catalog | cycle | `auto` / `anilist` / `mal` — which site answers search and Discover; see [Catalog sources](#catalog-sources) |
+| | preferred provider | cycle | Pin a specific streaming source as the default; blank follows the built-in order automatically |
+| Downloads | download dir | text | Where downloaded episodes are stored; blank = the default, under the data directory |
+| | download quality | cycle | `same as playback` (follows *default quality*) / `worst` / `480` / `720` / `1080` / `best` — see [Downloads](#downloads) |
+| | ffmpeg path | text | Binary used to save HLS streams to disk |
 | Interface | cover art | toggle | Fetch and render cover art |
 | | kanji chips | toggle | Show season chips in kanji instead of plain text |
 | | palette | cycle | `terminal_ghost` / `phosphor` / `nord` / `tokyonight` — only `terminal_ghost` currently has a visible effect |
 | | transparent background | toggle | |
 | | landing view | cycle | `history` / `browse` / `last_watched` — which view opens on launch; `last_watched` opens History with your most recently watched show already selected and its detail open |
 | | title language | cycle | `romaji` / `english` / `native` |
-| AniList Sync | connect | action | Opens your browser to sign in — see [Accounts and sync](#accounts-and-sync) |
+| AniList | connect | action | Opens your browser to sign in — see [Accounts and sync](#accounts-and-sync) |
 | | sync enabled | toggle | Turns the *automatic* background pull/push on or off |
-| Updates | check for updates | toggle | Checks GitHub for a newer release on launch (never self-updates) |
 | MyAnimeList | mal client id | text | Your own registered MAL app's client ID; blank shows `(built-in)` and uses shigoku's own registration |
 | | connect | action | Opens your browser to authorize the MAL mirror |
-| Downloads | download dir | text | Where downloaded episodes are stored; blank = the default, under the data directory |
-| | ffmpeg path | text | Binary used to save HLS streams to disk |
-| Player backend | player | cycle | `mpv` / `mplayer` / `qmplay2` — see [Playback](#playback) |
-| | player path | text | Binary for whichever *non-mpv* backend is selected; blank = that backend's default name. `mpv` always uses "mpv path" above instead |
-| Catalog source | catalog | cycle | `auto` / `anilist` / `mal` — which site answers search and Discover; see [Catalog sources](#catalog-sources) |
+| Updates | check for updates | toggle | Checks GitHub for a newer release on launch (never self-updates) |
 
 ## The show page
 
@@ -234,13 +234,37 @@ title, status/score chips, a synopsis, and the episode grid.
 | `c` | Toggle the **Characters & Recommendations** section |
 | `~` | Open the full list of similar shows in Discover |
 | `Tab` (section open) | Move focus between the section and the episode grid |
-| `j`/`k`, `g`/`G` (section focused) | Move / jump within Characters & Recommendations |
+| `j`/`k`, `g`/`G` (section focused) | Move / jump through the characters, then the recommendations |
+| `Enter` (a character focused) | Open that character's page — see [Character pages](#character-pages) |
 | `Enter` (a recommendation focused) | Open *that* show's own page |
 | `Space`, `Esc` | Close the page, back to wherever you opened it from |
 | `q` | Quit |
 
 Unwatched episodes are brighter, watched ones dim, and the one currently
 playing or downloading carries a small spinner.
+
+### Character pages
+
+`Enter` on a character in the Characters & Recommendations section opens
+that character's own page in place of the show's: the portrait where the
+poster was, then the name and other names, gender, age, birthday, blood
+type, how many people favourited them, who voices them in this show, the
+description, and the other shows they appear in.
+
+| Key | Action |
+|---|---|
+| `j`/`k`, arrows, mouse wheel | Scroll; past the end of the text `j` steps into the "Appears in" list |
+| `PageUp`/`PageDown` | Scroll a screenful |
+| `g`/`G` | Top of the page / the last show in "Appears in" |
+| `Enter` (a show in "Appears in" highlighted) | Open that show's page |
+| `s` | Show or hide spoilers |
+| `Space`, `Esc`, `h`, `c` | Back to the show |
+
+Spoilers — parts of the description and some alternative names — start
+hidden and read `[spoiler]` until you press `s`; the key is only offered
+when the page has any. Character data comes from AniList: a show the
+catalogue only knows through MyAnimeList lists recommendations but no
+characters, so there is no page to open for it.
 
 **Two things easy to miss:**
 
@@ -259,7 +283,7 @@ playing or downloading carries a small spinner.
 `mpv` is the default backend and the only fully-featured one: live position
 tracking, checkpointed resume, and (if configured) AniSkip auto-skipping of
 openings/endings. Resume offset and skip mode both live under Settings →
-Player. Whenever AniSkip knows an episode's opening or ending, they also
+Playback. Whenever AniSkip knows an episode's opening or ending, they also
 show as chapters on mpv's seek bar (Opening / Episode / Ending), so you can
 see where they are and jump with mpv's chapter keys even with auto-skip
 off.
@@ -272,7 +296,7 @@ changes nothing else. The episode itself is marked as watched, advancing
 your progress, once it reaches its natural end (about 80%).
 
 Two alternate backends exist for machines where `mpv` itself is
-impractical, chosen via Settings → Player backend → *player*:
+impractical, chosen via Settings → Playback → *player*:
 
 | Backend | Position tracking | Resume | Auto-skip |
 |---|---|---|---|
@@ -280,9 +304,12 @@ impractical, chosen via Settings → Player backend → *player*:
 | `mplayer` | Yes (slave mode) | Yes | No |
 | `qmplay2` | No — launch only | No — always starts at 0; mark progress by hand | No |
 
-"Player path" in Settings sets the binary for whichever *alternate* backend
-is chosen; `mpv` always uses its own "mpv path" row instead. Only one
-playback can be in flight at a time.
+Settings → Playback → *player path* sets the binary of whichever backend is
+selected: with `mpv` it edits mpv's own path (`mpv_path` in `config.json`),
+with `mplayer` or `qmplay2` the alternate backends' path (`player_path`;
+blank = that backend's default name). The two are kept apart, so switching
+*player* back and forth loses neither. Only one playback can be in flight
+at a time.
 
 ### Senshi needs Node.js
 
@@ -329,6 +356,11 @@ Save an episode to disk instead of streaming it.
 | The show page or preview pane | Press `d` on the highlighted episode |
 | Command line | `shigoku download <title> [<episode>]` |
 
+Episodes download at Settings → Downloads → *download quality*; left at
+`same as playback` it follows *default quality*. On the command line, `-q`
+picks the quality for that one download instead (see
+[Command line](#command-line)).
+
 Files land under `<download dir>/<AniList id>/<sub or dub>/<episode>.<ext>`
 ("download dir" is set in Settings; blank defaults to `<data dir>/downloads`
 — see [Files on disk](#files-on-disk)). A command-line download of a show
@@ -350,7 +382,7 @@ is entirely optional.
 
 ### AniList
 
-Settings → AniList Sync → *connect* opens your browser to approve access,
+Settings → AniList → *connect* opens your browser to approve access,
 then waits for the redirect on `127.0.0.1:8767`. If the browser doesn't
 open on its own, or nothing answers at that address, press `c` on the
 "connecting" screen to copy the URL and paste it in yourself; `Esc` stops
@@ -394,7 +426,7 @@ all read from a catalogue site. AniList is the primary one. When it cannot
 answer (it has, for days at a time, switched its public API off for
 third-party apps), shigoku switches to MyAnimeList for the next ten
 minutes, shows a `MAL` chip in the top bar, and tries AniList again after
-that. Settings → Catalog source → *catalog* pins one site instead of the
+that. Settings → Sources → *catalog* pins one site instead of the
 automatic switch.
 
 A show found through MyAnimeList behaves like any other — it can be added
@@ -431,7 +463,9 @@ want (each has a long form too: `--quality`, `--show`, `--episode`,
 `--range`, `--provider`, with or without `=`):
 
 - `-q <quality>` — `best` (the default), `1080`, `720`, `480`, or `worst`,
-  for this run instead of the `default_quality` in `config.json`. Sources
+  for this run instead of the `default_quality` in `config.json` (for
+  `shigoku download`, instead of `download_quality`, which follows
+  `default_quality` when blank). Sources
   that offer one stream ignore it, as ever, and so does a stream whose
   audio comes as a separate track (Senshi's do): one picture size alone
   would play silent, so the player gets the whole ladder and picks the
@@ -768,7 +802,18 @@ A flat reference of everything above, grouped by context, for grepping.
 | `d` | Download |
 | `c` | Toggle Characters & Recommendations — **full page only** |
 | `Tab` | Swap focus between that section and the grid — **full page only** |
+| `Enter` (on a character) | Open the character's page — **full page only** |
 | `Enter` (on a recommendation) | Open that show — **full page only** |
+
+**Character page**
+
+| Key | Action |
+|---|---|
+| `j`/`k` | Scroll, then step through "Appears in" |
+| `PageUp`/`PageDown`, `g`/`G` | Scroll a screenful / jump to top or the last listed show |
+| `Enter` | Open the highlighted show |
+| `s` | Show or hide spoilers |
+| `Space`/`Esc`/`h`/`c` | Back to the show |
 
 **Connect modal (AniList / MyAnimeList sign-in)**
 
