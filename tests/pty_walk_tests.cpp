@@ -547,13 +547,14 @@ TEST_CASE("pty walk: Settings title-language change alters the rendered title (P
   CHECK(s.visible_text().find("Fixture Frieren") != std::string::npos);
   CHECK(s.visible_text().find("Fixture Frieren English") == std::string::npos);
 
-  // 2) `S` into Settings, `j` onto the title language row (index 11: Player
-  // 0-4, Provider 5, Interface 6-11 — title language is Interface's last
-  // row), `l` cycles romaji -> english.
+  // 2) `S` into Settings, `j` onto the title language row (the last row of
+  // Interface, after Playback, Sources and Downloads), `l` cycles romaji ->
+  // english.
   s.write_str("S");
   s.pump(200);
-  CHECK(s.visible_text().find("Player") != std::string::npos);
-  for (int i = 0; i < 11; ++i) s.write_str("j");
+  CHECK(s.visible_text().find("Playback") != std::string::npos);
+  const std::size_t title_row = tui::settings_row_index(tui::SettingsRowId::TitleLanguage);
+  for (std::size_t i = 0; i < title_row; ++i) s.write_str("j");
   s.pump(100);
   s.write_str("l");
   s.pump(200);

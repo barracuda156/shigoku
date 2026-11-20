@@ -45,6 +45,7 @@ Config from_json(const json& j) {
   c.mal_client_id = j.value("mal_client_id", c.mal_client_id);
   c.catalog = j.value("catalog", c.catalog);
   c.download_dir = j.value("download_dir", c.download_dir);
+  c.download_quality = j.value("download_quality", c.download_quality);
   c.ffmpeg_path = j.value("ffmpeg_path", c.ffmpeg_path);
   c.senshi_node = j.value("senshi_node", c.senshi_node);
   c.player = j.value("player", c.player);
@@ -84,6 +85,7 @@ json to_json(const Config& c) {
       {"mal_client_id", c.mal_client_id},
       {"catalog", c.catalog},
       {"download_dir", c.download_dir},
+      {"download_quality", c.download_quality},
       {"ffmpeg_path", c.ffmpeg_path},
       {"senshi_node", c.senshi_node},
       {"player", c.player},
@@ -100,6 +102,10 @@ std::string with_tmp_suffix(const std::string& path) { return path + ".tmp"; }
 
 std::uint32_t Config::effective_cover_concurrency() const {
   return std::clamp(discover_cover_concurrency, 1u, 16u);
+}
+
+std::string Config::effective_download_quality() const {
+  return download_quality.empty() ? default_quality : download_quality;
 }
 
 Config Config::load(const std::string& path) {

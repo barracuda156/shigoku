@@ -244,10 +244,12 @@ std::optional<std::size_t> prompt_episode(const std::vector<std::string>& episod
   return idx;
 }
 
-// The quality for the run: the flag's spelling over the config's; either
-// parsed by parse_quality (an unknown spelling is best — main said so).
-Quality run_quality(const std::optional<std::string>& flag, const Config& config) {
-  return parse_quality(flag.has_value() ? *flag : config.default_quality);
+// The quality for the run: the flag's spelling over `fallback` (the config's
+// default_quality for a play, its effective download quality for a
+// download); either parsed by parse_quality (an unknown spelling is best —
+// main said so).
+Quality run_quality(const std::optional<std::string>& flag, std::string_view fallback) {
+  return parse_quality(flag.has_value() ? std::string_view(*flag) : fallback);
 }
 
 // What every episode of a run plays under, fixed once the show is bound.
@@ -610,7 +612,7 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
   env.download_dir = &download_dir;
   env.store = store;
   env.translation = translation;
-  env.quality = run_quality(args.quality, config);
+  env.quality = run_quality(args.quality, config.default_quality);
   if (!reach.fallbacks.empty()) env.fallbacks = &reach.fallbacks;
   return play_from(env, show, episodes, start, range_last, pick);
 }
@@ -655,7 +657,7 @@ int download_flow(const Sources& sources, const PickFn& pick,
   if (!ep_idx.has_value()) return 0;
   const std::string& episode = episodes[*ep_idx];
 
-  const Quality quality = run_quality(args.quality, config);
+  const Quality quality = run_quality(args.quality, config.effective_download_quality());
   std::printf("\n  %s resolving ep %s (%s)%s\n", g(gl.fetch), strip_controls(episode).c_str(),
               std::string(to_string(translation)).c_str(), g(gl.ellipsis));
   flush_stdout();
@@ -893,7 +895,7 @@ int continue_flow(const ProviderRegistry& registry, const Sources& sources, cons
   env.download_dir = &download_dir;
   env.store = &store;
   env.translation = translation;
-  env.quality = run_quality(args.quality, config);
+  env.quality = run_quality(args.quality, config.default_quality);
   if (!reach.fallbacks.empty()) env.fallbacks = &reach.fallbacks;
   return play_from(env, *bound, episodes, *start, std::nullopt, pick);
 }

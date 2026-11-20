@@ -45,9 +45,9 @@ void draw_schedule(const App& app, CellBuffer& buf, int y0, int y1);
 // the band.
 void draw_discover(const App& app, CellBuffer& buf, int y0, int y1);
 
-// Render the Settings view's content region (P18, DESIGN §5.5): five sections
-// (Player/Catalog/Interface/AniList Sync/Updates), each a header + hairline
-// rule + rows, one blank line between sections. Full width, no cover column,
+// Render the Settings view's content region: the sections settings_layout()
+// lists, each a header + hairline rule + rows, one blank line between
+// sections. Full width, no cover column,
 // no detail pane. Stateless scroll: keeps the focused row on screen,
 // top-anchored otherwise (settings.rs draw's own rule, ported verbatim).
 void draw_settings(const App& app, CellBuffer& buf, int y0, int y1);

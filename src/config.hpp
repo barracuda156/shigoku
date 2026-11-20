@@ -55,6 +55,9 @@ struct Config {
   // <data>/downloads, resolved at boot (main.cpp) — the config value stays
   // empty so a moved data dir follows automatically.
   std::string download_dir;
+  // The quality downloads fetch at; "" = follow default_quality. Read
+  // through effective_download_quality().
+  std::string download_quality;
   // P35 slice 3: the HLS download muxer, spawned like mpv (runtime-only dep;
   // absent at spawn = the "install ffmpeg" toast, never a config error).
   std::string ffmpeg_path = "ffmpeg";
@@ -84,6 +87,9 @@ struct Config {
 
   // 06 §2.2: clamp to [1, 16] at read.
   [[nodiscard]] std::uint32_t effective_cover_concurrency() const;
+
+  // download_quality when set, else default_quality.
+  [[nodiscard]] std::string effective_download_quality() const;
 
   // Total load (06 §2.1): missing, unreadable, oversized, or corrupt files
   // all yield defaults. Startup never wedges on config.

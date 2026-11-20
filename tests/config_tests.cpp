@@ -57,10 +57,40 @@ TEST_CASE("round trip preserves everything") {
   cfg.cli_picker = "fzf";
   cfg.picker_path = "/opt/local/bin/fzf";
   cfg.disabled_providers = {"anibd", "anidbapp"};
+  cfg.default_quality = "1080";
+  cfg.download_quality = "480";
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());
-  CHECK(Config::load(path) == cfg);
+  const Config loaded = Config::load(path);
+  CHECK(loaded == cfg);
+  CHECK(loaded.download_quality == "480");
+  CHECK(loaded.effective_download_quality() == "480");
+}
+
+TEST_CASE("download quality follows the default quality until set") {
+  Config cfg;
+  CHECK(cfg.download_quality.empty());
+  CHECK(cfg.effective_download_quality() == "best");
+  cfg.default_quality = "720";
+  CHECK(cfg.effective_download_quality() == "720");
+  cfg.download_quality = "worst";
+  CHECK(cfg.effective_download_quality() == "worst");
+  CHECK(cfg.default_quality == "720");
+
+  // A blank value round-trips as blank and keeps following the default.
+  const std::string path = tmp("download_quality.json");
+  cfg.download_quality.clear();
+  REQUIRE(cfg.save(path).has_value());
+  const Config blank = Config::load(path);
+  CHECK(blank.download_quality.empty());
+  CHECK(blank.effective_download_quality() == "720");
+
+  write_file(path, R"({"default_quality": "1080", "download_quality": "480"})");
+  const Config set = Config::load(path);
+  CHECK(set.download_quality == "480");
+  CHECK(set.effective_download_quality() == "480");
+  CHECK(set.default_quality == "1080");
 }
 
 TEST_CASE("missing file is defaults") {

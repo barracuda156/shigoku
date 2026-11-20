@@ -2147,14 +2147,14 @@ TEST_CASE("mouse: History click selects by ord; double-click opens detail") {
 TEST_CASE("mouse: Settings row click moves the cursor; double-click edits") {
   auto h = HistoryHarness::make();
   h->app.view = View::Settings;
-  // Layout: Header(0) Rule(1) rows 0..4 at lines 2..6 → row 2 renders at y=6.
+  // Layout: Header(0) Rule(1) rows 0..5 at lines 2..7 → row 2 renders at y=6.
   tick(h->app, click(10, 6));
   CHECK(h->app.settings.cursor() == 2);
-  // mpv path (row 0, a Text row) at y=4: select, then double-click to edit.
-  tick(h->app, click(10, 4));
-  CHECK(h->app.settings.cursor() == 0);
+  // player path (row 1, a Text row) at y=5: select, then double-click to edit.
+  tick(h->app, click(10, 5));
+  CHECK(h->app.settings.cursor() == 1);
   CHECK_FALSE(h->app.settings.editing());
-  tick(h->app, click(10, 4));
+  tick(h->app, click(10, 5));
   CHECK(h->app.settings.editing());  // Enter on a Text row (05 §13).
 }
 

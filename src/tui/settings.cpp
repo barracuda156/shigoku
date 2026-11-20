@@ -5,6 +5,8 @@
 #include "../mal_catalog.hpp"
 
 #include <algorithm>
+#include <initializer_list>
+#include <utility>
 
 namespace shigoku::tui {
 
@@ -51,6 +53,12 @@ std::uint32_t cycle_resume_offset(std::uint32_t current, int dir) {
   return kResumeOffsetPresets[idx];
 }
 
+// The backends that read player_path. mpv, and any spelling the player
+// plays as mpv, reads mpv_path instead.
+bool alternate_player(const Config& config) {
+  return config.player == "mplayer" || config.player == "qmplay2";
+}
+
 void cycle(Config& config, SettingsRowId id, int dir, const std::vector<std::string>& providers) {
   switch (id) {
     case SettingsRowId::Quality:
@@ -90,7 +98,10 @@ void cycle(Config& config, SettingsRowId id, int dir, const std::vector<std::str
     case SettingsRowId::Catalog:
       config.catalog = std::string(cycle_preset(kCatalogPresets, config.catalog, dir));
       return;
-    case SettingsRowId::MpvPath:
+    case SettingsRowId::DownloadQuality:
+      config.download_quality =
+          std::string(cycle_preset(kDownloadQualityPresets, config.download_quality, dir));
+      return;
     case SettingsRowId::CoverArt:
     case SettingsRowId::KanjiChips:
     case SettingsRowId::TransparentBg:
@@ -115,7 +126,6 @@ void toggle(Config& config, SettingsRowId id) {
       return;
     case SettingsRowId::Sync: config.anilist_sync_enabled = !config.anilist_sync_enabled; return;
     case SettingsRowId::CheckUpdates: config.check_for_updates = !config.check_for_updates; return;
-    case SettingsRowId::MpvPath:
     case SettingsRowId::Quality:
     case SettingsRowId::Translation:
     case SettingsRowId::ResumeOffset:
@@ -132,22 +142,27 @@ void toggle(Config& config, SettingsRowId id) {
     case SettingsRowId::Player:
     case SettingsRowId::Catalog:
     case SettingsRowId::PlayerPath:
+    case SettingsRowId::DownloadQuality:
       return;  // not a Toggle row.
   }
 }
 
-std::string_view current_text(const Config& config, SettingsRowId id) {
+// The config string a Text row edits; nullptr for any other row.
+std::string* text_field(Config& config, SettingsRowId id) {
   switch (id) {
-    case SettingsRowId::MpvPath: return config.mpv_path;
-    case SettingsRowId::MalClientId: return config.mal_client_id;
-    case SettingsRowId::DownloadDir: return config.download_dir;
-    case SettingsRowId::FfmpegPath: return config.ffmpeg_path;
-    case SettingsRowId::PlayerPath: return config.player_path;
+    case SettingsRowId::PlayerPath:
+      return alternate_player(config) ? &config.player_path : &config.mpv_path;
+    case SettingsRowId::MalClientId: return &config.mal_client_id;
+    case SettingsRowId::DownloadDir: return &config.download_dir;
+    case SettingsRowId::FfmpegPath: return &config.ffmpeg_path;
+    case SettingsRowId::Player:
     case SettingsRowId::Quality:
     case SettingsRowId::Translation:
     case SettingsRowId::ResumeOffset:
     case SettingsRowId::SkipMode:
+    case SettingsRowId::Catalog:
     case SettingsRowId::Provider:
+    case SettingsRowId::DownloadQuality:
     case SettingsRowId::CoverArt:
     case SettingsRowId::KanjiChips:
     case SettingsRowId::Palette:
@@ -156,13 +171,20 @@ std::string_view current_text(const Config& config, SettingsRowId id) {
     case SettingsRowId::TitleLanguage:
     case SettingsRowId::Connect:
     case SettingsRowId::Sync:
-    case SettingsRowId::CheckUpdates:
     case SettingsRowId::MalConnect:
-    case SettingsRowId::Player:
-    case SettingsRowId::Catalog:
-      return {};  // not a Text row.
+    case SettingsRowId::CheckUpdates:
+      return nullptr;  // not a Text row.
   }
-  return {};  // unreachable (closed enum).
+  return nullptr;  // unreachable (closed enum).
+}
+
+// Text rows where blank is a meaningful value an empty commit may set:
+// mal_client_id (the built-in registration), download_dir (the default dir),
+// player_path (the alternate backend's default binary name). mpv_path and
+// ffmpeg_path never blank — an empty binary path would break every spawn.
+bool blank_allowed(const Config& config, SettingsRowId id) {
+  return id == SettingsRowId::MalClientId || id == SettingsRowId::DownloadDir ||
+         (id == SettingsRowId::PlayerPath && alternate_player(config));
 }
 
 }  // namespace
@@ -225,7 +247,8 @@ SettingsOutcome SettingsState::on_key(const KeyEvent& key, Config& config,
   }
   if (key.special == S::Enter) {
     if (row.kind == SettingsRowKind::Text) {
-      edit_ = std::string(current_text(config, row.id));
+      const std::string* field = text_field(config, row.id);
+      edit_ = field != nullptr ? *field : std::string{};
       editing_ = true;
       return SettingsOutcome::Consumed;
     }
@@ -249,52 +272,20 @@ SettingsOutcome SettingsState::on_edit_key(const KeyEvent& key, Config& config) 
   if (key.special == S::Enter) {
     editing_ = false;
     const SettingsRowId id = kSettingsRows[cursor_].id;
-    if (!edit_.empty()) {
-      // mpv_path/ffmpeg_path: empty commit never blanks them (an empty
-      // binary path would break every future spawn). mal_client_id and
-      // download_dir are the opposite: blank is a valid, meaningful state
-      // ("not configured" / "use the default dir" — see the empty-commit
-      // branch below), so a NON-empty commit just sets them here same as any
-      // other Text row.
-      if (id == SettingsRowId::MalClientId) {
-        config.mal_client_id = edit_;
-      } else if (id == SettingsRowId::DownloadDir) {
-        config.download_dir = edit_;
-      } else if (id == SettingsRowId::FfmpegPath) {
-        config.ffmpeg_path = edit_;
-      } else if (id == SettingsRowId::PlayerPath) {
-        config.player_path = edit_;
-      } else {
-        config.mpv_path = edit_;
-      }
-      edit_.clear();
-      dirty_ = true;
-      return SettingsOutcome::ConfigChanged;
-    }
-    // Empty commit: mal_client_id may be intentionally cleared (the user
-    // backspaced everything then hit Enter to disconnect the client
-    // registration), download_dir likewise (back to the default dir);
-    // mpv_path/ffmpeg_path never blank on empty commit (unreachable
-    // fallback path for the spawns).
-    if (id == SettingsRowId::MalClientId && !config.mal_client_id.empty()) {
-      config.mal_client_id.clear();
-      dirty_ = true;
-      return SettingsOutcome::ConfigChanged;
-    }
-    if (id == SettingsRowId::DownloadDir && !config.download_dir.empty()) {
-      config.download_dir.clear();
-      dirty_ = true;
-      return SettingsOutcome::ConfigChanged;
-    }
-    // player_path blank is meaningful too: "spawn the kind's default binary
-    // name" (PlayOpts::player_path doc) — same clearable shape as
-    // download_dir, unlike mpv_path/ffmpeg_path which never blank.
-    if (id == SettingsRowId::PlayerPath && !config.player_path.empty()) {
-      config.player_path.clear();
-      dirty_ = true;
-      return SettingsOutcome::ConfigChanged;
-    }
+    std::string* field = text_field(config, id);
+    std::string committed = std::move(edit_);
     edit_.clear();
+    if (field == nullptr) return SettingsOutcome::Consumed;
+    if (!committed.empty()) {
+      *field = std::move(committed);
+      dirty_ = true;
+      return SettingsOutcome::ConfigChanged;
+    }
+    if (blank_allowed(config, id) && !field->empty()) {
+      field->clear();
+      dirty_ = true;
+      return SettingsOutcome::ConfigChanged;
+    }
     return SettingsOutcome::Consumed;
   }
   if (key.special == S::Backspace) {
@@ -324,7 +315,6 @@ std::string settings_value(const Config& config, SettingsRowId id,
                            const std::vector<std::string>& providers) {
   auto onoff = [](bool v) { return std::string(v ? "on" : "off"); };
   switch (id) {
-    case SettingsRowId::MpvPath: return config.mpv_path;
     case SettingsRowId::Quality: return config.default_quality;
     case SettingsRowId::Translation: return config.translation;
     case SettingsRowId::ResumeOffset: return std::to_string(config.resume_offset_sec) + "s";
@@ -359,10 +349,14 @@ std::string settings_value(const Config& config, SettingsRowId id,
     case SettingsRowId::Player: return config.player;
     case SettingsRowId::Catalog: return config.catalog;
     case SettingsRowId::PlayerPath:
-      // Blank = the selected kind's default binary name (the DownloadDir
-      // convention; mpv ignores this row entirely — it keeps mpv_path).
+      // An alternate backend's blank path = its default binary name (the
+      // DownloadDir convention); mpv's path is never blank.
+      if (!alternate_player(config)) return config.mpv_path;
       if (!config.player_path.empty()) return config.player_path;
       return "(default)";
+    case SettingsRowId::DownloadQuality:
+      if (!config.download_quality.empty()) return config.download_quality;
+      return "same as playback";
   }
   return {};  // unreachable (closed enum).
 }
@@ -373,8 +367,10 @@ std::vector<SettingsLine> settings_layout(const SettingsEnv& env) {
     out.push_back(SettingsLine{SettingsLine::Kind::Header, h, 0, {}, {}});
     out.push_back(SettingsLine{SettingsLine::Kind::Rule, {}, 0, {}, {}});
   };
-  auto row = [&](std::size_t i) {
-    out.push_back(SettingsLine{SettingsLine::Kind::Row, {}, i, {}, {}});
+  auto rows = [&](std::initializer_list<SettingsRowId> ids) {
+    for (const SettingsRowId id : ids) {
+      out.push_back(SettingsLine{SettingsLine::Kind::Row, {}, settings_row_index(id), {}, {}});
+    }
   };
   auto inert = [&](std::string_view label, std::string_view value) {
     out.push_back(
@@ -382,45 +378,39 @@ std::vector<SettingsLine> settings_layout(const SettingsEnv& env) {
   };
   auto blank = [&]() { out.push_back(SettingsLine{SettingsLine::Kind::Blank, {}, 0, {}, {}}); };
 
-  header("Player");
-  for (std::size_t i = 0; i < 5; ++i) row(i);
+  using R = SettingsRowId;
+  header("Playback");
+  rows({R::Player, R::PlayerPath, R::Quality, R::Translation, R::ResumeOffset, R::SkipMode});
   blank();
 
-  header("Catalog");
+  header("Sources");
+  rows({R::Catalog, R::Provider});
   inert("metadata refresh", "automatic");
   inert("cover art cache", env.covers_dir);
-  row(5);
+  blank();
+
+  header("Downloads");
+  rows({R::DownloadDir, R::DownloadQuality, R::FfmpegPath});
   blank();
 
   header("Interface");
-  for (std::size_t i = 6; i < 12; ++i) row(i);
+  rows({R::CoverArt, R::KanjiChips, R::Palette, R::TransparentBg, R::Landing,
+        R::TitleLanguage});
   blank();
 
-  header("AniList Sync");
+  header("AniList");
   inert("account", env.account);
-  row(12);
-  row(13);
-  blank();
-
-  header("Updates");
-  inert("version", env.version);
-  row(14);
+  rows({R::Connect, R::Sync});
   blank();
 
   header("MyAnimeList");
   inert("account", env.mal_account);
-  row(15);
-  row(16);
+  rows({R::MalClientId, R::MalConnect});
   blank();
 
-  header("Downloads");
-  row(17);
-  row(18);
-  blank();
-
-  header("Player backend");
-  row(19);
-  row(20);
+  header("Updates");
+  inert("version", env.version);
+  rows({R::CheckUpdates});
 
   return out;
 }

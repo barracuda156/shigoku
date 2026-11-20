@@ -1739,11 +1739,16 @@ void on_key(App& app, const KeyEvent& k) {
     app.download.started_tick = app.tick_count;
     app.download.cancel = std::make_shared<std::atomic<bool>>(false);
     app.download.child_pid = std::make_shared<std::atomic<long>>(0);
-    app.toasts.push(ToastKind::Info, "downloading ep " + episode, app.tick_count);
+    // Say what is being fetched: track, source, and the quality asked for.
+    const std::string quality = app.config.effective_download_quality();
+    std::string what = "downloading ep " + episode + " \xC2\xB7 " +
+                       std::string(to_string(translation));
+    if (!app.episode.serving.empty()) what += " \xC2\xB7 " + app.episode.serving;
+    what += " \xC2\xB7 " + quality;
+    app.toasts.push(ToastKind::Info, what, app.tick_count);
     spawn_download(*app.queue, *app.deps->registry, app.deps->http,
                    app.episode.serving, app.episode.provider_id, episode,
-                   show->anilist_id, translation,
-                   parse_quality(app.config.default_quality),
+                   show->anilist_id, translation, parse_quality(quality),
                    app.deps->download_dir, app.deps->ffmpeg_path,
                    app.download.cancel, app.download.child_pid);
   };

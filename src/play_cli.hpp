@@ -84,15 +84,17 @@ struct Reach {
                             const std::string& download_dir, Store* store,
                             const cli::PlayArgs& args, const Reach& reach = {});
 
-// `shigoku download <query> [<ep>]` (P35 slice 3): the same search/pick/
-// episodes spine as play_flow, then download_link instead of mpv. An explicit
-// <ep> maps by exact raw label first, then 1-based ordinal (the 03 §6.6 hop
-// rule); absent, the episode is picked interactively. `download_dir` is the
+// `shigoku download <query> [<ep>]`: the same search/pick/episodes spine
+// as play_flow, then download_link instead of mpv. An explicit <ep> maps by
+// exact raw label first, then 1-based ordinal (the 03 §6.6 hop rule);
+// absent, the episode is picked interactively. `download_dir` is the
 // RESOLVED root (main.cpp turns a blank config value into <data>/downloads).
 // Same exit law: transfer failure is the nonzero exit (1); every early
 // return (no results, quit, no episodes, unknown <ep>) is a clean 0. A show
 // with an id downloads under it (download::episode_dest); a play-only one
-// under its source's own folder (download::source_episode_dest).
+// under its source's own folder (download::source_episode_dest). Without
+// `-q` the quality is Config::effective_download_quality(), where play_flow
+// and continue_flow take default_quality.
 [[nodiscard]] int download_flow(const Sources& sources, const PickFn& pick,
                                 Translation translation, const Config& config,
                                 const std::string& download_dir, Store* store,

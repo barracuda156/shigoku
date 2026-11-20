@@ -871,8 +871,9 @@ class Fake final : public StreamProvider {
   bool localized_ = false;
   // Keys on the show's MAL id without a search (the megaplay shape).
   bool keyed_ = false;
-  // The provider id the last resolve was asked for.
+  // The provider id and the quality the last resolve was asked for.
   mutable std::string last_resolved_id_;
+  mutable std::optional<Quality> last_quality_;
 
   [[nodiscard]] std::string_view name() const override { return name_; }
   [[nodiscard]] std::string_view display_name() const override { return display_; }
@@ -890,8 +891,9 @@ class Fake final : public StreamProvider {
     return episodes_();
   }
   [[nodiscard]] ResolveR resolve(std::string_view id, std::string_view, Translation,
-                                 Quality) const override {
+                                 Quality quality) const override {
     last_resolved_id_ = std::string(id);
+    last_quality_ = quality;
     return resolve_();
   }
   [[nodiscard]] Result<CoverRequest, ProviderError> cover_request(
@@ -961,6 +963,43 @@ TEST_CASE("resolve_failure_exits_one") {
                 []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
                 []() -> Fake::ResolveR { return err(ProviderError::network()); });
   CHECK(run(p, [](std::string_view, const std::vector<std::string>&) { return std::optional<std::size_t>(0); }) == 1);
+}
+
+TEST_CASE("without_q_a_download_takes_the_download_quality_and_a_play_the_default") {
+  // The resolve fails, so each run stops right after asking for its quality.
+  auto p = make([](std::string_view) -> Fake::SearchR { return std::vector<SearchHit>{one_hit()}; },
+                []() -> Fake::EpR { return std::vector<std::string>{"1"}; },
+                []() -> Fake::ResolveR { return err(ProviderError::network()); });
+  const shigoku::cli_play::PickFn pick = [](std::string_view, const std::vector<std::string>&) {
+    return std::optional<std::size_t>(0);
+  };
+  Config config;
+  config.default_quality = "1080";
+  config.download_quality = "480";
+  auto download = [&](const cli::DownloadArgs& args) {
+    return shigoku::cli_play::download_flow({&p}, pick, Translation::Sub, config,
+                                            /*download_dir=*/"", /*store=*/nullptr, args);
+  };
+  auto play_run = [&](const PlayArgs& args) {
+    return shigoku::cli_play::play_flow({&p}, pick, Translation::Sub, config, /*cache_dir=*/"",
+                                        /*runtime_dir=*/"/tmp", /*download_dir=*/"",
+                                        /*store=*/nullptr, args);
+  };
+
+  CHECK(download(dl("frieren", std::string("1"))) == 1);
+  CHECK(p.last_quality_ == Quality::P480);
+  CHECK(play_run(play("frieren")) == 1);
+  CHECK(p.last_quality_ == Quality::P1080);
+
+  // A blank download quality follows the default; `-q` wins over both.
+  config.download_quality.clear();
+  CHECK(download(dl("frieren", std::string("1"))) == 1);
+  CHECK(p.last_quality_ == Quality::P1080);
+  cli::DownloadArgs flagged = dl("frieren", std::string("1"));
+  flagged.quality = "720";
+  config.download_quality = "480";
+  CHECK(download(flagged) == 1);
+  CHECK(p.last_quality_ == Quality::P720);
 }
 
 // ── search walk: the CLI tries the next searchable source ───────────────────
