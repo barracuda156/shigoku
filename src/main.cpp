@@ -628,7 +628,8 @@ int run_download_cli(const cli::DownloadArgs& args) {
   cli_play::Reach reach;
   reach.catalog = catalog.search();
   return cli_play::download_flow(*sources, pick, translation, config,
-                                 resolve_download_dir(config, *paths), store, args, reach);
+                                 resolve_download_dir(config, *paths), store, args, reach,
+                                 /*ask_quality=*/pick_at_terminal());
 }
 
 // `shigoku continue [<query>]`: a library show picked back up where it was

@@ -618,10 +618,30 @@ int play_flow(const Sources& sources, const PickFn& pick, Translation translatio
   return play_from(env, show, episodes, start, range_last, pick);
 }
 
+namespace {
+
+// An offer row for the command line: the shared wording, its two non-ASCII
+// marks swapped out when the terminal is not a UTF-8 one.
+std::string offer_row_cli(const OfferRow& row, std::uint32_t duration_secs) {
+  std::string line = offer_row_line(row, duration_secs);
+  if (!cli::ascii_glyphs()) return line;
+  auto swap = [&line](std::string_view from, std::string_view to) {
+    for (std::size_t at = line.find(from); at != std::string::npos; at = line.find(from, at)) {
+      line.replace(at, from.size(), to);
+      at += to.size();
+    }
+  };
+  swap("\xC3\x97", "x");  // ×
+  swap("\xC2\xB7", "-");  // ·
+  return line;
+}
+
+}  // namespace
+
 int download_flow(const Sources& sources, const PickFn& pick,
                   Translation translation, const Config& config,
                   const std::string& download_dir, Store* store,
-                  const cli::DownloadArgs& args, const Reach& reach) {
+                  const cli::DownloadArgs& args, const Reach& reach, bool ask_quality) {
   const std::int64_t now = unix_now();
   const cli::Glyphs& gl = cli::glyphs();
 
@@ -678,6 +698,38 @@ int download_flow(const Sources& sources, const PickFn& pick,
     return 1;
   }
 
+  if (!http::guard_fetch_url(link->url).has_value()) {
+    std::printf("  %s the stream url failed the safety check; not fetched.\n", g(gl.fail));
+    return 1;
+  }
+
+  // What the stream offers, and which of it is fetched: the row the quality
+  // lands on, or the one picked. A stream with nothing to choose from still
+  // takes the quality — its list may read on the second try.
+  const StreamOffer offer = download::probe(*client, *link);
+  const std::uint32_t duration_secs =
+      show.entry.has_value() ? show.entry->duration_minutes.value_or(0) * 60u : 0u;
+  std::size_t row_ix = download::offer_row_for(offer, Rung(quality));
+  if (offer.has_choice() && !args.quality.has_value() && ask_quality) {
+    std::vector<std::string> rows;
+    rows.reserve(offer.rows.size());
+    for (const OfferRow& row : offer.rows) rows.push_back(offer_row_cli(row, duration_secs));
+    const auto picked = pick("pick a quality", rows);
+    if (!picked.has_value() || *picked >= offer.rows.size()) return 0;
+    row_ix = *picked;
+  } else {
+    std::printf("  this stream offers:\n");
+    for (std::size_t i = 0; i < offer.rows.size(); ++i) {
+      std::printf("    %s %s\n", i == row_ix ? g(gl.play) : " ",
+                  offer_row_cli(offer.rows[i], duration_secs).c_str());
+    }
+    if (const std::string note = offer_shape_note(offer.shape); !note.empty()) {
+      std::printf("    (%s)\n", note.c_str());
+    }
+  }
+  const Rung rung =
+      offer.shape == StreamOffer::Shape::Ladder ? offer.rows[row_ix].rung : Rung(quality);
+
   const std::string dest =
       show.anilist_id.has_value()
           ? download::episode_dest(download_dir, *show.anilist_id, translation, episode, *link)
@@ -705,7 +757,7 @@ int download_flow(const Sources& sources, const PickFn& pick,
     flush_stdout();
   };
 
-  auto outcome = download::download_link(*client, *link, dest, quality,
+  auto outcome = download::download_link(*client, *link, dest, rung,
                                          config.ffmpeg_path, cancel, progress);
   std::printf("\n");
   if (!outcome.has_value()) {

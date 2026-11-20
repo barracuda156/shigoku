@@ -95,10 +95,17 @@ struct Reach {
 // under its source's own folder (download::source_episode_dest). Without
 // `-q` the quality is Config::effective_download_quality(), where play_flow
 // and continue_flow take default_quality.
+//
+// Before the transfer the stream is asked what it offers (download::probe)
+// and the answer is printed, the row about to be fetched marked. That row is
+// the one the quality lands on — unless the stream has several, no `-q` was
+// given and `ask_quality` is set (main.cpp: stdin and stdout are a
+// terminal): then the pick seam asks, and backing out of it is a clean 0.
 [[nodiscard]] int download_flow(const Sources& sources, const PickFn& pick,
                                 Translation translation, const Config& config,
                                 const std::string& download_dir, Store* store,
-                                const cli::DownloadArgs& args, const Reach& reach = {});
+                                const cli::DownloadArgs& args, const Reach& reach = {},
+                                bool ask_quality = false);
 
 // `shigoku continue [<query>]`: a library show picked back up. The history
 // (Store::list_history, most recently watched first), narrowed by the query
