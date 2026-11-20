@@ -5,12 +5,16 @@
         "edges": [
           {
             "role": "MAIN",
-            "node": { "name": { "full": "Frieren" } },
+            "node": {
+              "id": 176754,
+              "name": { "full": "Frieren" },
+              "image": { "large": "https://example.com/characters/176754.png" }
+            },
             "voiceActors": [{ "name": { "full": "Atsumi Tanezaki" } }]
           },
           {
             "role": "MAIN",
-            "node": { "name": { "full": "Fern" } },
+            "node": { "id": 176755, "name": { "full": "Fern" }, "image": { "large": "" } },
             "voiceActors": [{ "name": { "full": "Kana Ichinose" } }]
           },
           {

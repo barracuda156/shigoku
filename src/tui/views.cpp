@@ -2,6 +2,8 @@
 
 #include "views.hpp"
 
+#include "character_page.hpp"
+
 #include <algorithm>
 #include <iterator>
 #include <cctype>
@@ -294,19 +296,23 @@ int char_recs_section_height(int content_rows) {
   return section_h >= 4 ? section_h : 0;
 }
 
-// The flattened line offset of recommendations[rec_idx] in the `c` section
-// (P36 slice 3 scroll-into-view): characters header + rows, then a blank
-// separator (only if both blocks are non-empty), then the recommendations
-// header, then rec_idx rows in. Must walk the SAME shape
+std::size_t char_recs_item_count(const CharactersAndRecommendations& data) {
+  return data.characters.size() + data.recommendations.size();
+}
+
+// The flattened line offset of an item in the `c` section: the characters
+// header + rows, then a blank separator (only if both blocks are non-empty),
+// then the recommendations header and rows. Must walk the SAME shape
 // draw_char_recs_section flattens, so app.cpp's scroll math can never
 // disagree with what's actually on screen — same discipline as
 // episode_cell_at replaying draw_detail_header's geometry.
-std::size_t char_recs_rec_line_index(const CharactersAndRecommendations& data,
-                                     std::size_t rec_idx) {
+std::size_t char_recs_item_line(const CharactersAndRecommendations& data, std::size_t item) {
+  const std::size_t nc = data.characters.size();
+  if (item < nc) return 1 + item;  // +1 for the Characters header.
   std::size_t line = 0;
-  if (!data.characters.empty()) line += 1 + data.characters.size();
-  if (!data.characters.empty() && !data.recommendations.empty()) line += 1;  // blank separator.
-  return line + 1 + rec_idx;  // +1 for the Recommendations header.
+  if (nc > 0) line += 1 + nc;
+  if (nc > 0 && !data.recommendations.empty()) line += 1;  // blank separator.
+  return line + 1 + (item - nc);  // +1 for the Recommendations header.
 }
 
 // The Enrichment the shared detail pane/zoom renders for the current
@@ -352,6 +358,14 @@ const Show* selected_show(const App& app) {
 }
 
 std::optional<CoverTarget> cover_target(const App& app) {
+  // The character page borrows the poster slot for the portrait.
+  if (app.view == View::Detail && app.character.open) {
+    const std::optional<std::string>& url = app.character.image_url.has_value()
+                                                ? app.character.image_url
+                                                : app.character.data.image_url;
+    if (!url.has_value() || url->empty()) return std::nullopt;
+    return CoverTarget{kCharacterCoverIdBase + app.character.id, *url};
+  }
   const Enrichment* m = selected_enrichment(app);
   if (m == nullptr) return std::nullopt;
   if (!m->cover_url.has_value() || m->cover_url->empty()) return std::nullopt;
@@ -402,6 +416,13 @@ Rect cover_rect(const App& app) {
     cover_w = std::clamp(grown_w, std::min(static_cast<int>(tier.cover_w), col_w),
                          col_w);
     rows = poster_rows(cover_w, app.cover_caps.cell);
+  }
+
+  // The character page reads beside its portrait: on a canvas too narrow for
+  // both, the text wins and no portrait is placed.
+  if (app.view == View::Detail && app.character.open &&
+      col_w - cover_w - kCharacterBodyGap - 2 < kCharacterBodyMinCols) {
+    return Rect{};
   }
 
   // Content region is rows [kContentY0, win.rows-1). Reserve at least 2 rows
@@ -953,7 +974,16 @@ void draw_char_recs_section(const App& app, CellBuffer& buf, int x0, int w, int 
             line += *c.va_name;
           }
         }
-        buf.put_str(x0, y, truncate_to_cols(line, w), theme::fg2, theme::bg);
+        // The cursor reads as live only while the section holds focus, the
+        // same rule as the recommendation rows below.
+        const bool selected = ln.idx == cr.cursor;
+        const Rgb cursor_col = cr.focused ? theme::focus : theme::fg2;
+        const Rgb bg = selected && cr.focused ? theme::surface : theme::bg;
+        buf.fill(Rect{x0, y, w, 1}, bg);
+        if (selected) buf.put_str(x0, y, "\xE2\x96\xB8 ", cursor_col, bg);  // ▸
+        buf.put_str(x0 + 2, y, truncate_to_cols(line, w - 2),
+                    selected ? cursor_col : theme::fg2, bg,
+                    selected && cr.focused ? Style::Bold : Style::None);
         break;
       }
       case Line::Kind::RecHeader:
@@ -964,7 +994,7 @@ void draw_char_recs_section(const App& app, CellBuffer& buf, int x0, int w, int 
         // The row highlight only reads as a live cursor while Tab has given
         // the section focus (cr.focused); grid-focused, it dims to a plain
         // marker so Enter's actual target (the grid) stays visually primary.
-        const bool selected = ln.idx == cr.cursor;
+        const bool selected = cr.data.characters.size() + ln.idx == cr.cursor;
         const Rgb cursor_col = cr.focused ? theme::focus : theme::fg2;
         const Rgb bg = selected && cr.focused ? theme::surface : theme::bg;
         buf.fill(Rect{x0, y, w, 1}, bg);
@@ -1068,6 +1098,10 @@ void draw_detail_zoom(const App& app, CellBuffer& buf, int y0, int y1) {
   const int w = buf.width();
   const Enrichment* show = detail::selected_enrichment(app);
   if (show == nullptr) return;
+  if (app.character.open) {
+    draw_character_page(app, buf, y0, y1);
+    return;
+  }
   // The `c` section (P36) claims the bottom third of the zoom canvas when
   // toggled on, leaving the rest to the shared column (header + grid); a
   // narrow zoom (< 6 spare rows) skips the split rather than squeeze both
@@ -1835,6 +1869,7 @@ std::optional<std::size_t> episode_cell_at(const App& app, int px, int py) {
   const Enrichment* show = selected_enrichment(app);
   if (show == nullptr || app.deps == nullptr) return std::nullopt;
   if (app.episode.for_id != show->anilist_id) return std::nullopt;
+  if (app.view == View::Detail && app.character.open) return std::nullopt;  // no grid drawn.
   const EpisodeState& es = app.episode;
   if (es.loading || !es.fetched || es.episodes.empty()) return std::nullopt;
 

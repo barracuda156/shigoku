@@ -50,6 +50,7 @@
 #include "prewarm.hpp"
 #include "resolve_transport.hpp"
 #include "sixel.hpp"
+#include "character_page.hpp"
 #include "views.hpp"
 
 #include <ctime>
@@ -901,6 +902,60 @@ void reconcile_char_recs(App& app) {
   spawn_char_recs(*app.queue, app.deps->char_recs, id, shown->mal_id);
 }
 
+// Keep the character page honest against the selection: it belongs to the
+// show whose cast list opened it, so leaving the zoom or landing on another
+// show closes it. While it stands open and unanswered, fetch — once; a failed
+// fetch rests until the page is reopened.
+void reconcile_character(App& app) {
+  CharacterPageState& page = app.character;
+  if (!page.open) return;
+  const Enrichment* shown = detail::selected_enrichment(app);
+  if (app.view != View::Detail || shown == nullptr || shown->anilist_id != page.show_id) {
+    page = CharacterPageState{};
+    app.dirty = true;
+    return;
+  }
+  if (page.fetched || page.loading || page.failed) return;
+  if (app.deps == nullptr || !app.deps->character || app.queue == nullptr) return;
+  page.loading = true;
+  spawn_character(*app.queue, app.deps->character, page.id);
+}
+
+// Character* handlers: session-only like the cast section, and a stale answer
+// (the page closed or moved to another character meanwhile) is dropped first.
+
+void on_character_done(App& app, const CharacterDone& ev) {
+  CharacterPageState& page = app.character;
+  if (!page.open || page.id != ev.for_id) return;
+  page.loading = false;
+  page.fetched = true;
+  page.failed = false;
+  page.missing = false;
+  page.data = ev.data;
+  app.toasts.clear_topic(kAnilistTopic);
+  app.dirty = true;
+}
+
+void on_character_null(App& app, const CharacterNull& ev) {
+  CharacterPageState& page = app.character;
+  if (!page.open || page.id != ev.for_id) return;
+  page.loading = false;
+  page.fetched = true;
+  page.failed = false;
+  page.missing = true;
+  page.data = CharacterDetail{};
+  app.toasts.clear_topic(kAnilistTopic);
+  app.dirty = true;
+}
+
+void on_character_failed(App& app, const CharacterFailed& ev) {
+  CharacterPageState& page = app.character;
+  if (!page.open || page.id != ev.for_id) return;
+  page.loading = false;
+  page.failed = true;
+  app.dirty = true;
+}
+
 // Whether the `c` section actually RENDERS at the current geometry (P36
 // review): draw_detail_zoom skips the split on a cramped frame
 // (char_recs_section_height == 0), and key routing/Tab-focus must never
@@ -1367,7 +1422,7 @@ void char_recs_scroll_into_view(App& app) {
   const int section_h = detail::char_recs_section_height(content_rows);
   if (section_h <= 0) return;
   const std::size_t line =
-      detail::char_recs_rec_line_index(app.char_recs.data, app.char_recs.cursor);
+      detail::char_recs_item_line(app.char_recs.data, app.char_recs.cursor);
   if (line < app.char_recs.scroll) {
     app.char_recs.scroll = line;
   } else if (line >= app.char_recs.scroll + static_cast<std::size_t>(section_h)) {
@@ -1623,9 +1678,7 @@ void on_key(App& app, const KeyEvent& k) {
   // promoted zoom lands back in that list, promoted row selected at its tail.
   // The char_recs section itself resets (it belongs to the show that WAS
   // open), so the new zoom opens clean and a `c` there fetches its own answer.
-  auto promote_recommendation = [&]() {
-    if (app.char_recs.cursor >= app.char_recs.data.recommendations.size()) return;
-    const Enrichment target = app.char_recs.data.recommendations[app.char_recs.cursor];
+  auto promote_show = [&](const Enrichment target) {
     if (app.deps != nullptr && app.deps->store != nullptr) {
       const std::int64_t now = now_epoch_secs();
       const std::int64_t ttl = enrichment_ttl_secs(
@@ -1644,8 +1697,125 @@ void on_key(App& app, const KeyEvent& k) {
     app.list_cursor = static_cast<int>(idx);
     app.detail_origin = View::Browse;
     app.char_recs = CharactersRecsState{};
+    app.character = CharacterPageState{};
     app.view = View::Detail;
     open_detail();
+  };
+
+  // Open the character page for a cast row. The row's own name, portrait and
+  // voice seed the page; the rest arrives with the fetch (reconcile_character
+  // spawns it). A row without an id has no page to open.
+  auto open_character_page = [&](const CharacterEntry& c) {
+    if (c.id == 0 || app.deps == nullptr || !app.deps->character) {
+      app.toasts.push(ToastKind::Info, "no page for this character", app.tick_count);
+      return;
+    }
+    app.character = CharacterPageState{};
+    app.character.open = true;
+    app.character.id = c.id;
+    app.character.show_id = app.char_recs.for_id;
+    app.character.name = c.name;
+    app.character.image_url = c.image_url;
+    app.character.show_voice = c.va_name;
+  };
+
+  // Enter on the `c` section: a character opens its page, a recommendation
+  // opens that show.
+  auto activate_char_recs_item = [&]() {
+    const CharactersAndRecommendations& data = app.char_recs.data;
+    const std::size_t nc = data.characters.size();
+    if (app.char_recs.cursor < nc) {
+      open_character_page(data.characters[app.char_recs.cursor]);
+      return;
+    }
+    const std::size_t rec = app.char_recs.cursor - nc;
+    if (rec < data.recommendations.size()) promote_show(data.recommendations[rec]);
+  };
+
+  // The character page's keys. It scrolls and selects on its own and hides
+  // the grid, so every key but quit and the view switches stops here (true =
+  // consumed).
+  auto on_character_key = [&](const KeyEvent& key) -> bool {
+    using S = KeyEvent::Special;
+    CharacterPageState& page = app.character;
+    const detail::CharacterPageBox box = detail::character_page_box(app);
+    const std::vector<detail::CharacterLine> lines =
+        detail::character_page_lines(page, box.w);
+    auto close = [&]() { page = CharacterPageState{}; };
+    if (key.ctrl) return true;
+    switch (key.special) {
+      case S::None:
+        break;
+      case S::Escape:
+        close();
+        return true;
+      case S::Enter:
+        if (page.selected.has_value() && *page.selected < page.data.appearances.size()) {
+          promote_show(page.data.appearances[*page.selected].media);
+        }
+        return true;
+      case S::PageDown:
+        page.scroll += static_cast<std::size_t>(std::max(1, box.rows - 1));
+        detail::character_page_clamp(page, lines, box.rows);
+        return true;
+      case S::PageUp: {
+        const std::size_t by = static_cast<std::size_t>(std::max(1, box.rows - 1));
+        page.scroll = page.scroll > by ? page.scroll - by : 0;
+        return true;
+      }
+      case S::Home:
+        detail::character_page_jump(page, lines, box.rows, /*top=*/true);
+        return true;
+      case S::End:
+        detail::character_page_jump(page, lines, box.rows, /*top=*/false);
+        return true;
+      case S::Backspace:
+      case S::Tab:
+      case S::Up:
+      case S::Down:
+      case S::Left:
+      case S::Right:
+      case S::Delete:
+        return true;  // the arrows arrive as hjkl.
+    }
+    switch (key.codepoint) {
+      case U'q':
+      case U'/':
+      case U'B':
+      case U'H':
+      case U'D':
+      case U'C':
+      case U'S':
+        return false;  // quit and the view switches work from here too.
+      case U'j':
+        detail::character_page_step(page, lines, box.rows, 1);
+        return true;
+      case U'k':
+        detail::character_page_step(page, lines, box.rows, -1);
+        return true;
+      case U'g':
+        detail::character_page_jump(page, lines, box.rows, /*top=*/true);
+        return true;
+      case U'G':
+        detail::character_page_jump(page, lines, box.rows, /*top=*/false);
+        return true;
+      case U's':
+        if (detail::has_spoilers(page.data)) {
+          page.reveal_spoilers = !page.reveal_spoilers;
+          // The text reflows under the toggle: keep the cursor and the
+          // scroll inside the new line list.
+          detail::character_page_clamp(
+              page, detail::character_page_lines(page, box.w), box.rows);
+        }
+        return true;
+      case U' ':
+      case U'h':
+      case U'c':
+        close();
+        return true;
+      default:
+        return true;
+    }
   };
 
   // Play the grid cell at app.episode.cursor: resolve+play via P5.
@@ -2022,6 +2192,8 @@ void on_key(App& app, const KeyEvent& k) {
     else if (key.special == S::Right) { key.special = S::None; key.codepoint = U'l'; }
   }
 
+  if (app.view == View::Detail && app.character.open && on_character_key(key)) return;
+
   // Normal mode.
   if (key.special == KeyEvent::Special::None && !key.ctrl) {
     switch (key.codepoint) {
@@ -2164,11 +2336,10 @@ void on_key(App& app, const KeyEvent& k) {
           app.schedule.nav(1, list_visible);
         } else if (app.view == View::Detail && char_recs_section_shown(app) &&
                    app.char_recs.focused) {
-          // P36 slice 3: the section owns j/k while Tab-focused AND actually
-          // rendered (a cramped frame skips the split — keys must not move an
-          // invisible cursor); the recommendation cursor is the Enter target,
-          // never the grid's.
-          const std::size_t n = app.char_recs.data.recommendations.size();
+          // The section owns j/k while Tab-focused AND actually rendered (a
+          // cramped frame skips the split — keys must not move an invisible
+          // cursor); its cursor is the Enter target, never the grid's.
+          const std::size_t n = detail::char_recs_item_count(app.char_recs.data);
           if (n > 0 && app.char_recs.cursor + 1 < n) ++app.char_recs.cursor;
           char_recs_scroll_into_view(app);
         } else if ((app.view == View::Browse && app.pane == Pane::Detail) ||
@@ -2226,10 +2397,10 @@ void on_key(App& app, const KeyEvent& k) {
              app.pane == Pane::Detail);
         if (on_detail_surface) {
           // KEYS_AUDIT F4: while the `c` section holds Tab focus, g/G jump
-          // its recommendation cursor — the same ownership rule j/k follow.
+          // its cursor — the same ownership rule j/k follow.
           if (app.view == View::Detail && char_recs_section_shown(app) &&
               app.char_recs.focused) {
-            const std::size_t n = app.char_recs.data.recommendations.size();
+            const std::size_t n = detail::char_recs_item_count(app.char_recs.data);
             if (n > 0) {
               app.char_recs.cursor = top ? 0 : n - 1;
               char_recs_scroll_into_view(app);
@@ -2473,11 +2644,10 @@ void on_key(App& app, const KeyEvent& k) {
       return;
     }
     if (app.view == View::Detail && char_recs_section_shown(app) && app.char_recs.focused) {
-      // P36 slice 3: Enter on the section (not the grid) promotes the
-      // focused recommendation instead of playing. Gated on the section
-      // actually rendering — a cramped frame must not Enter-promote a show
-      // the user cannot see (P36 review).
-      promote_recommendation();
+      // Enter on the section (not the grid) opens its focused row instead
+      // of playing. Gated on the section actually rendering — a cramped
+      // frame must not open a row the user cannot see.
+      activate_char_recs_item();
       return;
     }
     if ((app.view == View::Browse && app.pane == Pane::Detail) ||
@@ -2699,6 +2869,9 @@ void on_mouse(App& app, const MouseEvent& m) {
       return;
     }
   }
+
+  // The character page has no click targets (the wheel scrolls it above).
+  if (app.view == View::Detail && app.character.open) return;
 
   // The detail surface: an episode-cell click selects it, with focus
   // following into the pane — the grid is only hit-testable when it belongs
@@ -3339,6 +3512,9 @@ void tick(App& app, const Event& ev) {
           [&](const EnrichmentNull& e) { on_enrichment_null(app, e); },
           [&](const EnrichmentFailed&) { on_enrichment_failed(app); },
           [&](const EnrichmentHealMissed&) { on_enrichment_heal_missed(app); },
+          [&](const CharacterDone& e) { on_character_done(app, e); },
+          [&](const CharacterNull& e) { on_character_null(app, e); },
+          [&](const CharacterFailed& e) { on_character_failed(app, e); },
           [&](const CharactersRecsDone& e) { on_char_recs_done(app, e); },
           [&](const CharactersRecsNull& e) { on_char_recs_null(app, e); },
           [&](const CharactersRecsFailed& e) { on_char_recs_failed(app, e); },
@@ -3415,6 +3591,9 @@ void tick(App& app, const Event& ev) {
   // it — a selection move, a results landing, a view switch, or a cooldown
   // expiry (via Tick) all route through here. The decision is pure and spawns
   // at most one worker; UpToDate/None are the steady-state no-ops.
+  // The character page first: closing it hands the poster slot back to the
+  // show, which the cover reconcile below must see.
+  reconcile_character(app);
   reconcile_cover(app);
   // Same one-place discipline for refresh-on-view enrichment (P21, 04 §10):
   // spends the network only on a stale/missing show, single-flighted, and

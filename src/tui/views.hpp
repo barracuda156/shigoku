@@ -75,11 +75,14 @@ namespace detail {
 // "4h 12m", "2d 4h". Pure; exposed for the DoD table test.
 [[nodiscard]] std::string countdown_text(std::int64_t secs);
 
-// The flattened line offset of recommendations[rec_idx] in the `c` section's
-// rendered line list (P36 slice 3), for app.cpp's scroll-into-view math.
-// Exposed for tests.
-[[nodiscard]] std::size_t char_recs_rec_line_index(const CharactersAndRecommendations& data,
-                                                    std::size_t rec_idx);
+// The `c` section's selectable items: every character, then every
+// recommendation. An item index below data.characters.size() is a character.
+[[nodiscard]] std::size_t char_recs_item_count(const CharactersAndRecommendations& data);
+
+// The flattened line offset of item `item` in the `c` section's rendered
+// line list, for app.cpp's scroll-into-view math. Exposed for tests.
+[[nodiscard]] std::size_t char_recs_item_line(const CharactersAndRecommendations& data,
+                                              std::size_t item);
 
 // The provider caption (05 §15): "▸ {serving} · {other}[+/-/?]" from the grid's
 // serving/pin/availability state. Pure; "" when nothing serves yet. Exposed for

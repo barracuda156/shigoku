@@ -19,6 +19,7 @@
 #include "../src/provider.hpp"
 #include "../src/store.hpp"
 #include "../src/tui/app.hpp"
+#include "../src/tui/character_page.hpp"
 #include "../src/tui/prewarm.hpp"
 #include "../src/tui/resolve_transport.hpp"
 #include "../src/tui/views.hpp"
@@ -2226,8 +2227,10 @@ TEST_CASE("mouse: episode cells hit-test against the drawn grid and select") {
 namespace {
 CharactersAndRecommendations sample_char_recs() {
   CharactersAndRecommendations cr;
-  cr.characters.push_back(CharacterEntry{"Frieren", "MAIN", std::string("Atsumi Tanezaki")});
-  cr.characters.push_back(CharacterEntry{"Sein", "SUPPORTING", std::nullopt});
+  cr.characters.push_back(CharacterEntry{"Frieren", "MAIN", std::string("Atsumi Tanezaki"),
+                                         176754,
+                                         std::string("https://example.com/c/176754.png")});
+  cr.characters.push_back(CharacterEntry{"Sein", "SUPPORTING", std::nullopt});  // no id: no page.
   cr.recommendations.push_back(row_for(101922, "Kimetsu no Yaiba").meta);
   cr.recommendations.push_back(row_for(21, "One Piece").meta);
   return cr;
@@ -2392,13 +2395,21 @@ TEST_CASE("Tab swaps grid/section focus; j/k and Enter route to the focused surf
   tick(h->app, Event{special_key(KeyEvent::Special::Tab)});
   CHECK(h->app.char_recs.focused);
 
-  // Section-focused: j/k move the recommendation cursor and clamp at the end.
+  // Section-focused: j/k walk one cursor through the characters and on into
+  // the recommendations, clamping at the last row.
   tick(h->app, Event{press(U'j')});
-  CHECK(h->app.char_recs.cursor == 1);
+  CHECK(h->app.char_recs.cursor == 1);  // the second character.
   tick(h->app, Event{press(U'j')});
-  CHECK(h->app.char_recs.cursor == 1);  // clamped: only 2 recommendations.
+  CHECK(h->app.char_recs.cursor == 2);  // the first recommendation.
+  tick(h->app, Event{press(U'j')});
+  tick(h->app, Event{press(U'j')});
+  CHECK(h->app.char_recs.cursor == 3);  // clamped: 2 characters + 2 recommendations.
   tick(h->app, Event{press(U'k')});
+  CHECK(h->app.char_recs.cursor == 2);
+  tick(h->app, Event{press(U'g')});
   CHECK(h->app.char_recs.cursor == 0);
+  tick(h->app, Event{press(U'G')});
+  CHECK(h->app.char_recs.cursor == 3);
 
   tick(h->app, Event{special_key(KeyEvent::Special::Tab)});
   CHECK_FALSE(h->app.char_recs.focused);  // back to the grid.
@@ -2421,7 +2432,7 @@ TEST_CASE("Enter on a focused recommendation promotes it: fresh zoom, zero stale
   h->app.char_recs.focused = true;
   h->app.char_recs.fetched = true;
   h->app.char_recs.data = sample_char_recs();
-  h->app.char_recs.cursor = 0;  // Kimetsu no Yaiba, anilist_id 101922.
+  h->app.char_recs.cursor = 2;  // past the two characters: Kimetsu no Yaiba, 101922.
 
   tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
 
@@ -2467,7 +2478,7 @@ TEST_CASE("zoom section pty-style render: characters/recommendations draw with a
   h->app.char_recs.fetched = true;
   h->app.char_recs.data = sample_char_recs();
   h->app.char_recs.focused = true;
-  h->app.char_recs.cursor = 1;  // One Piece.
+  h->app.char_recs.cursor = 3;  // One Piece.
 
   CellBuffer buf;
   draw(h->app, buf);
@@ -2492,6 +2503,447 @@ TEST_CASE("zoom section pty-style render: characters/recommendations draw with a
   CHECK(saw_characters_header);
   CHECK(saw_recs_header);
   CHECK(saw_cursor_glyph);  // the focused recommendation row drew its cursor mark.
+}
+
+// --- character pages ---------------------------------------------------------
+
+namespace {
+
+CharacterDetail sample_character() {
+  CharacterDetail d;
+  d.id = 176754;
+  d.name = "Frieren";
+  d.native_name = "フリーレン";
+  d.alt_names = {"Frieren the Slayer"};
+  d.spoiler_names = {"Secret Name"};
+  d.image_url = "https://example.com/c/176754.png";
+  d.gender = "Female";
+  d.age = "1000+";
+  d.favourites = 36091;
+  d.description = "An elven mage.\n~!She outlives everyone.!~\n\nSecond paragraph.";
+  for (const auto& [id, title] : {std::pair<std::int64_t, const char*>{154587, "Sousou no Frieren"},
+                                  {182255, "Sousou no Frieren 2"},
+                                  {170068, "Frieren Mini Anime"}}) {
+    CharacterAppearance a;
+    a.media = row_for(id, title).meta;
+    a.role = "MAIN";
+    a.va_name = "Atsumi Tanezaki";
+    d.appearances.push_back(std::move(a));
+  }
+  return d;
+}
+
+// A zoom over show 700 with the cast list open and focused.
+std::unique_ptr<HistoryHarness> zoom_with_cast() {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  h->app.catalog.push_back(row_for(700, "Frieren"));
+  h->app.list_cursor = 0;
+  h->app.detail_origin = View::Browse;
+  h->app.view = View::Detail;
+  h->app.episode.for_id = 700;
+  h->app.episode.fetched = true;
+  h->app.episode.provider_id = "megaplay";
+  h->app.episode.episodes = {"1", "2", "3"};
+  h->app.char_recs.visible = true;
+  h->app.char_recs.focused = true;
+  h->app.char_recs.fetched = true;
+  h->app.char_recs.for_id = 700;
+  h->app.char_recs.data = sample_char_recs();
+  return h;
+}
+
+// The same zoom with Frieren's page open and answered.
+std::unique_ptr<HistoryHarness> zoom_with_character() {
+  auto h = zoom_with_cast();
+  h->app.character.open = true;
+  h->app.character.id = 176754;
+  h->app.character.show_id = 700;
+  h->app.character.name = "Frieren";
+  h->app.character.fetched = true;
+  h->app.character.data = sample_character();
+  return h;
+}
+
+std::string screen_text(const CellBuffer& buf) {
+  std::string out;
+  for (int y = 0; y < buf.height(); ++y) {
+    for (int x = 0; x < buf.width(); ++x) {
+      const char32_t g = buf.at(x, y).glyph;
+      out += (g >= 0x20 && g < 0x7F) ? static_cast<char>(g) : ' ';
+    }
+    out += '\n';
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("char_recs item lines: characters first, then recommendations") {
+  using shigoku::tui::detail::char_recs_item_count;
+  using shigoku::tui::detail::char_recs_item_line;
+  const CharactersAndRecommendations both = sample_char_recs();
+  CHECK(char_recs_item_count(both) == 4);
+  CHECK(char_recs_item_line(both, 0) == 1);  // under the Characters header.
+  CHECK(char_recs_item_line(both, 1) == 2);
+  CHECK(char_recs_item_line(both, 2) == 5);  // blank + Recommendations header between.
+  CHECK(char_recs_item_line(both, 3) == 6);
+
+  CharactersAndRecommendations recs_only;
+  recs_only.recommendations = both.recommendations;
+  CHECK(char_recs_item_line(recs_only, 0) == 1);
+  CharactersAndRecommendations chars_only;
+  chars_only.characters = both.characters;
+  CHECK(char_recs_item_count(chars_only) == 2);
+  CHECK(char_recs_item_line(chars_only, 1) == 2);
+}
+
+TEST_CASE("Enter on a cast row opens the character page and fetches it once") {
+  auto h = zoom_with_cast();
+  EventQueue queue;
+  auto calls = std::make_shared<std::atomic<int>>(0);
+  auto asked = std::make_shared<std::atomic<std::int64_t>>(0);
+  h->deps.character = [calls, asked](std::int64_t id)
+      -> Result<std::optional<CharacterDetail>, ProviderError> {
+    calls->fetch_add(1);
+    asked->store(id);
+    return std::optional<CharacterDetail>(sample_character());
+  };
+  h->app.queue = &queue;
+  auto pump_one = [&]() -> std::optional<Event> {
+    for (int i = 0; i < 50; ++i) {
+      if (auto ev = queue.wait_next(); ev.has_value()) return ev;
+    }
+    return std::nullopt;
+  };
+
+  // A row the catalog gave no id has no page: a toast, nothing opens.
+  h->app.char_recs.cursor = 1;  // Sein.
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK_FALSE(h->app.character.open);
+  CHECK(calls->load() == 0);
+
+  h->app.char_recs.cursor = 0;  // Frieren.
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.character.open);
+  CHECK(h->app.character.id == 176754);
+  CHECK(h->app.character.show_id == 700);
+  CHECK(h->app.character.name == "Frieren");
+  CHECK(h->app.character.show_voice == std::optional<std::string>("Atsumi Tanezaki"));
+  CHECK(h->app.character.loading);  // the same tick's reconcile spawned the fetch.
+  CHECK(h->app.view == View::Detail);
+  CHECK_FALSE(h->app.play.active);  // Enter did not fall through to the grid.
+
+  // The poster slot now asks for the portrait, under an id no show can have.
+  const auto target = shigoku::tui::detail::cover_target(h->app);
+  REQUIRE(target.has_value());
+  CHECK(target->id == kCharacterCoverIdBase + 176754);
+  CHECK(target->url == "https://example.com/c/176754.png");
+
+  auto ev = pump_one();
+  REQUIRE(ev.has_value());
+  tick(h->app, *ev);
+  CHECK(asked->load() == 176754);
+  CHECK(h->app.character.fetched);
+  CHECK_FALSE(h->app.character.loading);
+  CHECK(h->app.character.data.appearances.size() == 3);
+  tick(h->app, Event{Tick{}});
+  tick(h->app, Event{Tick{}});
+  CHECK(calls->load() == 1);  // answered: never asked again.
+
+  // Esc closes the page and nothing else: the zoom and its cast list stand.
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK_FALSE(h->app.character.open);
+  CHECK(h->app.view == View::Detail);
+  CHECK(h->app.char_recs.visible);
+  CHECK(h->app.char_recs.cursor == 0);
+  const auto back = shigoku::tui::detail::cover_target(h->app);
+  CHECK_FALSE(back.has_value());  // row_for has no cover: the show's slot again.
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("character page: a failed fetch rests, a stale answer is dropped") {
+  auto h = zoom_with_cast();
+  EventQueue queue;
+  auto calls = std::make_shared<std::atomic<int>>(0);
+  h->deps.character = [calls](std::int64_t)
+      -> Result<std::optional<CharacterDetail>, ProviderError> {
+    calls->fetch_add(1);
+    return err(ProviderError::network());
+  };
+  h->app.queue = &queue;
+  h->app.char_recs.cursor = 0;
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.character.loading);
+
+  // An answer for some other character (a page closed and reopened on a
+  // different row meanwhile) must not land on this one.
+  tick(h->app, Event{CharacterDone{999, sample_character()}});
+  CHECK(h->app.character.loading);
+  CHECK_FALSE(h->app.character.fetched);
+
+  std::optional<Event> ev;
+  for (int i = 0; i < 50 && !ev.has_value(); ++i) ev = queue.wait_next();
+  REQUIRE(ev.has_value());
+  tick(h->app, *ev);  // CharacterFailed{176754}.
+  CHECK(h->app.character.failed);
+  CHECK_FALSE(h->app.character.loading);
+  tick(h->app, Event{Tick{}});
+  tick(h->app, Event{Tick{}});
+  CHECK(calls->load() == 1);  // no retry loop while offline.
+
+  // "No such character" is an answer of its own.
+  h->app.character.failed = false;
+  h->app.character.loading = true;
+  tick(h->app, Event{CharacterNull{176754}});
+  CHECK(h->app.character.missing);
+  CHECK(h->app.character.fetched);
+
+  // With the page closed, a late answer is nothing.
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  tick(h->app, Event{CharacterDone{176754, sample_character()}});
+  CHECK_FALSE(h->app.character.open);
+  CHECK_FALSE(h->app.character.fetched);
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("character page keys: scroll, then walk the appearances; the grid stays untouched") {
+  auto h = zoom_with_character();
+  h->app.win = WinSize{100, 14, 0, 0};  // 11 content rows: the page must scroll.
+  App& app = h->app;
+  using shigoku::tui::detail::character_page_box;
+  using shigoku::tui::detail::character_page_lines;
+  const auto box = character_page_box(app);
+  const auto lines = character_page_lines(app.character, box.w);
+  REQUIRE(box.rows == 11);
+  REQUIRE(lines.size() > static_cast<std::size_t>(box.rows));
+  const std::size_t max_scroll = lines.size() - static_cast<std::size_t>(box.rows);
+
+  // j scrolls the text to its end before the cursor enters the list.
+  for (std::size_t i = 0; i < max_scroll; ++i) {
+    tick(app, Event{press(U'j')});
+    CHECK_FALSE(app.character.selected.has_value());
+  }
+  CHECK(app.character.scroll == max_scroll);
+  tick(app, Event{press(U'j')});
+  CHECK(app.character.selected == std::optional<std::size_t>(0));
+  tick(app, Event{special_key(KeyEvent::Special::Down)});  // arrows are j/k here too.
+  tick(app, Event{press(U'j')});
+  tick(app, Event{press(U'j')});
+  CHECK(app.character.selected == std::optional<std::size_t>(2));  // clamped at the last.
+
+  // k walks back out of the list, then scrolls up.
+  tick(app, Event{press(U'k')});
+  tick(app, Event{press(U'k')});
+  CHECK(app.character.selected == std::optional<std::size_t>(0));
+  tick(app, Event{press(U'k')});
+  CHECK_FALSE(app.character.selected.has_value());
+  CHECK(app.character.scroll == max_scroll);
+  tick(app, Event{press(U'k')});
+  CHECK(app.character.scroll == max_scroll - 1);
+
+  tick(app, Event{press(U'G')});
+  CHECK(app.character.selected == std::optional<std::size_t>(2));
+  tick(app, Event{press(U'g')});
+  CHECK_FALSE(app.character.selected.has_value());
+  CHECK(app.character.scroll == 0);
+  tick(app, Event{special_key(KeyEvent::Special::PageDown)});
+  CHECK(app.character.scroll == std::min<std::size_t>(max_scroll, 10));
+  tick(app, Event{special_key(KeyEvent::Special::PageUp)});
+  CHECK(app.character.scroll == 0);
+
+  // s reveals the spoilers (the page has some) and back.
+  CHECK_FALSE(app.character.reveal_spoilers);
+  tick(app, Event{press(U's')});
+  CHECK(app.character.reveal_spoilers);
+  tick(app, Event{press(U's')});
+  CHECK_FALSE(app.character.reveal_spoilers);
+
+  // The zoom's own keys do not reach the hidden grid or the cast list.
+  const int grid_cursor = app.episode.cursor;
+  const std::size_t cast_cursor = app.char_recs.cursor;
+  for (const char32_t c : {U'l', U'd', U'v', U'~', U'p', U'x', U'w'}) {
+    tick(app, Event{press(c)});
+  }
+  tick(app, Event{special_key(KeyEvent::Special::Tab)});
+  CHECK(app.character.open);
+  CHECK(app.episode.cursor == grid_cursor);
+  CHECK(app.char_recs.cursor == cast_cursor);
+  CHECK(app.char_recs.focused);
+  CHECK_FALSE(app.download.active);
+  CHECK_FALSE(app.play.active);
+  CHECK(app.view == View::Detail);
+
+  // Enter with no appearance selected plays nothing and opens nothing.
+  tick(app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(app.character.open);
+  CHECK_FALSE(app.play.active);
+
+  // A click on the page is inert (the grid it would hit is not drawn).
+  tick(app, Event{MouseEvent{MouseEvent::Kind::Press, MouseEvent::Button::Left, 10, 8}});
+  CHECK(app.character.open);
+  CHECK(app.episode.cursor == grid_cursor);
+
+  // c / space / h all close the page, back to the cast list.
+  for (const char32_t c : {U'c', U' ', U'h'}) {
+    app.character.open = true;
+    app.character.id = 176754;
+    app.character.show_id = 700;
+    tick(app, Event{press(c)});
+    CHECK_FALSE(app.character.open);
+    CHECK(app.view == View::Detail);
+    CHECK(app.char_recs.visible);
+  }
+}
+
+TEST_CASE("character page: Enter on an appearance opens that show") {
+  auto h = zoom_with_character();
+  App& app = h->app;
+  tick(app, Event{press(U'G')});
+  REQUIRE(app.character.selected == std::optional<std::size_t>(2));
+  tick(app, Event{special_key(KeyEvent::Special::Enter)});
+
+  CHECK_FALSE(app.character.open);
+  CHECK(app.view == View::Detail);
+  const Enrichment* shown = shigoku::tui::detail::selected_enrichment(app);
+  REQUIRE(shown != nullptr);
+  CHECK(shown->anilist_id == 170068);
+  CHECK(app.catalog.size() == 2);  // joined the list; the old row survives.
+  CHECK_FALSE(app.char_recs.visible);  // the new show's page opens clean.
+  auto hit = h->store.get_catalog(170068);
+  REQUIRE(hit.has_value());
+  CHECK(hit->has_value());
+}
+
+TEST_CASE("character page closes with its show: a view switch or another selection") {
+  {
+    auto h = zoom_with_character();
+    tick(h->app, Event{press(U'H')});
+    CHECK(h->app.view == View::History);
+    CHECK_FALSE(h->app.character.open);
+  }
+  {
+    auto h = zoom_with_character();
+    h->app.catalog.push_back(row_for(701, "Other"));
+    h->app.list_cursor = 1;  // the zoom now shows another show.
+    tick(h->app, Event{Tick{}});
+    CHECK_FALSE(h->app.character.open);
+  }
+  {
+    auto h = zoom_with_character();
+    tick(h->app, Event{press(U'q')});
+    CHECK(h->app.quit);  // quit works from the page.
+  }
+}
+
+TEST_CASE("character page lines and spoilers") {
+  using namespace shigoku::tui::detail;
+  using K = CharacterLine::Kind;
+
+  CHECK(spoiler_text("a ~!b\nc!~ d", false) == "a [spoiler] d");
+  CHECK(spoiler_text("a ~!b\nc!~ d", true) == "a b\nc d");
+  CHECK(spoiler_text("open ~!to the end", false) == "open [spoiler]");
+  CHECK(spoiler_text("open ~!to the end", true) == "open to the end");
+  CHECK(spoiler_text("plain !~ text", false) == "plain !~ text");
+
+  CharacterPageState page;
+  page.open = true;
+  page.name = "Frieren";
+  page.show_voice = "Atsumi Tanezaki";
+  page.loading = true;
+  // Before the answer: the heading and the voice from the cast row, and a note.
+  auto lines = character_page_lines(page, 60);
+  REQUIRE(lines.size() >= 3);
+  CHECK(lines.front().kind == K::Name);
+  CHECK(lines.front().text == "Frieren");
+  CHECK(std::any_of(lines.begin(), lines.end(), [](const CharacterLine& l) {
+    return l.kind == K::Fact && l.label == "Voice" && l.text == "Atsumi Tanezaki";
+  }));
+  CHECK(lines.back().kind == K::Note);
+
+  page.loading = false;
+  page.fetched = true;
+  page.data = sample_character();
+  CHECK(has_spoilers(page.data));
+  lines = character_page_lines(page, 60);
+  auto count = [&](K k) {
+    return std::count_if(lines.begin(), lines.end(),
+                         [&](const CharacterLine& l) { return l.kind == k; });
+  };
+  auto has_text = [&](std::string_view needle) {
+    return std::any_of(lines.begin(), lines.end(), [&](const CharacterLine& l) {
+      return l.text.find(needle) != std::string::npos;
+    });
+  };
+  CHECK(count(K::Appearance) == 3);
+  CHECK(count(K::Header) == 1);
+  CHECK(count(K::Note) == 0);
+  CHECK(has_text("36,091"));
+  CHECK(has_text("Frieren the Slayer"));
+  CHECK(has_text("[spoiler]"));
+  CHECK_FALSE(has_text("outlives"));
+  CHECK_FALSE(has_text("Secret Name"));
+  // Never two blank lines in a row, none at either end.
+  CHECK(lines.front().kind != K::Blank);
+  CHECK(lines.back().kind != K::Blank);
+  for (std::size_t i = 1; i < lines.size(); ++i) {
+    CHECK_FALSE((lines[i].kind == K::Blank && lines[i - 1].kind == K::Blank));
+  }
+
+  page.reveal_spoilers = true;
+  lines = character_page_lines(page, 60);
+  CHECK(has_text("outlives"));
+  CHECK(has_text("Secret Name"));
+  CHECK_FALSE(has_text("[spoiler]"));
+
+  // A narrow column wraps the text instead of clipping it.
+  const auto wide = character_page_lines(page, 60).size();
+  const auto narrow = character_page_lines(page, 12).size();
+  CHECK(narrow > wide);
+  CHECK(character_page_lines(page, 0).empty());
+
+  CharacterDetail plain;
+  plain.description = "no fences here";
+  CHECK_FALSE(has_spoilers(plain));
+}
+
+TEST_CASE("character page render: name, facts and appearances draw; the portrait takes the slot") {
+  auto h = zoom_with_character();
+  App& app = h->app;
+  app.win = WinSize{120, 40, 0, 0};
+  app.character.image_url = "https://example.com/c/176754.png";
+  tick(app, Event{press(U'G')});  // the cursor on the last appearance.
+
+  // A portrait is placed: the body sits right of it, clear of the slot.
+  const Rect portrait = shigoku::tui::detail::cover_rect(app);
+  REQUIRE_FALSE(portrait.empty());
+  const auto box = shigoku::tui::detail::character_page_box(app);
+  CHECK(box.x >= portrait.x + portrait.w + 1);
+  CHECK(box.w >= shigoku::tui::detail::kCharacterBodyMinCols);
+
+  CellBuffer buf;
+  draw(app, buf);
+  const std::string text = screen_text(buf);
+  CHECK(text.find("Frieren") != std::string::npos);
+  CHECK(text.find("Gender") != std::string::npos);
+  CHECK(text.find("36,091") != std::string::npos);
+  CHECK(text.find("An elven mage.") != std::string::npos);
+  CHECK(text.find("[spoiler]") != std::string::npos);
+  CHECK(text.find("Appears in") != std::string::npos);
+  CHECK(text.find("Frieren Mini Anime") != std::string::npos);
+  CHECK(text.find("s spoilers") != std::string::npos);  // the bar names the page's keys.
+  // The show's own page is not drawn underneath.
+  CHECK(text.find("Characters") == std::string::npos);
+  CHECK(text.find("Recommendations") == std::string::npos);
+
+  // Too narrow for a portrait and readable text: the text wins.
+  app.win = WinSize{50, 40, 0, 0};
+  CHECK(shigoku::tui::detail::cover_rect(app).empty());
+  const auto narrow = shigoku::tui::detail::character_page_box(app);
+  CHECK(narrow.x == 2);
+  CHECK(narrow.w > 0);
+  draw(app, buf);
+  CHECK(screen_text(buf).find("Frieren") != std::string::npos);
 }
 
 TEST_CASE("resize purge deletes every held placement and empties the records") {

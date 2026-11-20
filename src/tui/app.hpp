@@ -162,12 +162,38 @@ struct CharactersRecsState {
   bool failed = false;             // last fetch for `for_id` was a transport error.
   CharactersAndRecommendations data;
   std::size_t scroll = 0;          // line offset into the rendered section body.
-  std::size_t cursor = 0;          // index into data.recommendations (P36 slice 3 Enter target).
+  // The Enter target: an item index over the characters, then the
+  // recommendations (detail::char_recs_item_count is the range).
+  std::size_t cursor = 0;
   // Tab toggles focus between the episode grid and this section while
   // visible (the zoom has no finer-grained Pane concept than that); j/k and
   // Enter route to the section only while focused. Reset to false whenever
   // the section is hidden, so re-opening always lands back on the grid.
   bool focused = false;
+};
+
+// A character's own page: a sub-page of the Detail zoom, opened from the cast
+// list and drawn in place of the show's body, the portrait in the poster
+// slot. `name`/`image_url`/`show_voice` come from the cast row, so the page
+// has a heading and a portrait before the answer lands. Session-only: closing
+// drops everything. Single-flight like the cast section.
+struct CharacterPageState {
+  bool open = false;
+  std::int64_t id = 0;       // the character shown (or being fetched).
+  std::int64_t show_id = 0;  // the show whose cast list opened the page.
+  std::string name;
+  std::optional<std::string> image_url;
+  std::optional<std::string> show_voice;  // the voice in that show.
+  bool loading = false;
+  bool fetched = false;      // an answer landed (`data` may still be empty).
+  bool failed = false;       // the fetch was a transport error.
+  bool missing = false;      // the catalog has no such character.
+  CharacterDetail data;
+  bool reveal_spoilers = false;
+  std::size_t scroll = 0;    // first visible body line.
+  // The cursor in the "appears in" list (an index into data.appearances),
+  // once j has walked past the end of the text into it.
+  std::optional<std::size_t> selected;
 };
 
 // One display line of the grouped History list (05 §2 geometry contract): a
@@ -438,6 +464,11 @@ using HealFn = std::function<Result<std::optional<Enrichment>, ProviderError>(
 using CharRecsFn = std::function<Result<std::optional<CharactersAndRecommendations>, ProviderError>(
     std::int64_t anilist_id, std::optional<std::int64_t> mal_id)>;
 
+// Character-page callback: a character id (as the cast list carried it) ->
+// three-state answer, same shape as EnrichFn. Runs on its own worker thread.
+using CharacterFn =
+    std::function<Result<std::optional<CharacterDetail>, ProviderError>(std::int64_t character_id)>;
+
 struct AppDeps {
   const ProviderRegistry* registry = nullptr;
   const http::Client* http = nullptr;
@@ -447,6 +478,7 @@ struct AppDeps {
   EnrichFn enrich;  // must be set for refresh-on-view to fetch (else no-op).
   HealFn heal;  // set = refresh-on-view re-keys synthetic rows it can (else they stay).
   CharRecsFn char_recs;  // must be set for the `c` section to fetch (else no-op).
+  CharacterFn character;  // must be set for a character page to open (else no-op).
   GenreCollectionFn genre_collection;  // must be set for the filter overlay's genre picker to fetch (else no-op).
   // The top-bar catalog chip: "MAL" while MyAnimeList serves the browse
   // calls, "" otherwise. Unset = no chip (demo / tests).
@@ -642,6 +674,8 @@ struct App {
 
   // --- detail zoom `c` section (P36) -----------------------------------------
   CharactersRecsState char_recs;
+  // The character page opened from that section's cast list.
+  CharacterPageState character;
 
   // --- toasts ---
   ToastQueue toasts;
@@ -737,6 +771,10 @@ inline constexpr TickCount kSlowSpinnerTicks = 30;      // 3s -> "slow" color
 inline constexpr TickCount kCheckpointTicks = 300;      // 30s store checkpoint (04 §7.7)
 inline constexpr TickCount kSyncFlushTicks = 30;        // 3s action-flush debounce (ROD-291)
 inline constexpr TickCount kDoubleClickTicks = 4;       // 400ms double-click window (P32)
+
+// Character portraits ride the detail-cover slot under their own id range,
+// so a character id can never read as the show id whose poster the slot held.
+inline constexpr std::int64_t kCharacterCoverIdBase = std::int64_t{1} << 40;
 
 // Kitty image id for the single detail cover (A4: i=<id> stable per slot; the
 // one v0 cover reuses one id so a replace deletes-then-transmits the same slot).

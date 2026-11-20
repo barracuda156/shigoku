@@ -113,6 +113,14 @@ inline constexpr std::size_t kAiringPage = 50;
 characters_and_recommendations(const http::Client& client, std::int64_t anilist_id,
                                MediaKind kind = MediaKind::Anime);
 
+// A character's own page: names, portrait, facts, description and up to
+// kCharacterAppearances shows the character appears in (most popular first,
+// Enrichment-shaped like a recommendation). Three-state as above: Ok(nullopt)
+// = AniList has no such character.
+inline constexpr std::uint32_t kCharacterAppearances = 10;
+[[nodiscard]] Result<std::optional<CharacterDetail>, ProviderError> character(
+    const http::Client& client, std::int64_t character_id, MediaKind kind = MediaKind::Anime);
+
 // One page of a show's recommendations, best voted first, kRecommendationPage
 // per page, 1-indexed: the Similar feed. Rows of another media type and rows
 // voted at or below zero are dropped; the first of those ends the list
@@ -250,6 +258,24 @@ namespace detail {
 // show, not a negative answer).
 [[nodiscard]] Result<std::optional<CharactersAndRecommendations>, ProviderError>
 classify_characters_recs(std::string_view raw_json, MediaKind kind = MediaKind::Anime);
+
+// The character-page query document and POST body; `kind` scopes the
+// appearances list.
+[[nodiscard]] std::string character_query(MediaKind kind = MediaKind::Anime);
+[[nodiscard]] std::string character_body(std::int64_t character_id,
+                                         MediaKind kind = MediaKind::Anime);
+
+// AniList character markdown -> CharacterDetail::description's form: tags and
+// entities resolved (`<br>` breaks a line), emphasis markers, links and inline
+// images reduced to their text, blank-line runs folded, each line stripped of
+// control characters. Spoiler fences (`~!` … `!~`) are kept.
+[[nodiscard]] std::string character_text(std::string_view raw);
+
+// Character body -> three-state: data:null/garbage = no answer (Err);
+// Character:null (or one with no id or name) = confirmed no-match
+// (Ok(nullopt)); otherwise Ok(some).
+[[nodiscard]] Result<std::optional<CharacterDetail>, ProviderError> classify_character(
+    std::string_view raw_json);
 
 [[nodiscard]] std::string recommendations_query(MediaKind kind = MediaKind::Anime);
 [[nodiscard]] std::string recommendations_body(std::int64_t anilist_id, std::uint32_t page,

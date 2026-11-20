@@ -475,6 +475,27 @@ struct CharactersRecsFailed {
   friend bool operator==(const CharactersRecsFailed&, const CharactersRecsFailed&) = default;
 };
 
+// --- Character page ----------------------------------------------------------
+//
+// The character-page worker posts one of the three below by character id,
+// the same three-state contract as CharactersRecs* above.
+
+struct CharacterDone {
+  std::int64_t for_id = 0;
+  CharacterDetail data;
+  friend bool operator==(const CharacterDone&, const CharacterDone&) = default;
+};
+
+struct CharacterNull {
+  std::int64_t for_id = 0;
+  friend bool operator==(const CharacterNull&, const CharacterNull&) = default;
+};
+
+struct CharacterFailed {
+  std::int64_t for_id = 0;
+  friend bool operator==(const CharacterFailed&, const CharacterFailed&) = default;
+};
+
 // --- 4.7b Discover filter overlay genre picker (P38, §9) --------------------
 //
 // The `f` overlay's single-flight genre fetch, session-cached (no for_id: the
@@ -574,6 +595,9 @@ using Event = std::variant<KeyEvent,
                            CharactersRecsDone,
                            CharactersRecsNull,
                            CharactersRecsFailed,
+                           CharacterDone,
+                           CharacterNull,
+                           CharacterFailed,
                            GenreCollectionDone,
                            GenreCollectionFailed,
                            UpdateAvailable,

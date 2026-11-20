@@ -834,6 +834,10 @@ int run_tui() {
       -> Result<std::optional<CharactersAndRecommendations>, ProviderError> {
     return cat.char_recs(anilist_id, mal_id);
   };
+  deps.character = [&cat](std::int64_t character_id)
+      -> Result<std::optional<CharacterDetail>, ProviderError> {
+    return cat.character(character_id);
+  };
   deps.genre_collection = [&cat]() -> Result<std::vector<std::string>, ProviderError> {
     return cat.genres();
   };

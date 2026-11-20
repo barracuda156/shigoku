@@ -669,6 +669,25 @@ void spawn_char_recs(EventQueue& queue, CharRecsFn fetch, std::int64_t for_id,
   });
 }
 
+// Character-page worker: the same three-state shape as spawn_char_recs, keyed
+// by the character id.
+void spawn_character(EventQueue& queue, CharacterFn fetch, std::int64_t character_id) {
+  spawn_detached([&queue, fetch = std::move(fetch), character_id]() {
+    auto ans = fetch(character_id);
+    Event ev = [&]() -> Event {
+      if (!ans.has_value()) return CharacterFailed{character_id};
+      if (!ans->has_value()) return CharacterNull{character_id};
+      CharacterDone d;
+      d.for_id = character_id;
+      d.data = std::move(**ans);
+      return d;
+    }();
+    const bool posted = queue.try_post(Event{std::move(ev)});
+    debug_log("worker character: id=" + std::to_string(character_id) +
+              " posted=" + std::to_string(posted));
+  });
+}
+
 // Discover filter overlay genre picker (P38, §9): a single-flight, session-
 // cached fetch (no for_id — the vocabulary is global). Two-state, mirroring
 // genre_collection's own contract (no confirmed-absent arm).

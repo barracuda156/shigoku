@@ -906,6 +906,7 @@ add_library(shigoku_tui_render STATIC
   src/tui/input.cpp
   src/tui/toast.cpp
   src/tui/views.cpp
+  src/tui/character_page.cpp
   # Render-side: the pure Kitty + OSC 1337 emitters, cover geometry,
   # and the startup terminal probe. All terminal/pure — NO curl — so they stay
   # in the purity core (covers.cpp, which fetches, is in the curl-gated

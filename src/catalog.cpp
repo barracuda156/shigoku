@@ -222,6 +222,10 @@ Backend anilist_backend(const http::Client& client) {
     if (anilist_id <= 0) return err(ProviderError::unsupported());
     return anilist::characters_and_recommendations(client, anilist_id);
   };
+  b.character = [&client](std::int64_t character_id)
+      -> Result<std::optional<CharacterDetail>, ProviderError> {
+    return anilist::character(client, character_id);
+  };
   b.similar = [&client](std::int64_t anilist_id, std::optional<std::int64_t>,
                         std::uint32_t page) -> Result<Page, ProviderError> {
     if (anilist_id <= 0) return err(ProviderError::unsupported());
@@ -387,6 +391,14 @@ Result<std::optional<Enrichment>, ProviderError> Catalog::heal(std::int64_t mal_
     std::lock_guard<std::mutex> lock(mu_);
     heal_absent_.insert(mal_id);
   }
+  return r;
+}
+
+Result<std::optional<CharacterDetail>, ProviderError> Catalog::character(
+    std::int64_t character_id) {
+  if (character_id <= 0 || !anilist_.character) return err(ProviderError::unsupported());
+  auto r = anilist_.character(character_id);
+  report(Source::AniList, r.has_value());
   return r;
 }
 

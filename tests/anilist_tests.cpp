@@ -202,6 +202,14 @@ TEST_CASE("golden_characters_recs_full_mapping") {
   CHECK(cr.characters[0].name == "Frieren");
   CHECK(cr.characters[0].role == "MAIN");
   CHECK(cr.characters[0].va_name == std::optional<std::string>("Atsumi Tanezaki"));
+  // The id and portrait a character page opens from; a blank portrait url
+  // reads as none, and a node without an id keeps 0 (no page).
+  CHECK(cr.characters[0].id == 176754);
+  CHECK(cr.characters[0].image_url ==
+        std::optional<std::string>("https://example.com/characters/176754.png"));
+  CHECK(cr.characters[1].id == 176755);
+  CHECK_FALSE(cr.characters[1].image_url.has_value());
+  CHECK(cr.characters[2].id == 0);
   CHECK(cr.characters[1].name == "Fern");
   CHECK(cr.characters[1].va_name == std::optional<std::string>("Kana Ichinose"));
   CHECK(cr.characters[2].name == "Sein");
@@ -268,9 +276,131 @@ TEST_CASE("characters_recs_body binds the id variable") {
 TEST_CASE("characters_recs_query requests characters and recommendations") {
   const std::string q = detail::characters_recs_query();
   CHECK(q.find("characters(page:1,perPage:12") != std::string::npos);
+  // The node carries what a character page opens from.
+  CHECK(q.find("node{id name{full} image{large}}") != std::string::npos);
   CHECK(q.find("recommendations(perPage:10") != std::string::npos);
   // `type` must ride the rec node so the parser can drop cross-type recs.
   CHECK(q.find("mediaRecommendation{type ") != std::string::npos);
+}
+
+// ===========================================================================
+// character pages
+// ===========================================================================
+
+TEST_CASE("character_query asks for the page and its appearances; the body binds the id") {
+  const std::string q = detail::character_query();
+  CHECK(q.find("Character(id:$id)") != std::string::npos);
+  CHECK(q.find("name{full native alternative alternativeSpoiler}") != std::string::npos);
+  CHECK(q.find("dateOfBirth{year month day}") != std::string::npos);
+  CHECK(q.find("media(page:1,perPage:10,sort:[POPULARITY_DESC],type:ANIME)") !=
+        std::string::npos);
+  CHECK(q.find("characterRole") != std::string::npos);
+  // Appearances are full catalog rows: the shared fieldset rides the node.
+  CHECK(q.find("node{id idMal title{romaji english native}") != std::string::npos);
+  CHECK(detail::character_query(MediaKind::Manga).find("type:MANGA") != std::string::npos);
+
+  const json j = json::parse(detail::character_body(40));
+  CHECK(j.at("variables").at("id") == 40);
+  CHECK(j.at("query") == detail::character_query());
+}
+
+TEST_CASE("character_text: markup resolved, lines and spoiler fences kept") {
+  // Emphasis markers go, `<br>` breaks a line, entities decode.
+  CHECK(detail::character_text("__Height:__ 172 cm<br>**Bold** &amp; plain") ==
+        "Height: 172 cm\nBold & plain");
+  // Links keep their text; inline images vanish; other tags are dropped.
+  CHECK(detail::character_text("see [the crew](https://x.test/a) img220(https://x.test/p.png)now"
+                               " <i>ok</i>") == "see the crew now ok");
+  // A word that merely starts with img is text.
+  CHECK(detail::character_text("imgur(not an image") == "imgur(not an image");
+  // Blank-line runs fold to one; ends are trimmed; CRLF reads as LF.
+  CHECK(detail::character_text("\n\n a \r\n\r\n\r\n\r\n b \n\n") == "a\n\nb");
+  // Spoiler fences survive, across lines too.
+  CHECK(detail::character_text("x ~!secret\nmore!~ y") == "x ~!secret\nmore!~ y");
+  // A lone `<` is text, not the start of a tag that swallows the rest.
+  CHECK(detail::character_text("a < b\nc") == "a < b\nc");
+  // Control bytes never reach a cell.
+  CHECK(detail::character_text("a\x1b[31mb\tc") == "a[31mb c");
+  CHECK(detail::character_text("").empty());
+}
+
+TEST_CASE("golden_character_full_mapping") {
+  const std::string raw = read_fixture("anilist_character.json");
+  auto r = detail::classify_character(raw);
+  REQUIRE(r.has_value());
+  REQUIRE(r->has_value());
+  const CharacterDetail& c = **r;
+
+  CHECK(c.id == 40);
+  CHECK(c.name == "Luffy Monkey");
+  CHECK(c.native_name == std::optional<std::string>("モンキー・D・ルフィ"));
+  CHECK(c.alt_names == std::vector<std::string>{"Straw Hat", "Mugiwara"});  // blank dropped.
+  CHECK(c.spoiler_names == std::vector<std::string>{"Joy Boy"});
+  CHECK(c.image_url == std::optional<std::string>("https://example.com/characters/40.png"));
+  CHECK(c.gender == std::optional<std::string>("Male"));
+  CHECK(c.age == std::optional<std::string>("17-19"));
+  CHECK(c.blood_type == std::optional<std::string>("F"));
+  CHECK(c.birthday == std::optional<std::string>("May 5"));  // no year given.
+  CHECK(c.favourites == std::optional<std::uint32_t>(36091));
+  CHECK(c.description ==
+        "Height: 172 cm\n"
+        "Devil Fruit: Gomu Gomu no Mi\n"
+        "~!True Devil Fruit: Hito Hito no Mi\n"
+        "Type: Mythical Zoan!~\n"
+        "\n"
+        "Luffy is the captain of the Straw Hat Pirates & values them.\n"
+        "\n"
+        "He fights hard.");
+
+  // Appearances: the null node is skipped; each row is a full Enrichment.
+  REQUIRE(c.appearances.size() == 2);
+  CHECK(c.appearances[0].media.anilist_id == 21);
+  CHECK(c.appearances[0].media.title_romaji == "ONE PIECE");
+  CHECK(c.appearances[0].media.score == std::optional<std::uint32_t>(88));
+  CHECK(c.appearances[0].role == "MAIN");
+  CHECK(c.appearances[0].va_name == std::optional<std::string>("Mayumi Tanaka"));
+  CHECK(c.appearances[1].media.anilist_id == 182469);
+  CHECK(c.appearances[1].role == "SUPPORTING");
+  CHECK_FALSE(c.appearances[1].va_name.has_value());
+}
+
+TEST_CASE("character: three-state answers, and a birthday with a year") {
+  {
+    auto r = detail::classify_character(R"({"data":{"Character":null}})");
+    REQUIRE(r.has_value());
+    CHECK_FALSE(r->has_value());  // no such character.
+  }
+  {
+    // A shell with no name is no page either.
+    auto r = detail::classify_character(R"({"data":{"Character":{"id":7,"name":{"full":null}}}})");
+    REQUIRE(r.has_value());
+    CHECK_FALSE(r->has_value());
+  }
+  for (const std::string_view raw : {std::string_view(R"({"data":null})"),
+                                     std::string_view("not json")}) {
+    auto r = detail::classify_character(raw);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().kind == ProviderError::Kind::Decode);
+  }
+  {
+    auto r = detail::classify_character(
+        R"({"data":{"Character":{"id":7,"name":{"full":"A"},)"
+        R"("dateOfBirth":{"year":1990,"month":12,"day":31}}}})");
+    REQUIRE(r.has_value());
+    REQUIRE(r->has_value());
+    CHECK((*r)->birthday == std::optional<std::string>("December 31, 1990"));
+    CHECK((*r)->description.empty());
+    CHECK((*r)->appearances.empty());
+  }
+  {
+    // A month without a day is not a birthday.
+    auto r = detail::classify_character(
+        R"({"data":{"Character":{"id":7,"name":{"full":"A"},)"
+        R"("dateOfBirth":{"year":1990,"month":12,"day":null}}}})");
+    REQUIRE(r.has_value());
+    REQUIRE(r->has_value());
+    CHECK_FALSE((*r)->birthday.has_value());
+  }
 }
 
 TEST_CASE("page_without_pageinfo_is_exhausted") {

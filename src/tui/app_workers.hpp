@@ -79,6 +79,8 @@ void spawn_heal(EventQueue& queue, HealFn heal, std::int64_t for_id, std::int64_
 void spawn_char_recs(EventQueue& queue, CharRecsFn fetch, std::int64_t for_id,
                      std::optional<std::int64_t> mal_id);
 
+void spawn_character(EventQueue& queue, CharacterFn fetch, std::int64_t character_id);
+
 void spawn_genre_collection(EventQueue& queue, GenreCollectionFn fetch);
 
 // The message a failed catalog fetch carries: the error's own detail, else

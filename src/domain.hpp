@@ -431,8 +431,43 @@ struct CharacterEntry {
   std::string name;
   std::string role;                      // AniList CharacterRole ("MAIN", …).
   std::optional<std::string> va_name;    // first Japanese VA, if staffed.
+  // The listing catalog's own character id; 0 = none (the row has no page).
+  std::int64_t id = 0;
+  std::optional<std::string> image_url = std::nullopt;  // portrait, if any.
 
   friend bool operator==(const CharacterEntry&, const CharacterEntry&) = default;
+};
+
+// --- CharacterDetail ---------------------------------------------------------
+// One show a character appears in, with the role and voice it has there.
+struct CharacterAppearance {
+  Enrichment media;
+  std::string role;                      // as CharacterEntry::role; "" = unknown.
+  std::optional<std::string> va_name = std::nullopt;
+
+  friend bool operator==(const CharacterAppearance&, const CharacterAppearance&) = default;
+};
+
+// A character's own page. `description` is plain text: paragraphs are
+// separated by '\n', and a spoiler span is wrapped in `~!` … `!~` (it may
+// cross lines) so the view can hide or reveal it. Every string is already
+// control-stripped.
+struct CharacterDetail {
+  std::int64_t id = 0;
+  std::string name;
+  std::optional<std::string> native_name;
+  std::vector<std::string> alt_names;
+  std::vector<std::string> spoiler_names;  // alternative names that spoil.
+  std::optional<std::string> image_url;
+  std::optional<std::string> gender;
+  std::optional<std::string> age;          // free text ("17", "17-19", "Unknown").
+  std::optional<std::string> blood_type;
+  std::optional<std::string> birthday;     // "May 5" / "May 5, 1990".
+  std::optional<std::uint32_t> favourites;
+  std::string description;
+  std::vector<CharacterAppearance> appearances;
+
+  friend bool operator==(const CharacterDetail&, const CharacterDetail&) = default;
 };
 
 // --- CharactersAndRecommendations (P36) -------------------------------------

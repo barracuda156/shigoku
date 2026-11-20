@@ -8,6 +8,7 @@
 #include "iterm.hpp"
 #include "kitty.hpp"
 #include "sixel.hpp"
+#include "character_page.hpp"
 #include "views.hpp"
 
 namespace shigoku::tui {
@@ -397,12 +398,29 @@ void draw_bottom_bar(const App& app, CellBuffer& buf) {
   const bool detail_surface = app.view == View::Detail || app.pane == Pane::Detail;
   const bool dead_end = detail_surface && app.episode.fetched && app.episode.no_source &&
                         app.episode.episodes.empty();
-  const std::string help =
-      (app.view == View::Settings && app.settings.editing())
-          ? "type to edit \xC2\xB7 enter confirm \xC2\xB7 esc cancel"
-          : dead_end ? "no source has this show \xC2\xB7 v try a source by hand \xC2\xB7 "
-                       "P save for later \xC2\xB7 space/esc back"
-                     : detail::idle_help(app.view, app.pane);
+  // The zoom's cast list and the character page behind it have keys of
+  // their own; name them while they hold the keyboard, or Enter on a
+  // character stays undiscovered.
+  const bool character_page = app.view == View::Detail && app.character.open;
+  const bool cast_shown = app.view == View::Detail && !character_page && app.char_recs.visible;
+  std::string help;
+  if (app.view == View::Settings && app.settings.editing()) {
+    help = "type to edit \xC2\xB7 enter confirm \xC2\xB7 esc cancel";
+  } else if (character_page) {
+    help = detail::has_spoilers(app.character.data)
+               ? "jk scroll \xC2\xB7 enter open show \xC2\xB7 s spoilers \xC2\xB7 space/esc back"
+               : "jk scroll \xC2\xB7 enter open show \xC2\xB7 space/esc back";
+  } else if (cast_shown && app.char_recs.focused) {
+    help = "jk move \xC2\xB7 enter open \xC2\xB7 tab grid \xC2\xB7 c hide \xC2\xB7 space/esc back";
+  } else if (dead_end) {
+    help = "no source has this show \xC2\xB7 v try a source by hand \xC2\xB7 "
+           "P save for later \xC2\xB7 space/esc back";
+  } else if (cast_shown) {
+    help = "hjkl grid \xC2\xB7 enter play \xC2\xB7 tab cast list \xC2\xB7 c hide \xC2\xB7 "
+           "~ similar \xC2\xB7 d download \xC2\xB7 space/esc back";
+  } else {
+    help = detail::idle_help(app.view, app.pane);
+  }
   buf.put_str(x, y, help, theme::fg3, theme::bg);
 }
 

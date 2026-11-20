@@ -720,6 +720,9 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
         [](const CharactersRecsDone&) { return std::string("characters-recs-done"); },
         [](const CharactersRecsNull&) { return std::string("characters-recs-null"); },
         [](const CharactersRecsFailed&) { return std::string("characters-recs-failed"); },
+        [](const CharacterDone&) { return std::string("character-done"); },
+        [](const CharacterNull&) { return std::string("character-null"); },
+        [](const CharacterFailed&) { return std::string("character-failed"); },
         [](const GenreCollectionDone&) { return std::string("genre-collection-done"); },
         [](const GenreCollectionFailed&) { return std::string("genre-collection-failed"); },
         [](const UpdateAvailable&) { return std::string("update-available"); },
@@ -741,6 +744,9 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
   CHECK(classify(Event{CharactersRecsDone{700, {}}}) == "characters-recs-done");
   CHECK(classify(Event{CharactersRecsNull{700}}) == "characters-recs-null");
   CHECK(classify(Event{CharactersRecsFailed{700}}) == "characters-recs-failed");
+  CHECK(classify(Event{CharacterDone{40, {}}}) == "character-done");
+  CHECK(classify(Event{CharacterNull{40}}) == "character-null");
+  CHECK(classify(Event{CharacterFailed{40}}) == "character-failed");
   CHECK(classify(Event{GenreCollectionDone{{"Action"}}}) == "genre-collection-done");
   CHECK(classify(Event{GenreCollectionFailed{}}) == "genre-collection-failed");
   CHECK(classify(Event{UpdateAvailable{"v0.5.0"}}) == "update-available");

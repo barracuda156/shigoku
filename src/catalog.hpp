@@ -76,12 +76,16 @@ struct Backend {
   // The entry a MAL id belongs to, under this source's own id. Only the
   // AniList backend sets it; an unset one means the source cannot heal.
   std::function<Result<std::optional<Enrichment>, ProviderError>(std::int64_t mal_id)> by_mal;
+  // One character's page, by the id this source's own char_recs listed it
+  // under. Unset = the source has no character pages.
+  std::function<Result<std::optional<CharacterDetail>, ProviderError>(std::int64_t character_id)>
+      character;
 };
 
 // The production backends. AniList refuses negative (synthetic) ids as
-// Unsupported. MAL answers characters as an empty list (no MAL endpoint) and
-// recommendations from the by-id call; its genre list is the static
-// vocabulary.
+// Unsupported. MAL answers characters as an empty list and has no character
+// pages (its API serves neither), and recommendations from the by-id call;
+// its genre list is the static vocabulary.
 [[nodiscard]] Backend anilist_backend(const http::Client& client);
 [[nodiscard]] Backend mal_backend(const http::Client& client, std::string client_id);
 
@@ -148,6 +152,13 @@ class Catalog {
   // auto mode is latched on MAL, the answer is Err(Unsupported) without a
   // request. A real AniList failure moves the latch like any other call.
   [[nodiscard]] Result<std::optional<Enrichment>, ProviderError> heal(std::int64_t mal_id);
+
+  // A character's page. Character ids belong to the source that listed them,
+  // and only AniList lists any, so this asks AniList whatever the mode or the
+  // latch: Ok(nullopt) = no such character, Err(Unsupported) = no source can
+  // answer. The outcome moves the latch like any other AniList call.
+  [[nodiscard]] Result<std::optional<CharacterDetail>, ProviderError> character(
+      std::int64_t character_id);
 
   [[nodiscard]] Status status() const;
 

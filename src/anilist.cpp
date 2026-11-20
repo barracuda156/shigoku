@@ -51,15 +51,17 @@ std::optional<T> num_opt(const json& j, const char* key) {
   return v.get<T>();
 }
 
+// The entities AniList text carries.
+constexpr std::pair<std::string_view, std::string_view> kEntities[] = {
+    {"&amp;", "&"},  {"&quot;", "\""}, {"&#039;", "'"}, {"&lt;", "<"},
+    {"&gt;", ">"},   {"&mdash;", "--"}, {"&ndash;", "-"},
+};
+
 // `description(asHtml:false)` still carries tags and entities (anilist.rs
 // sanitize_description, :321): strip tags, decode the common entities, collapse
 // newline/tab runs to one space, trim. Byte-identical to the Rust entity table
 // and state machine.
 std::string sanitize_description(std::string_view raw) {
-  static constexpr std::pair<std::string_view, std::string_view> kEntities[] = {
-      {"&amp;", "&"},  {"&quot;", "\""}, {"&#039;", "'"}, {"&lt;", "<"},
-      {"&gt;", ">"},   {"&mdash;", "--"}, {"&ndash;", "-"},
-  };
   std::string out;
   out.reserve(raw.size());
   bool in_tag = false;
@@ -503,7 +505,7 @@ std::string characters_recs_query(MediaKind kind) {
   return std::string("query($id:Int!){Media(id:$id,type:") + type_gql(kind) +
          "){"
          "characters(page:1,perPage:12,sort:[ROLE,RELEVANCE]){edges{"
-         "role node{name{full}} voiceActors(language:JAPANESE){name{full}}"
+         "role node{id name{full} image{large}} voiceActors(language:JAPANESE){name{full}}"
          "}} "
          "recommendations(perPage:10,sort:RATING_DESC){nodes{"
          // `type` rides alongside the shared fieldset (not inside it — the
@@ -519,6 +521,31 @@ std::string characters_recs_body(std::int64_t anilist_id, MediaKind kind) {
   json body = {{"query", characters_recs_query(kind)}, {"variables", {{"id", anilist_id}}}};
   return body.dump();
 }
+
+namespace {
+
+// The first Japanese voice actor of a character edge, if staffed.
+std::optional<std::string> first_voice(const json& edge) {
+  if (!edge.contains("voiceActors") || !edge.at("voiceActors").is_array() ||
+      edge.at("voiceActors").empty()) {
+    return std::nullopt;
+  }
+  const json& va = edge.at("voiceActors").front();
+  if (!va.is_object() || !va.contains("name") || !va.at("name").is_object()) {
+    return std::nullopt;
+  }
+  return strip_opt(va.at("name"), "full");
+}
+
+// A character node's portrait url; a blank one reads as none.
+std::optional<std::string> image_url(const json& node) {
+  if (!node.contains("image") || !node.at("image").is_object()) return std::nullopt;
+  auto url = strip_opt(node.at("image"), "large");
+  if (url.has_value() && url->empty()) return std::nullopt;
+  return url;
+}
+
+}  // namespace
 
 // character edge -> CharacterEntry. A missing/blank node name is skipped (no
 // usable row); role/VA best-effort ("" / nullopt on absence, matching
@@ -536,13 +563,9 @@ std::optional<CharacterEntry> edge_to_character(const json& edge) {
   CharacterEntry c;
   c.name = full_name;
   c.role = strip_opt(edge, "role").value_or(std::string{});
-  if (edge.contains("voiceActors") && edge.at("voiceActors").is_array() &&
-      !edge.at("voiceActors").empty()) {
-    const json& va = edge.at("voiceActors").front();
-    if (va.is_object() && va.contains("name") && va.at("name").is_object()) {
-      c.va_name = strip_opt(va.at("name"), "full");
-    }
-  }
+  c.id = num_opt<std::int64_t>(edge.at("node"), "id").value_or(0);
+  c.image_url = image_url(edge.at("node"));
+  c.va_name = first_voice(edge);
   return c;
 }
 
@@ -597,6 +620,235 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> classify_char
     }
   }
   return std::optional<CharactersAndRecommendations>(std::move(out));
+}
+
+std::string character_query(MediaKind kind) {
+  return std::string(
+             "query($id:Int!){Character(id:$id){"
+             "id name{full native alternative alternativeSpoiler} image{large} "
+             "description gender age bloodType dateOfBirth{year month day} favourites "
+             "media(page:1,perPage:") +
+         std::to_string(kCharacterAppearances) + ",sort:[POPULARITY_DESC],type:" +
+         type_gql(kind) +
+         "){edges{characterRole voiceActors(language:JAPANESE){name{full}} node{" +
+         media_fields(kind) + "}}}}}";
+}
+
+std::string character_body(std::int64_t character_id, MediaKind kind) {
+  json body = {{"query", character_query(kind)}, {"variables", {{"id", character_id}}}};
+  return body.dump();
+}
+
+namespace {
+
+constexpr std::size_t kMaxCharacterText = 32u * 1024u;
+constexpr std::size_t kMaxCharacterNames = 16;
+
+// `[text](url)` -> `text`; `img(url)` / `img220(url)` / `img40%(url)` -> gone.
+std::string drop_links_and_images(std::string_view raw) {
+  std::string out;
+  out.reserve(raw.size());
+  std::size_t i = 0;
+  while (i < raw.size()) {
+    if (raw.compare(i, 3, "img") == 0 &&
+        (i == 0 || raw[i - 1] == ' ' || raw[i - 1] == '\n' || raw[i - 1] == '>')) {
+      std::size_t j = i + 3;
+      while (j < raw.size() && ((raw[j] >= '0' && raw[j] <= '9') || raw[j] == '%')) ++j;
+      if (j < raw.size() && raw[j] == '(') {
+        const std::size_t close = raw.find_first_of(")\n", j);
+        if (close != std::string_view::npos && raw[close] == ')') {
+          i = close + 1;
+          continue;
+        }
+      }
+    }
+    if (raw[i] == '[') {
+      const std::size_t close = raw.find_first_of("]\n", i);
+      if (close != std::string_view::npos && raw[close] == ']' && close + 1 < raw.size() &&
+          raw[close + 1] == '(') {
+        const std::size_t end = raw.find_first_of(")\n", close + 1);
+        if (end != std::string_view::npos && raw[end] == ')') {
+          out.append(raw.substr(i + 1, close - i - 1));
+          i = end + 1;
+          continue;
+        }
+      }
+    }
+    out.push_back(raw[i]);
+    ++i;
+  }
+  return out;
+}
+
+// Cut at `max` bytes without splitting a UTF-8 sequence.
+void truncate_utf8(std::string& s, std::size_t max) {
+  if (s.size() <= max) return;
+  std::size_t cut = max;
+  while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+  s.resize(cut);
+}
+
+std::vector<std::string> name_list(const json& name, const char* key) {
+  std::vector<std::string> out;
+  if (!name.contains(key) || !name.at(key).is_array()) return out;
+  for (const auto& v : name.at(key)) {
+    if (out.size() >= kMaxCharacterNames) break;
+    if (!v.is_string()) continue;
+    std::string n = strip_controls(v.get<std::string>());
+    if (!n.empty()) out.push_back(std::move(n));
+  }
+  return out;
+}
+
+// dateOfBirth -> "May 5" / "May 5, 1990"; nullopt without a month and day.
+std::optional<std::string> birthday(const json& c) {
+  static constexpr const char* kMonths[] = {"January", "February", "March",     "April",
+                                            "May",     "June",     "July",      "August",
+                                            "September", "October", "November", "December"};
+  if (!c.contains("dateOfBirth") || !c.at("dateOfBirth").is_object()) return std::nullopt;
+  const json& d = c.at("dateOfBirth");
+  const auto month = num_opt<std::uint32_t>(d, "month");
+  const auto day = num_opt<std::uint32_t>(d, "day");
+  if (!month.has_value() || !day.has_value() || *month < 1 || *month > 12 || *day < 1 ||
+      *day > 31) {
+    return std::nullopt;
+  }
+  std::string out = std::string(kMonths[*month - 1]) + " " + std::to_string(*day);
+  if (const auto year = num_opt<std::uint32_t>(d, "year"); year.has_value()) {
+    out += ", " + std::to_string(*year);
+  }
+  return out;
+}
+
+// A non-blank optional string field.
+std::optional<std::string> text_opt(const json& j, const char* key) {
+  auto v = strip_opt(j, key);
+  if (v.has_value() && v->empty()) return std::nullopt;
+  return v;
+}
+
+}  // namespace
+
+std::string character_text(std::string_view raw) {
+  const std::string src = drop_links_and_images(raw);
+  std::string flat;
+  flat.reserve(src.size());
+  std::size_t i = 0;
+  while (i < src.size()) {
+    const char c = src[i];
+    const std::string_view rest = std::string_view(src).substr(i);
+    if (c == '\r') {
+      ++i;
+    } else if (c == '\t') {
+      flat.push_back(' ');
+      ++i;
+    } else if (c == '<') {
+      // A tag closes on its own line; a lone `<` is text.
+      const std::size_t close = rest.find_first_of(">\n");
+      if (close == std::string_view::npos || rest[close] != '>') {
+        flat.push_back(c);
+        ++i;
+        continue;
+      }
+      const std::string_view tag = rest.substr(1, close - 1);
+      if (tag.rfind("br", 0) == 0 || tag.rfind("BR", 0) == 0) flat.push_back('\n');
+      i += close + 1;
+    } else if (c == '&') {
+      const auto* hit = std::find_if(std::begin(kEntities), std::end(kEntities),
+                                     [&](const auto& pr) { return rest.rfind(pr.first, 0) == 0; });
+      if (hit != std::end(kEntities)) {
+        flat.append(hit->second);
+        i += hit->first.size();
+      } else if (rest.rfind("&nbsp;", 0) == 0) {
+        flat.push_back(' ');
+        i += 6;
+      } else {
+        flat.push_back(c);
+        ++i;
+      }
+    } else if (rest.rfind("~~~", 0) == 0) {
+      i += 3;  // centring fence.
+    } else if (rest.rfind("__", 0) == 0 || rest.rfind("**", 0) == 0) {
+      i += 2;  // emphasis markers.
+    } else {
+      flat.push_back(c);
+      ++i;
+    }
+  }
+
+  // Line by line: strip, trim, and fold runs of blank lines into one.
+  std::string out;
+  bool pending_blank = false;
+  std::size_t pos = 0;
+  while (pos <= flat.size()) {
+    std::size_t nl = flat.find('\n', pos);
+    if (nl == std::string::npos) nl = flat.size();
+    std::string line = strip_controls(std::string_view(flat).substr(pos, nl - pos));
+    const std::size_t lo = line.find_first_not_of(' ');
+    if (lo == std::string::npos) {
+      pending_blank = !out.empty();
+    } else {
+      const std::size_t hi = line.find_last_not_of(' ');
+      if (!out.empty()) out += pending_blank ? "\n\n" : "\n";
+      out.append(line, lo, hi - lo + 1);
+      pending_blank = false;
+    }
+    pos = nl + 1;
+  }
+  truncate_utf8(out, kMaxCharacterText);
+  return out;
+}
+
+Result<std::optional<CharacterDetail>, ProviderError> classify_character(
+    std::string_view raw_json) {
+  json resp;
+  try {
+    resp = json::parse(raw_json.begin(), raw_json.end());
+  } catch (const json::parse_error& e) {
+    return err(ProviderError::decode(e.what()));
+  }
+  if (!resp.is_object() || !resp.contains("data") || resp.at("data").is_null()) {
+    return err(ProviderError::decode("data is null"));
+  }
+  const json& data = resp.at("data");
+  if (!data.is_object() || !data.contains("Character") || !data.at("Character").is_object()) {
+    return std::optional<CharacterDetail>(std::nullopt);
+  }
+  const json& c = data.at("Character");
+
+  CharacterDetail out;
+  out.id = num_opt<std::int64_t>(c, "id").value_or(0);
+  if (c.contains("name") && c.at("name").is_object()) {
+    const json& name = c.at("name");
+    out.name = strip_opt(name, "full").value_or(std::string{});
+    out.native_name = text_opt(name, "native");
+    out.alt_names = name_list(name, "alternative");
+    out.spoiler_names = name_list(name, "alternativeSpoiler");
+  }
+  // A character with neither an id nor a name is no answer worth a page.
+  if (out.id == 0 || out.name.empty()) return std::optional<CharacterDetail>(std::nullopt);
+  out.image_url = image_url(c);
+  out.gender = text_opt(c, "gender");
+  out.age = text_opt(c, "age");
+  out.blood_type = text_opt(c, "bloodType");
+  out.birthday = birthday(c);
+  out.favourites = num_opt<std::uint32_t>(c, "favourites");
+  if (c.contains("description") && c.at("description").is_string()) {
+    out.description = character_text(c.at("description").get<std::string>());
+  }
+  if (c.contains("media") && c.at("media").is_object() && c.at("media").contains("edges") &&
+      c.at("media").at("edges").is_array()) {
+    for (const auto& edge : c.at("media").at("edges")) {
+      if (!edge.is_object() || !edge.contains("node") || !edge.at("node").is_object()) continue;
+      CharacterAppearance a;
+      a.media = media_to_enrichment(edge.at("node"));
+      if (a.media.anilist_id == 0) continue;
+      a.role = strip_opt(edge, "characterRole").value_or(std::string{});
+      a.va_name = first_voice(edge);
+      out.appearances.push_back(std::move(a));
+    }
+  }
+  return std::optional<CharacterDetail>(std::move(out));
 }
 
 std::string recommendations_query(MediaKind kind) {
@@ -1011,6 +1263,30 @@ Result<std::optional<CharactersAndRecommendations>, ProviderError> characters_an
 
   const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
   return detail::classify_characters_recs(raw, kind);
+}
+
+Result<std::optional<CharacterDetail>, ProviderError> character(const http::Client& client,
+                                                               std::int64_t character_id,
+                                                               MediaKind kind) {
+  http::Request req;
+  req.method = http::Method::Post;
+  req.url = kEndpoint;
+  req.content_type = "application/json";
+  const std::string body = detail::character_body(character_id, kind);
+  req.body.assign(body.begin(), body.end());
+  req.accept = http::Accept::Any2xx;
+
+  auto resp = client.fetch(req);
+  if (!resp.has_value()) {
+    // AniList answers an unknown character id with 404 and a null Character.
+    if (resp.error().kind == ProviderError::Kind::Http && resp.error().status == 404) {
+      return std::optional<CharacterDetail>(std::nullopt);
+    }
+    return err(resp.error());
+  }
+
+  const std::string_view raw(reinterpret_cast<const char*>(resp->data()), resp->size());
+  return detail::classify_character(raw);
 }
 
 Result<std::optional<CatalogPage>, ProviderError> recommendations(const http::Client& client,

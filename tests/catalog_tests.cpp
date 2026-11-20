@@ -34,6 +34,8 @@ struct Fake {
   bool can_heal = true;      // sets Backend::by_mal.
   bool heal_absent = false;  // by_mal answers "no such entry".
   int heal_calls = 0;
+  bool has_characters = true;  // sets Backend::character (AniList only).
+  int character_calls = 0;
 };
 
 Backend make(Fake& f) {
@@ -105,6 +107,17 @@ Backend make(Fake& f) {
       e.anilist_id = mal + 9000;
       e.mal_id = mal;
       return std::optional<Enrichment>(e);
+    };
+  }
+  // As in production, only AniList has character pages.
+  if (f.tag == Source::AniList && f.has_characters) {
+    b.character = [&f](std::int64_t id) -> Result<std::optional<CharacterDetail>, ProviderError> {
+      ++f.character_calls;
+      if (!f.ok) return err(f.fail);
+      CharacterDetail d;
+      d.id = id;
+      d.name = "Someone";
+      return std::optional<CharacterDetail>(d);
     };
   }
   return b;
@@ -503,6 +516,64 @@ TEST_CASE("heal: mode anilist asks; a backend without by_mal cannot heal") {
   auto bad = a.cat->heal(0);
   REQUIRE_FALSE(bad.has_value());
   CHECK(bad.error().kind == ProviderError::Kind::Unsupported);
+}
+
+// ===========================================================================
+// character pages
+// ===========================================================================
+
+TEST_CASE("character: AniList answers whatever the mode or the latch; MAL is never asked") {
+  for (const Mode mode : {Mode::Auto, Mode::AniList, Mode::Mal}) {
+    Rig r(mode);
+    auto c = r.cat->character(40);
+    REQUIRE(c.has_value());
+    REQUIRE(c->has_value());
+    CHECK((*c)->id == 40);
+    CHECK(r.anilist.character_calls == 1);
+    CHECK(r.mal.enrich_calls == 0);
+    CHECK(r.mal.char_calls == 0);
+  }
+
+  // Latched on MAL by an earlier failure: the page still asks AniList (the
+  // id is AniList's), and its success clears the latch.
+  Rig r(Mode::Auto);
+  r.anilist.ok = false;
+  (void)r.cat->search("x", 1);
+  REQUIRE(r.cat->status().serving_from_mal());
+  r.anilist.ok = true;
+  auto c = r.cat->character(40);
+  REQUIRE(c.has_value());
+  CHECK(c->has_value());
+  CHECK_FALSE(r.cat->status().serving_from_mal());
+}
+
+TEST_CASE("character: a failure is AniList's and latches like any other call") {
+  Rig r(Mode::Auto);
+  r.anilist.ok = false;
+  r.anilist.fail = ProviderError::server(503);
+  auto c = r.cat->character(40);
+  REQUIRE_FALSE(c.has_value());
+  CHECK(c.error().kind == ProviderError::Kind::Server);
+  CHECK(r.cat->status().serving_from_mal());
+}
+
+TEST_CASE("character: no id, or no source with character pages, is Unsupported") {
+  Rig r(Mode::Auto);
+  auto zero = r.cat->character(0);
+  REQUIRE_FALSE(zero.has_value());
+  CHECK(zero.error().kind == ProviderError::Kind::Unsupported);
+  CHECK(r.anilist.character_calls == 0);
+
+  Fake anilist;
+  anilist.has_characters = false;
+  Fake mal;
+  mal.tag = Source::Mal;
+  Catalog cat(Mode::Auto, make(anilist), make(mal), []() { return std::int64_t{1000}; });
+  auto none = cat.character(40);
+  REQUIRE_FALSE(none.has_value());
+  CHECK(none.error().kind == ProviderError::Kind::Unsupported);
+  // Nothing was asked, so nothing moved the latch.
+  CHECK_FALSE(cat.status().serving_from_mal());
 }
 
 // ===========================================================================

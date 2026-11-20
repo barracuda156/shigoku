@@ -1,0 +1,75 @@
+{
+  "data": {
+    "Character": {
+      "id": 40,
+      "name": {
+        "full": "Luffy Monkey",
+        "native": "モンキー・D・ルフィ",
+        "alternative": ["Straw Hat", "", "Mugiwara"],
+        "alternativeSpoiler": ["Joy Boy"]
+      },
+      "image": { "large": "https://example.com/characters/40.png" },
+      "description": "__Height:__ 172 cm\n__Devil Fruit:__ Gomu Gomu no Mi<br>~!__True Devil Fruit:__ Hito Hito no Mi\n__Type:__ Mythical Zoan!~\n\n\n\nLuffy is the captain of the [Straw Hat Pirates](https://anilist.co/x) &amp; values them.  \nimg220(https://example.com/pic.png)\nHe fights **hard**.",
+      "gender": "Male",
+      "age": "17-19",
+      "bloodType": "F",
+      "dateOfBirth": { "year": null, "month": 5, "day": 5 },
+      "favourites": 36091,
+      "media": {
+        "edges": [
+          {
+            "characterRole": "MAIN",
+            "voiceActors": [{ "name": { "full": "Mayumi Tanaka" } }],
+            "node": {
+              "id": 21,
+              "idMal": 21,
+              "title": { "romaji": "ONE PIECE", "english": "One Piece", "native": "ワンピース" },
+              "episodes": null,
+              "duration": 24,
+              "averageScore": 88,
+              "status": "RELEASING",
+              "season": "FALL",
+              "seasonYear": 1999,
+              "startDate": { "year": 1999, "month": 10, "day": 20 },
+              "format": "TV",
+              "source": "MANGA",
+              "countryOfOrigin": "JP",
+              "genres": ["Action", "Adventure"],
+              "studios": { "nodes": [{ "name": "Toei Animation" }] },
+              "rankings": [],
+              "nextAiringEpisode": null,
+              "description": "Pirates.",
+              "coverImage": { "large": "https://example.com/covers/21.jpg" }
+            }
+          },
+          {
+            "characterRole": "SUPPORTING",
+            "voiceActors": [],
+            "node": {
+              "id": 182469,
+              "idMal": 60022,
+              "title": { "romaji": "ONE PIECE FAN LETTER", "english": null, "native": null },
+              "episodes": 1,
+              "duration": 24,
+              "averageScore": 91,
+              "status": "FINISHED",
+              "season": "FALL",
+              "seasonYear": 2024,
+              "startDate": { "year": 2024, "month": 10, "day": 20 },
+              "format": "TV_SPECIAL",
+              "source": "MANGA",
+              "countryOfOrigin": "JP",
+              "genres": ["Action"],
+              "studios": { "nodes": [] },
+              "rankings": [],
+              "nextAiringEpisode": null,
+              "description": null,
+              "coverImage": { "large": null }
+            }
+          },
+          { "characterRole": "MAIN", "voiceActors": [], "node": null }
+        ]
+      }
+    }
+  }
+}
