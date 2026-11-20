@@ -9,15 +9,17 @@
 // cooperates (206); a server that answers a ranged request with a full 200
 // restarts the file cleanly (truncate, not append). HLS links go through
 // external `ffmpeg -c copy` spawned the way player.cpp spawns mpv (vetted
-// argv, posix_spawnp, null stdio), under the same .part/rename law; a master
-// playlist gets the P23 variant walk via hls.hpp first, and decloak links
-// transfer through the P12 proxy exactly as play does.
+// argv, posix_spawnp, null stdio), under the same .part/rename law. A master
+// playlist is read first (ladder.hpp) and the asked-for rung taken off it:
+// the video variant, plus its audio rendition as a second input when the
+// audio is separate. A relayed link is read through its own proxy, so its
+// variants can be picked like any other's.
 //
 // download_link is the policy entry (it owns the SSRF guard); the lower-level
 // cores are mechanism — like player::build_argv's play_url, their url inputs
 // must already have passed http::guard_fetch_url (the loopback test fixtures
-// depend on the cores not re-guarding). Surfaces (worker/keybind/subcommand)
-// are slice 3.
+// depend on the cores not re-guarding). probe() answers what a link offers
+// before anything is fetched.
 
 #pragma once
 
@@ -31,7 +33,10 @@
 
 #include "domain.hpp"
 #include "error.hpp"
+#include "hls.hpp"
 #include "http.hpp"
+#include "offer.hpp"
+#include "proxy.hpp"
 #include "result.hpp"
 
 namespace shigoku::download {
@@ -143,21 +148,30 @@ enum class LinkKind {
 // guard applies as in player::build_argv — every provider-derived field is
 // vetted, Err = UnsafeArg with the field name):
 //   -nostdin -y -loglevel error
+//   <input options> -f hls -i <input_url>
+//   [<input options> -f hls -i <audio_url>  -map 0:v:0 -map 1:a:0]
+//   -c copy -f mp4 <out_path>
+// where <input options>, repeated per input because ffmpeg applies them to
+// the next -i only, are
 //   [-allowed_extensions ALL]            (link.cloaked_segments, as mpv's
 //                                         --demuxer-lavf-o allowed_extensions)
 //   [-extension_picky 0]                 (link.cloaked_segments AND
 //                                         extension_picky_off)
 //   [-headers "Referer: <referer>\r\n"]  (link.referer)
 //   [-user_agent <ua>]                   (link.user_agent)
-//   -f hls -i <input_url> -c copy -f mp4 <out_path>
 // `input_url` is the positional the caller resolved (variant pick / decloak
 // loopback / the link url itself); like build_argv's play_url it must not
-// start with '-'. `out_path` is app-constructed (the .part), unvetted like
-// SkipScript. link.sub_url is deliberately ignored: v1 downloads carry the
-// stream as-is, softsubs stay a streaming feature.
+// start with '-'. `audio_url`, when non-empty, is the separate audio
+// rendition that goes with a video-only input, resolved by the caller the
+// same way and vetted the same way (field name "audio_url"): the explicit
+// maps take the video from the first input and the audio from the second.
+// `out_path` is app-constructed (the .part), unvetted like SkipScript.
+// link.sub_url is deliberately ignored: downloads carry the stream as-is,
+// softsubs stay a streaming feature.
 [[nodiscard]] Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
-    std::string_view out_path, bool extension_picky_off = false);
+    std::string_view out_path, bool extension_picky_off = false,
+    std::string_view audio_url = {});
 
 // Whether this ffmpeg's hls demuxer has `extension_picky`. From 7.1.1 it
 // defaults on and refuses segment names that don't match their format (the
@@ -170,42 +184,91 @@ enum class LinkKind {
 // Spawn ffmpeg (posix_spawnp, null stdio — the mpv shape) and wait, polling
 // `cancel` at ~5 Hz: a tripped flag SIGTERMs the child (SIGKILL escalation
 // after ~2s) and reports Cancelled. ENOENT = FfmpegNotFound — the runtime-only
-// dependency degrade ("install ffmpeg", slice 3's toast). Nonzero exit /
-// signalled death = Ffmpeg. Like the curl arm, whatever the child wrote stays
-// in the .part on every failure path; the caller renames on Ok.
+// dependency degrade ("install ffmpeg"). Nonzero exit / signalled death =
+// Ffmpeg. Like the curl arm, whatever the child wrote stays in the .part on
+// every failure path; the caller renames on Ok.
 // `child_pid_out`, when non-null, publishes the live child's pid (0 when
 // none): the TUI quit path SIGTERMs it directly — downloads have no drain
 // rights (A1), so quit cannot wait for this poll loop to notice the flag.
+// `on_poll`, when set, runs once per poll while the child lives: ffmpeg
+// reports nothing itself, so a caller that wants progress reads it off the
+// output file there.
 [[nodiscard]] Result<Unit, DownloadError> run_ffmpeg(
     const std::string& ffmpeg_path, const std::vector<std::string>& argv,
-    const std::atomic<bool>& cancel, std::atomic<long>* child_pid_out = nullptr);
+    const std::atomic<bool>& cancel, std::atomic<long>* child_pid_out = nullptr,
+    const std::function<void()>& on_poll = {});
 
-// Download an HLS link via external ffmpeg -c copy into `dest` (through the
-// .part + fsync + atomic-rename law). Contract as download_to_file: link.url
-// must already have passed the guard (download_link below owns it).
-//   * a link play would proxy — decoy-prefixed segments, encrypted playlists
-//     — engages the same proxy for the transfer and hands ffmpeg the loopback
-//     url; no variant walk there (ffmpeg reads the proxied master itself).
-//   * otherwise the playlist is fetched (best-effort, link headers): a master
-//     gets the P23 variant walk — join + hls::select_variant under `quality`,
-//     the pick re-guarded (provider bytes) — and a media playlist / failed
-//     fetch falls back to the link url untouched (never worse than play).
-// No progress ticks in v1: ffmpeg owns the transfer, so the surface shows an
-// indeterminate spinner (slice 3).
-[[nodiscard]] Result<Unit, DownloadError> download_hls(
-    const http::Client& client, const StreamLink& link, const std::string& dest,
-    Quality quality, const std::string& ffmpeg_path,
-    const std::atomic<bool>& cancel, std::atomic<long>* child_pid_out = nullptr);
+// --- A transfer, worked out and then run -----------------------------------
 
-// The one entry a surface calls (slice 3): guard link.url, then route by
-// classify_link — Direct -> download_to_file (link headers, Range resume),
-// Hls -> download_hls (ffmpeg). Blocking; one transfer at a time is the
-// caller's law.
-[[nodiscard]] Result<Unit, DownloadError> download_link(
-    const http::Client& client, const StreamLink& link, const std::string& dest,
-    Quality quality, const std::string& ffmpeg_path,
+// A transfer worked out but not started: which arm, which urls, and — for a
+// relayed link — the proxy that has to stay up until it ends (the plan owns
+// it; dropping the plan stops it).
+struct Plan {
+  LinkKind kind = LinkKind::Direct;
+  // What is fetched: the link's url, a variant taken off its ladder, or the
+  // loopback form of either.
+  std::string input;
+  // The separate audio rendition fetched beside a video-only input.
+  std::optional<std::string> audio;
+  // The rung actually taken, when the link had a ladder to take one from:
+  // what the transfer will be, as against what was asked for.
+  std::optional<hls::Variant> variant;
+  std::optional<proxy::Decloak> relay;
+};
+
+// Work a transfer out. Contract as download_to_file: link.url must already
+// have passed the guard (download_link below owns it).
+//   * a direct link is its own plan;
+//   * a link play would proxy — decoy-prefixed segments, encrypted
+//     playlists, one audio language of several — engages the same proxy, and
+//     everything below is read through its loopback;
+//   * the playlist is fetched (best effort, link headers): from a master,
+//     `rung` picks the variant (hls::pick_variant) and its audio rendition,
+//     each re-guarded when it is an upstream url (provider bytes); a media
+//     playlist or a failed fetch leaves the link url as the input (never
+//     worse than play);
+//   * a link that names its own audio rendition (StreamLink::audio_url)
+//     keeps it, guarded and relayed like the rest.
+// Err: UnsafeUrl for a pick that fails the guard, Io when the proxy cannot
+// start.
+[[nodiscard]] Result<Plan, DownloadError> plan(const http::Client& client,
+                                               const StreamLink& link, const Rung& rung);
+
+// Run a plan into `dest` (through the .part + fsync + atomic-rename law):
+// download_to_file for a direct one (link headers, Range resume, byte counts
+// with the server's total), ffmpeg for a playlist — `progress` then gets the
+// .part's size as it grows, with no total.
+[[nodiscard]] Result<Unit, DownloadError> run(
+    const http::Client& client, const StreamLink& link, const Plan& plan,
+    const std::string& dest, const std::string& ffmpeg_path,
     const std::atomic<bool>& cancel, const ProgressFn& progress,
     std::atomic<long>* child_pid_out = nullptr);
+
+// plan() + run() for an HLS link, for callers that have no use for the plan.
+[[nodiscard]] Result<Unit, DownloadError> download_hls(
+    const http::Client& client, const StreamLink& link, const std::string& dest,
+    const Rung& rung, const std::string& ffmpeg_path,
+    const std::atomic<bool>& cancel, std::atomic<long>* child_pid_out = nullptr);
+
+// The one-call entry: guard link.url, then plan() and run(). Blocking.
+[[nodiscard]] Result<Unit, DownloadError> download_link(
+    const http::Client& client, const StreamLink& link, const std::string& dest,
+    const Rung& rung, const std::string& ffmpeg_path,
+    const std::atomic<bool>& cancel, const ProgressFn& progress,
+    std::atomic<long>* child_pid_out = nullptr);
+
+// --- What a link offers ----------------------------------------------------
+
+// What `link` can deliver, read the way plan() reads it (the same proxy, the
+// same playlist), so every row listed is one a transfer can take: a row's
+// `rung` handed to plan() lands on that row's variant. Contract as plan():
+// link.url already guarded. Never fails — a link whose playlist cannot be
+// read answers with its one as-served row.
+[[nodiscard]] StreamOffer probe(const http::Client& client, const StreamLink& link);
+
+// The row of an offer a rung lands on: the index plan() would take for it.
+// 0 for an offer with one row.
+[[nodiscard]] std::size_t offer_row_for(const StreamOffer& offer, const Rung& rung);
 
 // --- The on-disk convention (slices 3+4) -----------------------------------
 //
@@ -269,12 +332,12 @@ namespace detail {
 // The `-h demuxer=hls` text lists the extension_picky option.
 [[nodiscard]] bool help_lists_extension_picky(std::string_view help);
 
-// Master-playlist text -> the variant url for `quality` (the P23 cap policy
-// via hls::select_variant), joined against `base` (senshi::cap_variant's
-// shape). nullopt = media playlist / nothing usable / audio in separate
-// renditions (hls::has_separate_audio): caller keeps the original url.
-[[nodiscard]] std::optional<std::string> choose_from_master(
-    std::string_view playlist, std::string_view base, Quality quality);
+// The rows a master playlist read from `base` offers, best first: one per
+// variant a rung can land on (a variant hls::choose_pair would not hand back
+// for its own rung is left out), variants that say the same about themselves
+// folded into one. Empty for a media playlist.
+[[nodiscard]] std::vector<OfferRow> rows_from_master(std::string_view playlist,
+                                                     std::string_view base);
 
 }  // namespace detail
 

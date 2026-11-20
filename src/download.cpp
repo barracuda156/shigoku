@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -21,6 +22,7 @@
 #include <thread>
 
 #include "hls.hpp"
+#include "ladder.hpp"
 #include "proxy.hpp"
 #include "subprocess.hpp"
 
@@ -201,78 +203,76 @@ Result<Unit, DownloadError> finalize_part(const std::string& part,
 }  // namespace
 
 LinkKind classify_url(std::string_view url) {
-  // Path component only: strip query/fragment, then take the last extension.
-  std::size_t end = url.size();
-  for (std::size_t i = 0; i < url.size(); ++i) {
-    if (url[i] == '?' || url[i] == '#') {
-      end = i;
-      break;
-    }
-  }
-  const std::string_view path = url.substr(0, end);
-  const std::size_t dot = path.rfind('.');
-  const std::size_t slash = path.rfind('/');
-  if (dot == std::string_view::npos ||
-      (slash != std::string_view::npos && dot < slash)) {
-    return LinkKind::Direct;
-  }
-  std::string ext(path.substr(dot + 1));
-  for (char& c : ext) {
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-  }
-  return (ext == "m3u8" || ext == "m3u") ? LinkKind::Hls : LinkKind::Direct;
+  return ladder::is_playlist_url(url) ? LinkKind::Hls : LinkKind::Direct;
 }
 
 LinkKind classify_link(const StreamLink& link) {
-  if (link.cloaked_segments || proxy::needed(link)) return LinkKind::Hls;
-  return classify_url(link.url);
+  return ladder::is_playlist(link) ? LinkKind::Hls : LinkKind::Direct;
 }
 
 Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
-    std::string_view out_path, bool extension_picky_off) {
+    std::string_view out_path, bool extension_picky_off, std::string_view audio_url) {
   // Positional: any leading '-' reads as a flag (player.rs:232 shape).
   if (!arg_clean(input_url) ||
       (!input_url.empty() && input_url.front() == '-')) {
     return err(DownloadError::unsafe_arg("url"));
   }
+  if (!arg_clean(audio_url) || (!audio_url.empty() && audio_url.front() == '-')) {
+    return err(DownloadError::unsafe_arg("audio_url"));
+  }
+  if (link.referer && !arg_clean(*link.referer)) {
+    return err(DownloadError::unsafe_arg("referer"));
+  }
+  if (link.user_agent && !ua_clean(*link.user_agent)) {
+    return err(DownloadError::unsafe_arg("user_agent"));
+  }
 
   std::vector<std::string> argv = {"-nostdin", "-y", "-loglevel", "error"};
-  if (link.cloaked_segments) {
-    // The hls demuxer's gate on .jpg-cloaked segment names — ffmpeg's
-    // spelling of mpv's --demuxer-lavf-o=allowed_extensions=ALL.
-    argv.push_back("-allowed_extensions");
-    argv.push_back("ALL");
-    if (extension_picky_off) {
-      argv.push_back("-extension_picky");
-      argv.push_back("0");
+  // ffmpeg applies input options to the next -i only, so each input gets its
+  // own set.
+  auto add_input = [&](std::string_view url) {
+    if (link.cloaked_segments) {
+      // The hls demuxer's gate on .jpg-cloaked segment names — ffmpeg's
+      // spelling of mpv's --demuxer-lavf-o=allowed_extensions=ALL.
+      argv.push_back("-allowed_extensions");
+      argv.push_back("ALL");
+      if (extension_picky_off) {
+        argv.push_back("-extension_picky");
+        argv.push_back("0");
+      }
     }
-  }
-  if (link.referer) {
-    if (!arg_clean(*link.referer)) {
-      return err(DownloadError::unsafe_arg("referer"));
+    if (link.referer) {
+      argv.push_back("-headers");
+      argv.push_back("Referer: " + *link.referer + "\r\n");
     }
-    argv.push_back("-headers");
-    argv.push_back("Referer: " + *link.referer + "\r\n");
-  }
-  if (link.user_agent) {
-    if (!ua_clean(*link.user_agent)) {
-      return err(DownloadError::unsafe_arg("user_agent"));
+    if (link.user_agent) {
+      argv.push_back("-user_agent");
+      argv.push_back(*link.user_agent);
     }
-    argv.push_back("-user_agent");
-    argv.push_back(*link.user_agent);
+    // The input is always a playlist here. Saying so skips ffmpeg's probe,
+    // which since 6.1 refuses one with neither an m3u8 name nor a playlist
+    // mime type (AnimeHub's variants are extensionless and served as
+    // image/jpeg).
+    argv.push_back("-f");
+    argv.push_back("hls");
+    argv.push_back("-i");
+    argv.push_back(std::string(url));
+  };
+  add_input(input_url);
+  if (!audio_url.empty()) {
+    add_input(audio_url);
+    // Without maps ffmpeg would choose a stream per type across both inputs
+    // by its own ranking; the pairing is the point, so it is spelled out.
+    argv.push_back("-map");
+    argv.push_back("0:v:0");
+    argv.push_back("-map");
+    argv.push_back("1:a:0");
   }
-  // The input is always a playlist here. Saying so skips ffmpeg's probe, which
-  // since 6.1 refuses one with neither an m3u8 name nor a playlist mime type
-  // (AnimeHub's variants are extensionless and served as image/jpeg).
-  argv.push_back("-f");
-  argv.push_back("hls");
-  argv.push_back("-i");
-  argv.push_back(std::string(input_url));
   argv.push_back("-c");
   argv.push_back("copy");
   // The .part carries no useful extension, so the container must be explicit;
-  // mp4 is the convention slice 4's local scan expects for HLS grabs.
+  // mp4 is the convention the local scan expects for HLS grabs.
   argv.push_back("-f");
   argv.push_back("mp4");
   argv.push_back(std::string(out_path));
@@ -298,7 +298,8 @@ bool ffmpeg_has_extension_picky(const std::string& ffmpeg_path) {
 Result<Unit, DownloadError> run_ffmpeg(const std::string& ffmpeg_path,
                                        const std::vector<std::string>& argv,
                                        const std::atomic<bool>& cancel,
-                                       std::atomic<long>* child_pid_out) {
+                                       std::atomic<long>* child_pid_out,
+                                       const std::function<void()>& on_poll) {
   std::vector<char*> cargv;
   cargv.reserve(argv.size() + 2);
   cargv.push_back(const_cast<char*>(ffmpeg_path.c_str()));
@@ -372,9 +373,27 @@ Result<Unit, DownloadError> run_ffmpeg(const std::string& ffmpeg_path,
         ::kill(child, SIGKILL);
       }
     }
+    if (on_poll) on_poll();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 }
+
+namespace {
+
+// Rows are told apart by what the playlist says about them; two variants
+// that say the same (a mirror of one rung) are one row.
+bool same_row(const OfferRow& a, const OfferRow& b) {
+  return a.width == b.width && a.height == b.height && a.bandwidth == b.bandwidth &&
+         a.codecs == b.codecs && a.audio == b.audio;
+}
+
+OfferRow as_served_row(const StreamLink& link) {
+  OfferRow row;
+  row.height = link.resolution;
+  return row;
+}
+
+}  // namespace
 
 namespace detail {
 
@@ -382,74 +401,136 @@ bool help_lists_extension_picky(std::string_view help) {
   return help.find("-extension_picky ") != std::string_view::npos;
 }
 
-std::optional<std::string> choose_from_master(std::string_view playlist,
-                                              std::string_view base,
-                                              Quality quality) {
-  return hls::choose_variant(playlist, base, quality);
+std::vector<OfferRow> rows_from_master(std::string_view playlist, std::string_view base) {
+  std::vector<OfferRow> rows;
+  const auto renditions = hls::parse_audio_renditions(playlist);
+  for (const hls::Variant& v : hls::parse_master_playlist(playlist)) {
+    OfferRow row;
+    row.rung = Rung(v.resolution.value_or(0), v.bandwidth.value_or(0));
+    row.width = v.width;
+    row.height = v.resolution;
+    row.bandwidth = v.bandwidth;
+    row.codecs = v.codecs;
+    if (const hls::AudioRendition* audio = hls::audio_for(v, renditions)) {
+      row.separate_audio = true;
+      row.audio = audio->name;
+    }
+    // Listed only when asking for it gets it, this very variant: the pick
+    // may drop it (a url that does not join) or land on another the rung
+    // cannot tell from it (the same size under another audio group, a
+    // mirror).
+    const auto joined = hls::join_url(base, v.url);
+    const auto pair = hls::choose_pair(playlist, base, row.rung);
+    if (!joined.has_value() || !pair.has_value() || pair->video_url != *joined) continue;
+    if (std::any_of(rows.begin(), rows.end(),
+                    [&](const OfferRow& r) { return same_row(r, row); })) {
+      continue;
+    }
+    rows.push_back(std::move(row));
+  }
+  std::stable_sort(rows.begin(), rows.end(), [](const OfferRow& a, const OfferRow& b) {
+    if (a.height != b.height) return a.height.value_or(0) > b.height.value_or(0);
+    return a.bandwidth.value_or(0) > b.bandwidth.value_or(0);
+  });
+  return rows;
 }
 
 }  // namespace detail
 
-Result<Unit, DownloadError> download_hls(const http::Client& client,
-                                         const StreamLink& link,
-                                         const std::string& dest,
-                                         Quality quality,
-                                         const std::string& ffmpeg_path,
-                                         const std::atomic<bool>& cancel,
-                                         std::atomic<long>* child_pid_out) {
-  std::string input = link.url;
+Result<Plan, DownloadError> plan(const http::Client& client, const StreamLink& link,
+                                 const Rung& rung) {
+  Plan p;
+  p.kind = classify_link(link);
+  p.input = link.url;
+  if (p.kind == LinkKind::Direct) return p;
 
-  // A link play would proxy (decoy-prefixed segments, encrypted playlists,
-  // one audio rendition of several) transfers through the same proxy;
-  // the guard object keeps it alive for ffmpeg's lifetime. ffmpeg reads
-  // the proxied master itself, so no variant walk on this arm.
-  std::optional<proxy::Decloak> decloak;
+  // A link play would proxy transfers through the same proxy; the plan keeps
+  // it alive for ffmpeg's lifetime.
   if (proxy::needed(link)) {
     auto engaged = proxy::engage(link);
     if (!engaged) {
-      return err(
-          DownloadError::io("decloak proxy: " + engaged.error().detail));
+      return err(DownloadError::io("decloak proxy: " + engaged.error().detail));
     }
-    decloak.emplace(std::move(*engaged));
-    input = std::string(decloak->url());
-  } else {
-    // Best-effort master walk (senshi::cap_variant's spirit: a fetch/parse
-    // failure falls back to the link url — a download is never worse off
-    // than handing ffmpeg what mpv would have gotten). The body decides, not
-    // the url's spelling: a master served as .txt walks like a .m3u8.
-    http::Request req;
-    req.url = link.url;
-    if (link.user_agent) req.user_agent = *link.user_agent;
-    if (link.referer) req.extra_headers.push_back({"Referer", *link.referer});
-    if (auto body = client.fetch(req); body.has_value()) {
-      const std::string_view text(reinterpret_cast<const char*>(body->data()),
-                                  body->size());
-      if (auto picked = detail::choose_from_master(text, link.url, quality)) {
-        // The variant url is provider bytes off the playlist: re-guard.
-        if (auto g = http::guard_fetch_url(*picked); !g.has_value()) {
-          return err(DownloadError::unsafe_url(g.error()));
-        }
-        input = std::move(*picked);
-      }
+    p.relay.emplace(std::move(*engaged));
+    p.input = std::string(p.relay->url());
+  }
+  const bool relayed = p.relay.has_value();
+
+  // Best effort: a fetch or parse failure falls back to the link url — a
+  // download is never worse off than handing ffmpeg what mpv would have
+  // gotten. The body decides, not the url's spelling: a master served as
+  // .txt is read like a .m3u8.
+  if (const auto master = ladder::read(client, link, p.input)) {
+    auto taken = ladder::take(*master, relayed, rung);
+    if (!taken.has_value()) return err(DownloadError::unsafe_url(taken.error()));
+    if (taken->has_value()) {
+      p.input = std::move((*taken)->video_url);
+      p.audio = std::move((*taken)->audio_url);
+      p.variant = std::move((*taken)->variant);
     }
+  }
+  if (!p.audio.has_value() && link.audio_url.has_value()) {
+    if (auto g = http::guard_fetch_url(*link.audio_url); !g.has_value()) {
+      return err(DownloadError::unsafe_url(g.error()));
+    }
+    p.audio = relayed ? p.relay->relay(*link.audio_url) : *link.audio_url;
+  }
+  return p;
+}
+
+Result<Unit, DownloadError> run(const http::Client& client, const StreamLink& link,
+                                const Plan& plan, const std::string& dest,
+                                const std::string& ffmpeg_path, const std::atomic<bool>& cancel,
+                                const ProgressFn& progress, std::atomic<long>* child_pid_out) {
+  if (plan.kind == LinkKind::Direct) {
+    Options opts;
+    opts.url = plan.input;
+    opts.dest = dest;
+    opts.referer = link.referer;
+    if (link.user_agent) opts.user_agent = *link.user_agent;
+    return download_to_file(client, opts, cancel, progress);
   }
 
   const std::string part = part_path(dest);
   const bool picky_off = link.cloaked_segments && ffmpeg_has_extension_picky(ffmpeg_path);
-  auto argv = build_ffmpeg_argv(link, input, part, picky_off);
+  auto argv = build_ffmpeg_argv(link, plan.input, part, picky_off,
+                                plan.audio ? std::string_view(*plan.audio) : std::string_view());
   if (!argv.has_value()) return err(std::move(argv.error()));
 
-  if (auto ran = run_ffmpeg(ffmpeg_path, *argv, cancel, child_pid_out);
+  std::function<void()> on_poll;
+  if (progress) {
+    on_poll = [&part, &progress]() {
+      struct stat st{};
+      if (::stat(part.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+        progress(static_cast<std::uint64_t>(st.st_size), std::nullopt);
+      }
+    };
+  }
+  if (auto ran = run_ffmpeg(ffmpeg_path, *argv, cancel, child_pid_out, on_poll);
       !ran.has_value()) {
     return ran;  // whatever ffmpeg wrote stays in the .part (never a final).
   }
   return finalize_part(part, dest);
 }
 
+Result<Unit, DownloadError> download_hls(const http::Client& client,
+                                         const StreamLink& link,
+                                         const std::string& dest,
+                                         const Rung& rung,
+                                         const std::string& ffmpeg_path,
+                                         const std::atomic<bool>& cancel,
+                                         std::atomic<long>* child_pid_out) {
+  auto planned = plan(client, link, rung);
+  if (!planned.has_value()) return err(std::move(planned.error()));
+  // A caller here means the ffmpeg arm, whatever the url's spelling says.
+  planned->kind = LinkKind::Hls;
+  return run(client, link, *planned, dest, ffmpeg_path, cancel, {}, child_pid_out);
+}
+
 Result<Unit, DownloadError> download_link(const http::Client& client,
                                           const StreamLink& link,
                                           const std::string& dest,
-                                          Quality quality,
+                                          const Rung& rung,
                                           const std::string& ffmpeg_path,
                                           const std::atomic<bool>& cancel,
                                           const ProgressFn& progress,
@@ -458,22 +539,76 @@ Result<Unit, DownloadError> download_link(const http::Client& client,
   if (auto g = http::guard_fetch_url(link.url); !g.has_value()) {
     return err(DownloadError::unsafe_url(g.error()));
   }
-  // The link's flags outrank its url's spelling (classify_link): the curl arm
-  // would land a playlist, or decoy bytes, in the file verbatim.
-  switch (classify_link(link)) {
-    case LinkKind::Direct: {
-      Options opts;
-      opts.url = link.url;
-      opts.dest = dest;
-      opts.referer = link.referer;
-      if (link.user_agent) opts.user_agent = *link.user_agent;
-      return download_to_file(client, opts, cancel, progress);
-    }
-    case LinkKind::Hls:
-      return download_hls(client, link, dest, quality, ffmpeg_path, cancel,
-                          child_pid_out);
+  auto planned = plan(client, link, rung);
+  if (!planned.has_value()) return err(std::move(planned.error()));
+  return run(client, link, *planned, dest, ffmpeg_path, cancel, progress, child_pid_out);
+}
+
+StreamOffer probe(const http::Client& client, const StreamLink& link) {
+  StreamOffer offer;
+  if (classify_link(link) == LinkKind::Direct) {
+    offer.shape = StreamOffer::Shape::File;
+    offer.rows.push_back(as_served_row(link));
+    return offer;
   }
-  return err(DownloadError::io("unreachable"));  // closed enum.
+  // Read exactly as plan() will: through the proxy when the link is relayed.
+  std::optional<proxy::Decloak> relay;
+  std::string play_url = link.url;
+  if (proxy::needed(link)) {
+    auto engaged = proxy::engage(link);
+    if (!engaged) {
+      offer.shape = StreamOffer::Shape::Unread;
+      offer.rows.push_back(as_served_row(link));
+      return offer;
+    }
+    relay.emplace(std::move(*engaged));
+    play_url = std::string(relay->url());
+  }
+  http::Request req;
+  req.url = play_url;
+  if (link.user_agent) req.user_agent = *link.user_agent;
+  if (link.referer) req.extra_headers.push_back({"Referer", *link.referer});
+  const auto body = client.fetch(req);
+  if (!body.has_value()) {
+    offer.shape = StreamOffer::Shape::Unread;
+    offer.rows.push_back(as_served_row(link));
+    return offer;
+  }
+  ladder::Master master;
+  master.text.assign(reinterpret_cast<const char*>(body->data()), body->size());
+  master.url = play_url;
+  const bool is_master = !hls::parse_master_playlist(master.text).empty();
+  // A row plan() would refuse (its variant or audio fails the fetch guard) is
+  // not one a transfer can take.
+  for (OfferRow& row : detail::rows_from_master(master.text, master.url)) {
+    const auto taken = ladder::take(master, relay.has_value(), row.rung);
+    if (taken.has_value() && taken->has_value()) offer.rows.push_back(std::move(row));
+  }
+  if (offer.rows.empty()) {
+    // A media playlist is one stream; a master with nothing left to take
+    // transfers as served, and plan() says why it cannot.
+    offer.shape = is_master ? StreamOffer::Shape::Unread : StreamOffer::Shape::Single;
+    offer.rows.push_back(as_served_row(link));
+    return offer;
+  }
+  offer.shape = StreamOffer::Shape::Ladder;
+  return offer;
+}
+
+std::size_t offer_row_for(const StreamOffer& offer, const Rung& rung) {
+  if (offer.rows.size() < 2) return 0;
+  std::vector<hls::Variant> variants;
+  variants.reserve(offer.rows.size());
+  for (const OfferRow& row : offer.rows) {
+    hls::Variant v;
+    v.resolution = row.height;
+    v.width = row.width;
+    v.bandwidth = row.bandwidth;
+    v.codecs = row.codecs;
+    variants.push_back(std::move(v));
+  }
+  const hls::Variant* pick = hls::pick_variant(variants, rung);
+  return pick == nullptr ? 0 : static_cast<std::size_t>(pick - variants.data());
 }
 
 // ===========================================================================

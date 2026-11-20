@@ -60,6 +60,16 @@ class Decloak {
   // original stream url otherwise.
   [[nodiscard]] std::string_view url() const { return url_; }
 
+  // Whether a proxy is engaged: url() is then its loopback, and so is every
+  // url in a playlist read through it.
+  [[nodiscard]] bool relayed() const { return proxy_ != nullptr; }
+
+  // The url the player must open for another upstream of the same stream
+  // (its audio rendition's playlist): the loopback ref for it when a proxy
+  // is engaged, the upstream itself otherwise. A url that is already this
+  // proxy's loopback ref comes back unchanged.
+  [[nodiscard]] std::string relay(std::string_view upstream) const;
+
   Decloak(Decloak&&) noexcept = default;
   Decloak& operator=(Decloak&&) noexcept = default;
   Decloak(const Decloak&) = delete;

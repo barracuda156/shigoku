@@ -37,6 +37,8 @@
 
 #include "../src/download.hpp"
 #include "../src/http.hpp"
+#include "../src/ladder.hpp"
+#include "../src/offer.hpp"
 
 // macOS (and other BSDs) has no MSG_NOSIGNAL; SO_NOSIGPIPE on the accepted fd
 // below is the equivalent guard against SIGPIPE when the peer aborts mid-drip.
@@ -482,6 +484,61 @@ TEST_CASE("ffmpeg argv: banned bytes rejected per field (ROD-92/435)") {
   }
 }
 
+TEST_CASE("ffmpeg argv: separate audio is a second input, mapped explicitly") {
+  const auto argv = build_ffmpeg_argv(plain_link("https://cdn.example/m.m3u8"),
+                                      "https://cdn.example/v720.m3u8", "/dl/1/sub/3.mp4.part",
+                                      false, "https://cdn.example/a/ja.m3u8");
+  REQUIRE(argv.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-f", "hls", "-i", "https://cdn.example/v720.m3u8",
+      "-f", "hls", "-i", "https://cdn.example/a/ja.m3u8",
+      "-map", "0:v:0", "-map", "1:a:0",
+      "-c", "copy", "-f", "mp4", "/dl/1/sub/3.mp4.part"};
+  CHECK(*argv == want);
+}
+
+TEST_CASE("ffmpeg argv: each input carries its own input options") {
+  StreamLink l = plain_link("https://cdn.example/m.m3u8");
+  l.cloaked_segments = true;
+  l.referer = "https://site.example/";
+  l.user_agent = "Mozilla/5.0 (X11) Chrome/126";
+  const auto argv = build_ffmpeg_argv(l, "https://cdn.example/v720.m3u8", "/o.part",
+                                      /*extension_picky_off=*/true,
+                                      "https://cdn.example/a/ja.m3u8");
+  REQUIRE(argv.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-allowed_extensions", "ALL", "-extension_picky", "0",
+      "-headers", "Referer: https://site.example/\r\n",
+      "-user_agent", "Mozilla/5.0 (X11) Chrome/126",
+      "-f", "hls", "-i", "https://cdn.example/v720.m3u8",
+      "-allowed_extensions", "ALL", "-extension_picky", "0",
+      "-headers", "Referer: https://site.example/\r\n",
+      "-user_agent", "Mozilla/5.0 (X11) Chrome/126",
+      "-f", "hls", "-i", "https://cdn.example/a/ja.m3u8",
+      "-map", "0:v:0", "-map", "1:a:0",
+      "-c", "copy", "-f", "mp4", "/o.part"};
+  CHECK(*argv == want);
+}
+
+TEST_CASE("ffmpeg argv: the audio input is vetted; an empty one adds nothing") {
+  const StreamLink l = plain_link("https://cdn.example/m.m3u8");
+  for (const char* bad : {"https://cdn.example/a b.m3u8", "--evil=1"}) {
+    auto r = build_ffmpeg_argv(l, l.url, "/o.part", false, bad);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().kind == DownloadError::Kind::UnsafeArg);
+    CHECK(r.error().detail == "audio_url");
+  }
+  const auto none = build_ffmpeg_argv(l, l.url, "/o.part", false, "");
+  REQUIRE(none.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-f", "hls", "-i", "https://cdn.example/m.m3u8",
+      "-c", "copy", "-f", "mp4", "/o.part"};
+  CHECK(*none == want);
+}
+
 // ===========================================================================
 // Slice 2: master → variant (the P23 cap policy through the download path).
 // ===========================================================================
@@ -504,43 +561,275 @@ const char* kMedia =
     "seg0.ts\n"
     "#EXT-X-ENDLIST\n";
 
+// Absolute public variant urls: they pass the fetch guard wherever the master
+// was read from (the guard is lexical, nothing is resolved).
+const char* kLadder =
+    "#EXTM3U\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n"
+    "https://cdn.example/v1080.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n"
+    "https://cdn.example/v720.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480\n"
+    "https://cdn.example/v480.m3u8\n";
+
+const char* kSplitAudio =
+    "#EXTM3U\n"
+    "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Japanese\",DEFAULT=YES,"
+    "URI=\"https://cdn.example/a/ja.m3u8\"\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO=\"a\"\n"
+    "https://cdn.example/v1080.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"a\"\n"
+    "https://cdn.example/v720.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480,AUDIO=\"a\"\n"
+    "https://cdn.example/v480.m3u8\n";
+
+const char* kBase = "https://cdn.example/x/master.m3u8";
+
+OfferRow ladder_row(std::uint32_t width, std::uint32_t height, std::uint64_t bandwidth) {
+  OfferRow row;
+  row.rung = Rung(height, bandwidth);
+  row.width = width;
+  row.height = height;
+  row.bandwidth = bandwidth;
+  return row;
+}
+
 }  // namespace
 
-TEST_CASE("choose_from_master: joins and picks per the cap policy") {
-  const std::string base = "https://cdn.example/x/master.m3u8";
-  auto best = download::detail::choose_from_master(kMaster, base, Quality::Best);
-  REQUIRE(best.has_value());
-  CHECK(*best == "https://cdn.example/x/v1080.m3u8");
+// ===========================================================================
+// The ladder: what a url names, and a rung taken off a master.
+// ===========================================================================
 
-  auto capped =
-      download::detail::choose_from_master(kMaster, base, Quality::P720);
-  REQUIRE(capped.has_value());
-  CHECK(*capped == "https://cdn.example/x/v720.m3u8");
-
-  auto worst =
-      download::detail::choose_from_master(kMaster, base, Quality::Worst);
-  REQUIRE(worst.has_value());
-  CHECK(*worst == "https://cdn.example/x/v480.m3u8");
+TEST_CASE("ladder::is_playlist_url: by the path's extension") {
+  CHECK(ladder::is_playlist_url("https://cdn.example/x/master.m3u8"));
+  CHECK(ladder::is_playlist_url("https://cdn.example/x/M.M3U8?x=1"));
+  CHECK(ladder::is_playlist_url("https://cdn.example/x/list.m3u#f"));
+  CHECK_FALSE(ladder::is_playlist_url("https://cdn.example/x/ep1.mp4"));
+  CHECK_FALSE(ladder::is_playlist_url("https://cdn.example/x/ep1.mp4?f=a.m3u8"));
+  CHECK_FALSE(ladder::is_playlist_url("https://cdn.example/x/plain"));
+  CHECK_FALSE(ladder::is_playlist_url("https://cdn.example/a.m3u8/seg"));
 }
 
-TEST_CASE("choose_from_master: a master with separate audio keeps the master") {
-  // Its variants are video-only: picking one would save a silent file.
-  const char* demuxed =
+TEST_CASE("ladder::is_playlist: cloaked or relayed links are playlists whatever the url") {
+  CHECK_FALSE(ladder::is_playlist(plain_link("https://cdn.example/x/ep1.mp4")));
+  CHECK(ladder::is_playlist(plain_link("https://cdn.example/x/master.m3u8")));
+  StreamLink cloaked = plain_link("https://cdn.example/x/master.txt?token=t");
+  cloaked.cloaked_segments = true;
+  CHECK(ladder::is_playlist(cloaked));
+  StreamLink sealed = plain_link("https://cdn.example/x/ep1.mp4");
+  sealed.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
+  CHECK(ladder::is_playlist(sealed));
+}
+
+TEST_CASE("ladder::take: a relayed master's loopback refs pass; unrelayed, they are guarded") {
+  ladder::Master m;
+  m.url = "http://127.0.0.1:5555/r.ts?t=abc&u=https%3A%2F%2Fcdn%2Eexample%2Fmaster%2Em3u8";
+  m.text =
       "#EXTM3U\n"
-      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Japanese\",DEFAULT=YES,URI=\"ja.m3u8\"\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO=\"a\"\n"
-      "v1080.m3u8\n"
-      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"a\"\n"
-      "v720.m3u8\n";
-  CHECK_FALSE(download::detail::choose_from_master(demuxed, "https://cdn.example/x/master.txt",
-                                                   Quality::P720)
-                  .has_value());
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n"
+      "http://127.0.0.1:5555/r.ts?t=abc&u=https%3A%2F%2Fcdn%2Eexample%2Fv1080%2Em3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n"
+      "http://127.0.0.1:5555/r.ts?t=abc&u=https%3A%2F%2Fcdn%2Eexample%2Fv720%2Em3u8\n";
+  const auto relayed = ladder::take(m, true, Rung(Quality::P720));
+  REQUIRE(relayed.has_value());
+  REQUIRE(relayed->has_value());
+  CHECK((*relayed)->video_url ==
+        "http://127.0.0.1:5555/r.ts?t=abc&u=https%3A%2F%2Fcdn%2Eexample%2Fv720%2Em3u8");
+  CHECK_FALSE((*relayed)->audio_url.has_value());
+
+  const auto direct = ladder::take(m, false, Rung(Quality::P720));
+  REQUIRE_FALSE(direct.has_value());
+  CHECK(direct.error() == GuardError::BlockedHost);
+
+  const ladder::Master media{kMedia, "https://cdn.example/x/m.m3u8"};
+  const auto none = ladder::take(media, false, Rung(Quality::P720));
+  REQUIRE(none.has_value());
+  CHECK_FALSE(none->has_value());
 }
 
-TEST_CASE("choose_from_master: a media playlist yields nothing") {
-  CHECK_FALSE(download::detail::choose_from_master(
-                  kMedia, "https://cdn.example/x/m.m3u8", Quality::Best)
-                  .has_value());
+// ===========================================================================
+// The rows a master offers.
+// ===========================================================================
+
+TEST_CASE("rows_from_master: a mirror of one rung is one row") {
+  const char* mirrored =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\n"
+      "https://a.example/v720.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\n"
+      "https://b.example/v720.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480,CODECS=\"avc1.64001f,mp4a.40.2\"\n"
+      "https://a.example/v480.m3u8\n";
+  const auto rows = download::detail::rows_from_master(mirrored, kBase);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].height == std::optional<std::uint32_t>(720));
+  CHECK(rows[0].codecs == "avc1.64001f,mp4a.40.2");
+  CHECK(rows[1].height == std::optional<std::uint32_t>(480));
+}
+
+TEST_CASE("rows_from_master: one size under two audio groups is the row a pick can reach") {
+  // A rung names a size, not an audio group: asking for either variant gets
+  // the first, so only the first is offered.
+  const char* twin =
+      "#EXTM3U\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"ja\",NAME=\"Japanese\",DEFAULT=YES,URI=\"ja.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",NAME=\"English\",DEFAULT=YES,URI=\"en.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"ja\"\n"
+      "v720-ja.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"en\"\n"
+      "v720-en.m3u8\n";
+  const auto rows =
+      download::detail::rows_from_master(twin, "https://cdn.example/x/master.m3u8");
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].height == std::optional<std::uint32_t>(720));
+  CHECK(rows[0].audio == "Japanese");
+}
+
+TEST_CASE("rows_from_master: a variant whose url cannot be handed over is not listed") {
+  const char* spaced =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n"
+      "https://cdn.example/v 1080.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n"
+      "https://cdn.example/v720.m3u8\n";
+  const auto rows = download::detail::rows_from_master(spaced, kBase);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].height == std::optional<std::uint32_t>(720));
+}
+
+TEST_CASE("rows_from_master: beside sized variants, an unsized one is not listed") {
+  const char* mixed =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n"
+      "v1080.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=6000000\n"
+      "vbig.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480\n"
+      "v480.m3u8\n";
+  const auto rows = download::detail::rows_from_master(mixed, kBase);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].height == std::optional<std::uint32_t>(1080));
+  CHECK(rows[1].height == std::optional<std::uint32_t>(480));
+}
+
+TEST_CASE("rows_from_master: a ladder with no sizes lists by bandwidth, best first") {
+  const char* unsized =
+      "#EXTM3U\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=800000\n"
+      "vlow.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=4000000\n"
+      "vhigh.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=2000000\n"
+      "vmid.m3u8\n";
+  const auto rows = download::detail::rows_from_master(unsized, kBase);
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0].bandwidth == std::optional<std::uint64_t>(4000000));
+  CHECK(rows[1].bandwidth == std::optional<std::uint64_t>(2000000));
+  CHECK(rows[2].bandwidth == std::optional<std::uint64_t>(800000));
+  CHECK(rows[0].rung == Rung(0, 4000000));
+  CHECK_FALSE(rows[0].height.has_value());
+}
+
+TEST_CASE("rows_from_master: a media playlist offers no rows") {
+  CHECK(download::detail::rows_from_master(kMedia, kBase).empty());
+}
+
+TEST_CASE("rows_from_master: separate audio renditions name each row's audio") {
+  const char* master =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:3\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"jpn\",NAME=\"Native\","
+      "DEFAULT=YES,AUTOSELECT=YES,URI=\"../0CVz/audio/native.m3u8\"\n"
+      "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"eng\",NAME=\"English\","
+      "DEFAULT=NO,AUTOSELECT=YES,URI=\"../0CVz/audio/english.m3u8\"\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=5184,RESOLUTION=1920x1080,AUDIO=\"audio\","
+      "CODECS=\"avc1.64001f,mp4a.40.2\"\n"
+      "../0CVz/video.m3u8\n"
+      "#EXT-X-STREAM-INF:BANDWIDTH=1024,RESOLUTION=854x480,AUDIO=\"audio\","
+      "CODECS=\"avc1.64001f,mp4a.40.2\"\n"
+      "../0CVz/video-480p.m3u8\n";
+  const auto rows = download::detail::rows_from_master(master, kBase);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].height == std::optional<std::uint32_t>(1080));
+  CHECK(rows[1].height == std::optional<std::uint32_t>(480));
+  for (const OfferRow& row : rows) {
+    CHECK(row.separate_audio);
+    CHECK(row.audio == "Native");
+  }
+}
+
+TEST_CASE("offer_row_for: the row a rung lands on") {
+  StreamOffer offer;
+  offer.shape = StreamOffer::Shape::Ladder;
+  offer.rows = {ladder_row(1920, 1080, 4000000), ladder_row(1280, 720, 2000000),
+                ladder_row(854, 480, 800000)};
+  CHECK(offer_row_for(offer, Rung(Quality::P720)) == 1);
+  CHECK(offer_row_for(offer, Rung(Quality::Best)) == 0);
+  CHECK(offer_row_for(offer, Rung(Quality::Worst)) == 2);
+  CHECK(offer_row_for(offer, Rung(360)) == 2);  // everything is above it: the lowest.
+
+  StreamOffer one;
+  one.shape = StreamOffer::Shape::Single;
+  one.rows = {ladder_row(1280, 720, 2000000)};
+  CHECK(offer_row_for(one, Rung(Quality::Worst)) == 0);
+}
+
+// ===========================================================================
+// The offer in words.
+// ===========================================================================
+
+TEST_CASE("human_bytes: binary units, one decimal under 100") {
+  const std::uint64_t mb = 1024ull * 1024ull;
+  CHECK(human_bytes(0) == "0.0 MB");
+  CHECK(human_bytes(450000) == "0.4 MB");
+  CHECK(human_bytes(104856999) == "99.9 MB");
+  CHECK(human_bytes(100 * mb) == "100 MB");
+  CHECK(human_bytes(412 * mb) == "412 MB");
+  CHECK(human_bytes(1000 * mb - 1) == "999 MB");
+  CHECK(human_bytes(1000 * mb) == "0.9 GB");
+  CHECK(human_bytes(1450000000) == "1.3 GB");
+}
+
+TEST_CASE("offer_row_size: what the playlist says of the row's size") {
+  OfferRow row;
+  CHECK(offer_row_size(row) == "as served");
+  row.bandwidth = 2400000u;
+  CHECK(offer_row_size(row) == "2.4 Mbit/s");
+  row.height = 1080u;
+  CHECK(offer_row_size(row) == "1080p");
+  row.width = 1920u;
+  CHECK(offer_row_size(row) == "1920\xC3\x97" "1080");
+}
+
+TEST_CASE("offer_row_bytes: the claimed bitrate over the length, when believable") {
+  OfferRow row;
+  CHECK_FALSE(offer_row_bytes(row, 1440).has_value());
+  row.bandwidth = 63999u;
+  CHECK_FALSE(offer_row_bytes(row, 1440).has_value());
+  row.bandwidth = 2000000u;
+  CHECK_FALSE(offer_row_bytes(row, 0).has_value());
+  CHECK(offer_row_bytes(row, 1440) == std::optional<std::uint64_t>(360000000));
+}
+
+TEST_CASE("offer_row_line: the size, then each part that is known") {
+  OfferRow row = ladder_row(1920, 1080, 8000000);
+  row.codecs = "avc1.64001f,mp4a.40.2";
+  row.separate_audio = true;
+  row.audio = "Native";
+  CHECK(offer_row_line(row, 1440) ==
+        "1920\xC3\x97" "1080 \xC2\xB7 ~1.3 GB \xC2\xB7 avc1.64001f,mp4a.40.2 \xC2\xB7 audio: Native");
+
+  OfferRow bare;
+  bare.height = 720u;
+  bare.separate_audio = true;
+  CHECK(offer_row_line(bare, 1440) == "720p \xC2\xB7 separate audio");
+}
+
+TEST_CASE("offer_shape_note: only the shapes without a choice explain themselves") {
+  CHECK_FALSE(offer_shape_note(StreamOffer::Shape::File).empty());
+  CHECK_FALSE(offer_shape_note(StreamOffer::Shape::Single).empty());
+  CHECK_FALSE(offer_shape_note(StreamOffer::Shape::Unread).empty());
+  CHECK(offer_shape_note(StreamOffer::Shape::Ladder).empty());
 }
 
 // ===========================================================================
@@ -633,6 +922,14 @@ TEST_CASE("run_ffmpeg: cancel SIGTERMs the child and reports Cancelled") {
   REQUIRE_FALSE(r.has_value());
   CHECK(r.error().kind == DownloadError::Kind::Cancelled);
   CHECK(elapsed < std::chrono::seconds(5));  // never rides out the sleep.
+}
+
+TEST_CASE("run_ffmpeg: on_poll runs while the child lives") {
+  const std::string stub = write_stub("stub_ffmpeg_slow.sh", "sleep 1\nexit 0\n");
+  int polls = 0;
+  auto r = run_ffmpeg(stub, {"-nostdin"}, g_never_cancel, nullptr, [&polls]() { ++polls; });
+  REQUIRE(r.has_value());
+  CHECK(polls > 0);
 }
 
 // ===========================================================================
@@ -731,7 +1028,10 @@ TEST_CASE("download_hls: encrypted playlists transfer through the proxy, as play
                                       "exit 0\n");
   auto client = http::Client::create();
   REQUIRE(client.has_value());
-  StreamLink link = plain_link("https://cdn.example/i/abc/master.txt?token=t");
+  // A loopback upstream nothing serves: the proxy's own per-hop guard refuses
+  // it at once, so reading the playlist fails and the transfer falls back to
+  // handing ffmpeg the proxy's loopback url.
+  StreamLink link = plain_link("http://127.0.0.1:9/i/abc/master.txt?token=t");
   link.cloaked_segments = true;
   link.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
   std::atomic<bool> cancel{false};
@@ -741,7 +1041,250 @@ TEST_CASE("download_hls: encrypted playlists transfer through the proxy, as play
   // ffmpeg was handed the loopback proxy, never the sealed upstream url.
   const std::string captured_argv = read_file(argv_out);
   CHECK(captured_argv.find("-i\nhttp://127.0.0.1:") != std::string::npos);
+  CHECK(captured_argv.find("/r.ts?t=") != std::string::npos);
   CHECK(captured_argv.find("-i\n" + link.url + "\n") == std::string::npos);
+}
+
+TEST_CASE("download_hls: a separate audio rendition reaches ffmpeg as a second input") {
+  const std::string dest = tmp_dest("hls_split.mp4");
+  const std::string argv_out = tmp_dest("hls_split_argv.txt");
+  ::setenv("STUB_ARGV_OUT", argv_out.c_str(), 1);
+  const std::string stub = write_stub("stub_ffmpeg_split.sh",
+                                      "printf '%s\\n' \"$@\" > \"$STUB_ARGV_OUT\"\n"
+                                      "for a; do o=\"$a\"; done\n"
+                                      "printf 'FAKEVIDEO' > \"$o\"\n"
+                                      "exit 0\n");
+  ScriptedServer srv({{response("200 OK", "", kSplitAudio), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamLink link = plain_link(srv.url("/master.m3u8"));
+  std::atomic<bool> cancel{false};
+  auto r = download_hls(*client, link, dest, Quality::P720, stub, cancel);
+  REQUIRE(r.has_value());
+  CHECK(read_file(dest) == "FAKEVIDEO");
+  CHECK_FALSE(exists(part_path(dest)));
+  const std::string captured_argv = read_file(argv_out);
+  CHECK(captured_argv.find("-i\nhttps://cdn.example/v720.m3u8\n") != std::string::npos);
+  CHECK(captured_argv.find("-i\nhttps://cdn.example/a/ja.m3u8\n") != std::string::npos);
+  CHECK(captured_argv.find("-map\n0:v:0\n-map\n1:a:0\n") != std::string::npos);
+}
+
+// ===========================================================================
+// plan(): what a transfer will fetch.
+// ===========================================================================
+
+TEST_CASE("plan: a direct link is its own input, nothing fetched") {
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamLink link = plain_link("https://cdn.example/x/ep1.mp4");
+  auto p = plan(*client, link, Quality::P720);
+  REQUIRE(p.has_value());
+  CHECK(p->kind == LinkKind::Direct);
+  CHECK(p->input == link.url);
+  CHECK_FALSE(p->variant.has_value());
+  CHECK_FALSE(p->audio.has_value());
+  CHECK_FALSE(p->relay.has_value());
+}
+
+TEST_CASE("plan: a media playlist is fetched as the link names it") {
+  ScriptedServer srv({{response("200 OK", "", kMedia), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamLink link = plain_link(srv.url("/stream.m3u8"));
+  auto p = plan(*client, link, Quality::P720);
+  REQUIRE(p.has_value());
+  CHECK(p->kind == LinkKind::Hls);
+  CHECK(p->input == link.url);
+  CHECK_FALSE(p->variant.has_value());
+  CHECK_FALSE(p->audio.has_value());
+}
+
+TEST_CASE("plan: a master hands over the rung's variant") {
+  ScriptedServer srv({{response("200 OK", "", kLadder), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamLink link = plain_link(srv.url("/master.m3u8"));
+  auto p = plan(*client, link, Rung(Quality::P720));
+  REQUIRE(p.has_value());
+  CHECK(p->kind == LinkKind::Hls);
+  CHECK(p->input == "https://cdn.example/v720.m3u8");
+  REQUIRE(p->variant.has_value());
+  CHECK(p->variant->resolution == std::optional<std::uint32_t>(720));
+  CHECK_FALSE(p->audio.has_value());
+  CHECK_FALSE(p->relay.has_value());
+}
+
+TEST_CASE("plan: a master with separate audio hands over the variant and its audio") {
+  ScriptedServer srv({{response("200 OK", "", kSplitAudio), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamLink link = plain_link(srv.url("/master.m3u8"));
+  auto p = plan(*client, link, Rung(Quality::P720));
+  REQUIRE(p.has_value());
+  CHECK(p->input == "https://cdn.example/v720.m3u8");
+  REQUIRE(p->variant.has_value());
+  CHECK(p->variant->resolution == std::optional<std::uint32_t>(720));
+  REQUIRE(p->audio.has_value());
+  CHECK(*p->audio == "https://cdn.example/a/ja.m3u8");
+  CHECK_FALSE(p->relay.has_value());
+}
+
+TEST_CASE("plan: a link's own audio rendition rides beside it") {
+  ScriptedServer srv({{response("200 OK", "", kMedia), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link(srv.url("/video.m3u8"));
+  link.audio_url = "https://cdn.example/a/ja.m3u8";
+  auto p = plan(*client, link, Quality::Best);
+  REQUIRE(p.has_value());
+  CHECK(p->input == link.url);
+  REQUIRE(p->audio.has_value());
+  CHECK(*p->audio == "https://cdn.example/a/ja.m3u8");
+}
+
+TEST_CASE("plan: a link's own audio rendition is guarded") {
+  ScriptedServer srv({{response("200 OK", "", kMedia), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link(srv.url("/video.m3u8"));
+  link.audio_url = "http://127.0.0.1:1/a.m3u8";
+  auto p = plan(*client, link, Quality::Best);
+  REQUIRE_FALSE(p.has_value());
+  CHECK(p.error().kind == DownloadError::Kind::UnsafeUrl);
+  CHECK(p.error().guard == GuardError::BlockedHost);
+}
+
+TEST_CASE("plan: a relayed link is read through its proxy, its audio relayed too") {
+  // The proxy's per-hop guard refuses this upstream: the read fails at once.
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link("http://127.0.0.1:9/i/abc/master.txt?token=t");
+  link.playlist_cipher = StreamLink::PlaylistCipher{std::vector<std::uint8_t>(32, 7), "m"};
+  link.audio_url = "https://cdn.example/a/ja.m3u8";
+  auto p = plan(*client, link, Quality::Best);
+  REQUIRE(p.has_value());
+  CHECK(p->kind == LinkKind::Hls);
+  REQUIRE(p->relay.has_value());
+  CHECK(p->relay->relayed());
+  CHECK(p->input == std::string(p->relay->url()));
+  CHECK(p->input != link.url);
+  CHECK_FALSE(p->variant.has_value());
+  REQUIRE(p->audio.has_value());
+  CHECK(p->audio->rfind("http://127.0.0.1:", 0) == 0);
+  CHECK(p->audio->find("/r.ts?t=") != std::string::npos);
+  CHECK(*p->audio == p->relay->relay("https://cdn.example/a/ja.m3u8"));
+  CHECK(p->relay->relay(*p->audio) == *p->audio);  // already a loopback ref.
+}
+
+// ===========================================================================
+// run(): a worked-out transfer.
+// ===========================================================================
+
+TEST_CASE("run: the ffmpeg arm reports the .part's size as it grows, with no total") {
+  const std::string dest = tmp_dest("run_progress.mp4");
+  const std::string stub = write_stub("stub_ffmpeg_progress.sh",
+                                      "for a; do o=\"$a\"; done\n"
+                                      "printf 'GROWING' > \"$o\"\n"
+                                      "sleep 1\n"
+                                      "exit 0\n");
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  Plan p;
+  p.kind = LinkKind::Hls;
+  p.input = "https://cdn.example/v720.m3u8";
+  const StreamLink link = plain_link(p.input);
+  std::vector<Tick> ticks;
+  auto r = download::run(*client, link, p, dest, stub, g_never_cancel,
+                         [&ticks](std::uint64_t bytes, std::optional<std::uint64_t> total) {
+                           ticks.push_back({bytes, total});
+                         });
+  REQUIRE(r.has_value());
+  REQUIRE_FALSE(ticks.empty());
+  CHECK(ticks.back().bytes == 7);
+  CHECK_FALSE(ticks.back().total.has_value());
+  CHECK(read_file(dest) == "GROWING");
+  CHECK_FALSE(exists(part_path(dest)));
+}
+
+// ===========================================================================
+// probe(): what a link offers.
+// ===========================================================================
+
+TEST_CASE("probe: a direct link is one file") {
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  StreamLink link = plain_link("https://cdn.example/x/ep1.mp4");
+  link.resolution = 720u;
+  const StreamOffer offer = probe(*client, link);
+  CHECK(offer.shape == StreamOffer::Shape::File);
+  REQUIRE(offer.rows.size() == 1);
+  CHECK(offer.rows[0].height == link.resolution);
+  CHECK_FALSE(offer.has_choice());
+}
+
+TEST_CASE("probe: a media playlist is one stream") {
+  ScriptedServer srv({{response("200 OK", "", kMedia), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamOffer offer = probe(*client, plain_link(srv.url("/stream.m3u8")));
+  CHECK(offer.shape == StreamOffer::Shape::Single);
+  CHECK(offer.rows.size() == 1);
+  CHECK_FALSE(offer.has_choice());
+}
+
+TEST_CASE("probe: a master is a ladder, best first, each row naming its own rung") {
+  ScriptedServer srv({{response("200 OK", "", kLadder), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamOffer offer = probe(*client, plain_link(srv.url("/master.m3u8")));
+  CHECK(offer.shape == StreamOffer::Shape::Ladder);
+  REQUIRE(offer.rows.size() == 3);
+  CHECK(offer.rows[0].height == std::optional<std::uint32_t>(1080));
+  CHECK(offer.rows[1].height == std::optional<std::uint32_t>(720));
+  CHECK(offer.rows[2].height == std::optional<std::uint32_t>(480));
+  CHECK(offer.rows[0].width == std::optional<std::uint32_t>(1920));
+  for (const OfferRow& row : offer.rows) {
+    REQUIRE(row.height.has_value());
+    REQUIRE(row.bandwidth.has_value());
+    CHECK(row.rung == Rung(*row.height, *row.bandwidth));
+    CHECK_FALSE(row.separate_audio);
+  }
+  CHECK(offer.has_choice());
+}
+
+TEST_CASE("probe: a master with separate audio names it on every row") {
+  ScriptedServer srv({{response("200 OK", "", kSplitAudio), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamOffer offer = probe(*client, plain_link(srv.url("/master.m3u8")));
+  CHECK(offer.shape == StreamOffer::Shape::Ladder);
+  REQUIRE(offer.rows.size() == 3);
+  for (const OfferRow& row : offer.rows) {
+    CHECK(row.separate_audio);
+    CHECK(row.audio == "Japanese");
+  }
+}
+
+TEST_CASE("probe: a master whose variants the fetch guard refuses offers no row to take") {
+  // kMaster's variants are relative, so they join to the loopback server's
+  // own host: plan() would refuse each one, and none is listed.
+  ScriptedServer srv({{response("200 OK", "", kMaster), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamOffer offer = probe(*client, plain_link(srv.url("/master.m3u8")));
+  CHECK(offer.shape == StreamOffer::Shape::Unread);
+  CHECK(offer.rows.size() == 1);
+  CHECK_FALSE(offer.has_choice());
+}
+
+TEST_CASE("probe: a playlist that cannot be read is one row, unread") {
+  ScriptedServer srv({{response("404 Not Found", "", "nope"), 0}});
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  const StreamOffer offer = probe(*client, plain_link(srv.url("/master.m3u8")));
+  CHECK(offer.shape == StreamOffer::Shape::Unread);
+  CHECK(offer.rows.size() == 1);
+  CHECK_FALSE(offer.has_choice());
 }
 
 // ===========================================================================

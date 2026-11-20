@@ -339,8 +339,9 @@ if(SHIGOKU_HAVE_CURL)
   add_library(shigoku_download STATIC src/download.cpp)
   target_include_directories(shigoku_download PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_download
-    PUBLIC shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
-    PRIVATE shigoku_hls shigoku_proxy shigoku_subprocess Threads::Threads)
+    PUBLIC shigoku_http shigoku_hls shigoku_proxy shigoku_domain shigoku_flags
+           shigoku_thirdparty
+    PRIVATE shigoku_ladder shigoku_subprocess Threads::Threads)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -834,6 +835,20 @@ if(SHIGOKU_HAVE_CURL)
   target_link_libraries(shigoku_proxy
     PUBLIC shigoku_domain shigoku_crypto shigoku_flags shigoku_thirdparty
     PRIVATE shigoku_http shigoku_hls shigoku_nonce Threads::Threads shigoku::curl)
+endif()
+
+# ---------------------------------------------------------------------------
+# shigoku_ladder: a resolved stream's master playlist read the way its player
+# reads it (through the proxy when the link is relayed), and a rung taken off
+# it — the video variant plus its separate audio rendition. Shared by the
+# download core (the transfer and the offer) and the player (capped playback).
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_ladder STATIC src/ladder.cpp)
+  target_include_directories(shigoku_ladder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_ladder
+    PUBLIC shigoku_http shigoku_hls shigoku_domain shigoku_flags shigoku_thirdparty
+    PRIVATE shigoku_proxy)
 endif()
 
 # ---------------------------------------------------------------------------

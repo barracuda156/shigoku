@@ -363,7 +363,10 @@ struct StreamLink {
 
   // The audio that goes with `url` when `url` is a video-only variant: its
   // rendition's own playlist. The player takes it as a second input beside
-  // the video; on a relayed link it rides the same proxy.
+  // the video; on a relayed link it rides the same proxy. Only mpv and
+  // ffmpeg take a second input: a provider that sets this hands the other
+  // backends a silent stream, so it is for whoever narrows a ladder to one
+  // variant, which checks the backend first.
   std::optional<std::string> audio_url;
 
   friend bool operator==(const StreamLink&, const StreamLink&) = default;

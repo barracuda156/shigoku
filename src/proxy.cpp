@@ -800,6 +800,14 @@ Decloak::~Decloak() {
   }
 }
 
+std::string Decloak::relay(std::string_view upstream) const {
+  if (!proxy_) return std::string(upstream);
+  const std::string head =
+      "http://127.0.0.1:" + std::to_string(proxy_->port()) + proxy_->prefix();
+  if (upstream.substr(0, head.size()) == head) return std::string(upstream);
+  return detail::build_loopback_url(proxy_->port(), proxy_->prefix(), upstream);
+}
+
 bool needed(const StreamLink& link) {
   return link.decloak_segments || link.playlist_cipher.has_value() ||
          (link.audio_language.has_value() && !link.audio_language->empty());
