@@ -33,9 +33,11 @@ works exactly the same otherwise.
 
 ## How the screen is organized
 
-- **Top bar** — `SHIGOKU` plus five tabs: `[B]rowse [H]istory [D]iscover
-  [C]alendar [S]ettings`. The active tab is highlighted; letters in brackets
-  are the keys that jump straight to it from anywhere.
+- **Top bar** — `SHIGOKU` plus six tabs: `[B]rowse [H]istory [D]iscover
+  [C]alendar [T]ransfers [S]ettings`. The active tab is highlighted; letters
+  in brackets are the keys that jump straight to it from anywhere. While
+  downloads are running or waiting, a `⇣` with their count sits at the right
+  end, on every view.
 - **Wide terminal (60+ columns)** — Browse and History split into a list
   pane (left) and a detail preview pane (right). Below that width there's
   only the list, and opening a show jumps straight to its full page instead.
@@ -47,7 +49,8 @@ works exactly the same otherwise.
   inside that page to go back to wherever you came from. `Esc` does the
   same "go back" job from inside the page or a preview pane.
 - **Mouse** — click selects whatever is under the pointer (a list row, a
-  Discover card, a Settings row, an episode cell, a top-bar tab); a second
+  Discover card, a Settings row, a Transfers row, an episode cell, a top-bar
+  tab); a second
   click on the same spot shortly after is the same as pressing `Enter`; the
   scroll wheel is the same as the up/down arrow, wherever the pointer sits.
   This degrades gracefully — it works even on terminals that only report
@@ -198,14 +201,14 @@ disk.
 |---|---|---|---|
 | Playback | player | cycle | `mpv` / `mplayer` / `qmplay2` — see [Playback](#playback) |
 | | player path | text | Binary for the selected player. For `mpv` it is never blank; for `mplayer` / `qmplay2` blank = that backend's default name |
-| | default quality | cycle | `worst` / `480` / `720` / `1080` / `best` |
+| | default quality | cycle | `worst` / `480` / `720` / `1080` / `best` — see [Quality](#quality) |
 | | translation | cycle | `sub` / `dub` |
 | | resume offset | cycle | `0`/`3`/`5`/`10`/`15`/`30`s — back up this many seconds from your last checkpoint when resuming |
 | | skip mode | cycle | `none` / `intro` / `outro` / `both` — AniSkip auto-skip (`mpv` only) |
 | Sources | catalog | cycle | `auto` / `anilist` / `mal` — which site answers search and Discover; see [Catalog sources](#catalog-sources) |
 | | preferred provider | cycle | Pin a specific streaming source as the default; blank follows the built-in order automatically |
 | Downloads | download dir | text | Where downloaded episodes are stored; blank = the default, under the data directory |
-| | download quality | cycle | `same as playback` (follows *default quality*) / `worst` / `480` / `720` / `1080` / `best` — see [Downloads](#downloads) |
+| | download quality | cycle | `same as playback` (follows *default quality*) / `worst` / `480` / `720` / `1080` / `best` — the row the download picker starts on; see [Downloads](#downloads) |
 | | ffmpeg path | text | Binary used to save HLS streams to disk |
 | Interface | cover art | toggle | Fetch and show cover art. Off, no cover is downloaded or drawn — each one's place keeps a plain box — even on a terminal that can show images; worth it on a slow link or a slow machine |
 | | kanji chips | toggle | Show season chips in kanji instead of plain text |
@@ -238,7 +241,7 @@ title, status/score chips, a synopsis, and the episode grid.
 | `g`/`G` | Jump to the first/last episode |
 | `Enter`, double-click | Play the highlighted episode |
 | `v` | Cycle which streaming source serves this show — automatic → each source in turn → back to automatic. shigoku otherwise picks a source and falls back between them on its own |
-| `d` | Download the highlighted episode instead of playing it |
+| `d` | Download the highlighted episode: opens the picker with what its stream offers — see [Downloads](#downloads) |
 | `c` | Toggle the **Characters & Recommendations** section |
 | `~` | Open the full list of similar shows in Discover |
 | `Tab` (section open) | Move focus between the section and the episode grid |
@@ -249,7 +252,9 @@ title, status/score chips, a synopsis, and the episode grid.
 | `q` | Quit |
 
 Unwatched episodes are brighter, watched ones dim, and the one currently
-playing or downloading carries a small spinner.
+playing carries a small spinner. An episode that is being downloaded, or
+waiting its turn, shows `⇣` where its closing bracket was, and a line under
+the grid says how that transfer is going.
 
 ### Character pages
 
@@ -319,6 +324,19 @@ blank = that backend's default name). The two are kept apart, so switching
 *player* back and forth loses neither. Only one playback can be in flight
 at a time.
 
+### Quality
+
+*default quality* (or `-q` on the command line) is a ceiling: `720` plays
+the best picture at or under 720 lines, and when a stream has nothing that
+small, the smallest it has. It works on every source whose stream comes as
+a set of sizes — shigoku reads that set before starting the player and
+hands it the one that fits. Where the sound is a separate track from
+the picture (Re:ANIME's streams, some of HiAnime's), `mpv` is given
+the picture and its sound track together; `mplayer` and `qmplay2` cannot
+take the two, so on those streams they play the source's own choice.
+A source that serves a single stream plays that stream whatever the setting
+says, and so does `best` everywhere.
+
 ### Senshi needs Node.js
 
 The Senshi source hands out its streams through the site's own player
@@ -361,27 +379,90 @@ Save an episode to disk instead of streaming it.
 
 | Where | How |
 |---|---|
-| The show page or preview pane | Press `d` on the highlighted episode |
+| The show page or preview pane | Press `d` on the highlighted episode, pick what to fetch, `Enter` |
+| The Transfers tab (`T`) | Watch, cancel, retry; play or delete what is on disk |
 | Command line | `shigoku download <title> [<episode>]` |
 
-Episodes download at Settings → Downloads → *download quality*; left at
-`same as playback` it follows *default quality*. On the command line, `-q`
-picks the quality for that one download instead (see
-[Command line](#command-line)).
+### Picking what to fetch
+
+`d` asks the episode's stream what it actually has and lists it — one row
+per picture size the source serves, such as `1920×1080 · ~1.3 GB`. Move with
+`j`/`k`, `Enter` queues the row, `Esc` leaves without downloading. The row
+that Settings → Downloads → *download quality* points at starts selected
+(`same as playback` follows *default quality*), so `d` then `Enter` fetches
+what the setting says.
+
+- The size is an estimate — the bitrate the stream claims times the
+  episode's length — and is left out when either is unknown or the claim is
+  not believable.
+- A row marked `audio: …` has its sound as a separate track; shigoku fetches
+  both and the saved file has picture and sound together.
+- A stream with nothing to choose from shows its one row and says why:
+  a single file, a source that serves one size, or a list that could not be
+  read just now (the download then goes ahead as the source serves it).
+- If the episode is already on disk the picker says so; `Enter` fetches it
+  again over the old file.
+- `d` on an episode that is already waiting, running, or stopped opens that
+  download instead: `x` cancels it (or takes a stopped one off the list),
+  `r` starts a stopped one again.
+
+### The queue
+
+Downloads wait in line and run one at a time; `download_parallel` in
+`config.json` raises that to 2 or 3. A download asks its source for the
+stream when its turn comes, not when you queued it, so a long queue does not
+go stale; the size you picked is matched again then — the same size if the
+stream still has it, else the next one down, else the smallest. The queue
+lasts until you quit: quitting stops whatever is running and forgets what
+was waiting.
+
+A transfer writes to a `.part` file and only renames it to the final name
+once it completes. A stopped or interrupted download leaves its `.part`
+behind, a `.part` never counts as a finished episode, and downloading the
+same episode again picks a direct-file `.part` up where it stopped (a
+stream saved through ffmpeg starts over).
+
+### The Transfers tab (`T`)
+
+Two lists on one screen. **queue**: what is running (with how much has
+arrived, and of how much when that is known), then what is waiting, then
+what failed or was cancelled, with the reason. **on disk**: every show in
+the download folder with its episodes and their sizes; a leftover `.part`
+is listed as `unfinished`.
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `g`/`G` | Move / jump |
+| `Enter`, double-click | On a finished file: play it. On a show, or an unfinished file: open the show's page. On a download: open it (cancel / retry) |
+| `Space` | Open the show's page |
+| `x` | Cancel the download under the cursor; on one that already stopped, take it off the list |
+| `r` | Start a failed or cancelled download again |
+| `X` then `y` | Delete the file under the cursor (asks first) |
+
+Playing from here needs no source and no network. A show the library knows
+is tracked like any other play (resume point, watched marks, your lists);
+a folder shigoku cannot match to a show just plays.
+
+### Where files go
 
 Files land under `<download dir>/<AniList id>/<sub or dub>/<episode>.<ext>`
 ("download dir" is set in Settings; blank defaults to `<data dir>/downloads`
 — see [Files on disk](#files-on-disk)). A command-line download of a show
 the catalogue couldn't place (see [Command line](#command-line)) goes under
 its source's name and id instead, such as `hianime-86/`, so two such shows
-never share a folder. A transfer writes to a `.part` file
-and only renames it to the final name once it completes; an interrupted
-download resumes from where the `.part` left off next time, and a `.part`
-never counts as a finished episode. Only one download runs at a time.
+never share a folder.
 
 Playing an episode you've already downloaded (`Enter` on it) always plays
 the local file directly — no network, no source lookup — so a fully
 downloaded show still plays even if every streaming source is down.
+
+### From the command line
+
+`shigoku download` prints what the stream offers and marks the row it is
+about to fetch: the one `-q` names, or without `-q` the one *download
+quality* names. Run at a terminal without `-q`, a stream with several sizes
+is offered as a list to pick from instead, like the show and the episode
+were.
 
 ## Accounts and sync
 
@@ -457,7 +538,7 @@ terminal:
 |---|---|
 | `shigoku <title> [--dub\|--sub] [-q <quality>] [-S <n>] [-e <episode> \| -r <a>-<b>] [-p <source>]` | Search, then pick a result and an episode from numbered lists, then play it — and after each episode, choose next / replay / previous / quit. The flags skip the prompts (below) |
 | `shigoku continue [<title>] [--dub\|--sub] [-q <quality>] [-S <n>] [-p <source>]` | Pick a show from your history back up where you left it: the freshest half-watched episode, or the one after the last you finished. Without `<title>` the whole history is offered, most recently watched first; with one, only the shows whose title contains it (a single match plays straight away) |
-| `shigoku download <title> [<episode>] [--dub\|--sub] [-q <quality>] [-S <n>] [-p <source>]` | Same search-and-pick flow, but downloads instead of playing; giving `<episode>` (or `-e`) skips that last prompt (it matches an exact episode label first, then falls back to a 1-based position) |
+| `shigoku download <title> [<episode>] [--dub\|--sub] [-q <quality>] [-S <n>] [-p <source>]` | Same search-and-pick flow, but downloads instead of playing; giving `<episode>` (or `-e`) skips that prompt (it matches an exact episode label first, then falls back to a 1-based position), and `-q` skips the pick of a size — see [Downloads](#downloads) |
 | `shigoku login [--paste]` | Sign in to AniList from the terminal — a successful sign-in immediately runs a sync too. `--paste` swaps the automatic browser-and-listener flow for manually pasting the redirect URL |
 | `shigoku sync` | Pull your MyAnimeList list and push edits back if connected, then pull and push your AniList list once, then exit — this always runs, even if Settings' *sync enabled* is switched off (that toggle only gates the interface's own automatic sync) |
 | `shigoku update` | Check GitHub for a newer release — shigoku never updates itself; reinstall via your package manager |
@@ -473,11 +554,10 @@ want (each has a long form too: `--quality`, `--show`, `--episode`,
 - `-q <quality>` — `best` (the default), `1080`, `720`, `480`, or `worst`,
   for this run instead of the `default_quality` in `config.json` (for
   `shigoku download`, instead of `download_quality`, which follows
-  `default_quality` when blank). Sources
-  that offer one stream ignore it, as ever, and so does a stream whose
-  audio comes as a separate track (Senshi's do): one picture size alone
-  would play silent, so the player gets the whole ladder and picks the
-  tracks itself. A spelling shigoku does not know plays best and says so.
+  `default_quality` when blank). It is a ceiling, applied to whatever
+  sizes the stream has — see [Quality](#quality); a source that offers one
+  stream ignores it, as ever. A spelling shigoku does not know plays best
+  and says so.
 - `-S <n>` — take the nth search result instead of asking.
 - `-e <episode>` — play that episode: its label as the list shows it, or
   its position in the list. After it, the usual next / replay / previous /
@@ -727,7 +807,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | `Esc` | One step back (close a page/pane/overlay/prompt) |
 | `q` | Quit (saves Settings first if you were editing there) |
 | `Ctrl-C` | Quit immediately, no save step |
-| `B` / `H` / `D` / `C` / `S` | Jump to Browse / History / Discover / Calendar / Settings |
+| `B` / `H` / `D` / `C` / `T` / `S` | Jump to Browse / History / Discover / Calendar / Transfers / Settings |
 | `/` | Search AniList from anywhere — jumps to Browse with the search box open. Exception: in History, `/` filters the watchlist locally instead |
 | `~` | Similar shows to the selected one, as a Discover feed |
 | Arrow keys | Alias `h`/`j`/`k`/`l` everywhere outside a text box |
@@ -789,6 +869,26 @@ A flat reference of everything above, grouped by context, for grepping.
 | `j`/`k`, `g`/`G` | Move / jump |
 | `Enter`/`Space`/double-click | Open full page |
 
+**Transfers**
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `g`/`G` | Move / jump |
+| `Enter`/double-click | Play a finished file; open a show's page; open a download |
+| `Space` | Open the show's page |
+| `x` | Cancel a download, or remove a stopped one from the list |
+| `r` | Retry a failed or cancelled download |
+| `X` then `y` | Delete the file (confirm) |
+
+**Download picker (`d` on an episode)**
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `g`/`G` | Move / jump between the stream's sizes |
+| `Enter` | Queue the highlighted one |
+| `x` / `r` | On an episode that already has a download: cancel or remove it / retry it |
+| `Esc` | Close |
+
 **Settings**
 
 | Key | Action |
@@ -807,7 +907,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | `g`/`G` | Jump to first/last episode (or first/last recommendation while that section holds focus) |
 | `Enter`/double-click | Play |
 | `v` | Cycle streaming source |
-| `d` | Download |
+| `d` | Download: open the picker |
 | `c` | Toggle Characters & Recommendations — **full page only** |
 | `Tab` | Swap focus between that section and the grid — **full page only** |
 | `Enter` (on a character) | Open the character's page — **full page only** |
