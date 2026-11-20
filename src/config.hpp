@@ -58,6 +58,8 @@ struct Config {
   // The quality downloads fetch at; "" = follow default_quality. Read
   // through effective_download_quality().
   std::string download_quality;
+  // How many downloads transfer at once; read through effective_download_parallel().
+  std::uint32_t download_parallel = 1;
   // P35 slice 3: the HLS download muxer, spawned like mpv (runtime-only dep;
   // absent at spawn = the "install ffmpeg" toast, never a config error).
   std::string ffmpeg_path = "ffmpeg";
@@ -90,6 +92,9 @@ struct Config {
 
   // download_quality when set, else default_quality.
   [[nodiscard]] std::string effective_download_quality() const;
+
+  // download_parallel clamped to [1, 3].
+  [[nodiscard]] std::uint32_t effective_download_parallel() const;
 
   // Total load (06 §2.1): missing, unreadable, oversized, or corrupt files
   // all yield defaults. Startup never wedges on config.

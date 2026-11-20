@@ -337,6 +337,13 @@ const Enrichment* selected_enrichment(const App& app) {
   if (source == View::Discover) {
     return app.discover.selected_entry();
   }
+  // Transfers: the show whose page was opened from it, and only while that
+  // page is up — the list itself has no detail surface, so moving through it
+  // asks nothing of the catalogue.
+  if (source == View::Transfers) {
+    if (app.view != View::Detail || !app.transfers.zoomed.has_value()) return nullptr;
+    return &*app.transfers.zoomed;
+  }
   // Browse (and the Detail zoom's Browse origin): the catalog cursor.
   if (app.list_cursor < 0 ||
       static_cast<std::size_t>(app.list_cursor) >= app.catalog.size()) {
@@ -784,6 +791,7 @@ void draw_episode_grid(CellBuffer& buf, int x0, int w, int y0, int y1,
   }
 
   const int cell_w = 5;
+  const Translation track = parse_translation(app.config.translation).value_or(Translation::Sub);
   int x = x0, y = y0;
   for (std::size_t i = 0; i < es.episodes.size(); ++i) {
     if (y >= y1) break;
@@ -797,6 +805,11 @@ void draw_episode_grid(CellBuffer& buf, int x0, int w, int y0, int y1,
     // recedes to text.dim. es.watched is index-parallel to episodes but may be
     // empty (no store / not yet computed) — bounds-check before reading.
     const bool is_watched = i < es.watched.size() && es.watched[i];
+    // A download of this cell that is waiting or in flight: the closing
+    // bracket turns into the transfer arrow.
+    const DownloadJob* job = app.downloads.for_episode(es.for_id, track, label);
+    const bool is_fetching = job != nullptr && job->active();
+    const char* close = is_fetching ? "\xE2\x87\xA3" : "]";  // ⇣
 
     std::string glyph;
     Rgb fg = theme::fg3;
@@ -810,12 +823,12 @@ void draw_episode_grid(CellBuffer& buf, int x0, int w, int y0, int y1,
       bg = theme::surface;
       st = Style::Bold;
     } else if (is_cursor) {
-      glyph = label.size() <= 2 ? ("[" + label + "] ") : ("[" + label + "]");
+      glyph = label.size() <= 2 ? ("[" + label + close + " ") : ("[" + label + close);
       fg = theme::focus;
       bg = theme::surface;
       st = Style::Bold;
     } else {
-      glyph = label.size() <= 2 ? ("[" + label + "] ") : ("[" + label + "]");
+      glyph = label.size() <= 2 ? ("[" + label + close + " ") : ("[" + label + close);
       // Watched recedes to text.dim; unwatched stays text.muted (DESIGN §"Dim
       // is receded" — watched items dim but stay navigable).
       fg = is_watched ? theme::fg3 : theme::fg2;
@@ -850,25 +863,29 @@ void draw_playback_line(CellBuffer& buf, int x0, int w, int y, const App& app) {
   buf.put_str(x0, y, truncate_to_cols(line, w), theme::hot, theme::bg, Style::Bold);
 }
 
-// Download state line (P35 slice 3): mirrors draw_playback_line's contract —
-// only under the grid of the show that owns the in-flight transfer. Byte
-// counts when the server told us a total, an indeterminate spinner otherwise
-// (the ffmpeg arm posts no counts in v1).
+// Download state line: mirrors draw_playback_line's contract — only under the
+// grid of a show the queue holds something for. It names the show's first
+// transfer in flight (else its first waiting one) with that job's status,
+// and counts the rest.
 void draw_download_line(CellBuffer& buf, int x0, int w, int y, const App& app) {
-  if (!app.download.active || app.download.for_id != app.episode.for_id) return;
-  auto mb = [](std::uint64_t bytes) {
-    const std::uint64_t tenths = bytes / (1024ull * 1024ull / 10ull);
-    return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " MB";
-  };
-  std::string line = "\xE2\x87\xA3 ep " + app.download.episode;  // ⇣
-  if (app.download.total > 0) {
-    const std::uint64_t pct = app.download.bytes * 100ull / app.download.total;
-    line += "  " + mb(app.download.bytes) + " / " + mb(app.download.total) + "  " +
-            std::to_string(pct) + "%";
-  } else {
-    line += "  downloading" + std::string(kSpinnerFrames[app.spinner_phase]);
-    if (app.download.bytes > 0) line += "  " + mb(app.download.bytes);
+  const DownloadJob* shown = nullptr;
+  std::size_t others = 0;
+  for (const DownloadJob& job : app.downloads.jobs) {
+    if (job.show_id != app.episode.for_id || !job.active()) continue;
+    if (shown == nullptr || (job.in_flight() && !shown->in_flight())) {
+      if (shown != nullptr) ++others;
+      shown = &job;
+    } else {
+      ++others;
+    }
   }
+  if (shown == nullptr) return;
+  std::string line = "\xE2\x87\xA3 ep " + strip_controls(shown->episode) + "  " +  // ⇣
+                     detail::job_status_text(*shown);
+  if (shown->state == DownloadJob::State::Resolving && !shown->cancelling()) {
+    line += std::string(" ") + kSpinnerFrames[app.spinner_phase];
+  }
+  if (others > 0) line += "  \xC2\xB7 +" + std::to_string(others) + " more";
   buf.put_str(x0, y, truncate_to_cols(line, w), theme::focus, theme::bg, Style::Bold);
 }
 

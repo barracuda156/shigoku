@@ -34,6 +34,11 @@ void draw_history(const App& app, CellBuffer& buf, int y0, int y1);
 // shows, so it needs no two-pane/cover geometry.
 void draw_schedule(const App& app, CellBuffer& buf, int y0, int y1);
 
+// Render the Transfers view's content region (transfers.hpp): the queue
+// section over the on-disk section, full width, one flat cursor over both.
+// With neither, one centred line saying how a download starts.
+void draw_transfers(const App& app, CellBuffer& buf, int y0, int y1);
+
 // Render the Discover view's content region (P17, DESIGN §3.8): the axis bar
 // + the full-canvas card grid over the active axis slot. Each cover cell is
 // image-owned (an exclusion rect, compose_grid_apc transmits after the diff)
@@ -148,6 +153,10 @@ namespace detail {
 
 // Settings: the kSettingsRows index of the Row line at (x, y).
 [[nodiscard]] std::optional<std::size_t> settings_row_at(const App& app, int x, int y);
+
+// Transfers: the item index (TransfersState::items) of the Job, Show or File
+// line at (x, y).
+[[nodiscard]] std::optional<std::size_t> transfers_item_at(const App& app, int x, int y);
 }  // namespace detail
 
 }  // namespace shigoku::tui

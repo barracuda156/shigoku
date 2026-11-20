@@ -54,15 +54,23 @@ void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
                 Translation translation, Quality quality,
                 std::optional<std::int64_t> mal_id, std::string show_title,
                 std::uint32_t episode_ordinal, aniskip::SkipMode skip_mode,
-                player::BackendKind backend, std::string player_path);
+                player::BackendKind backend, std::string player_path,
+                std::string local_file = {});
 
+// One queued download, start to finish, on the job's own source: resolve,
+// work the transfer out, report it (DownloadStarted), run it. `job` is a
+// copy taken when it left the queue; its cancel flag and child pid are the
+// queue's.
 void spawn_download(EventQueue& queue, const ProviderRegistry& registry,
-                    const http::Client* http, std::string provider_name,
-                    std::string provider_id, std::string episode,
-                    std::int64_t for_id, Translation translation, Quality quality,
-                    std::string download_dir, std::string ffmpeg_path,
-                    std::shared_ptr<std::atomic<bool>> cancel,
-                    std::shared_ptr<std::atomic<long>> child_pid);
+                    const http::Client* http, DownloadJob job, std::string download_dir,
+                    std::string ffmpeg_path);
+
+// The download picker's question: resolve the episode on its source and ask
+// what the stream offers. Fetches nothing of the stream itself.
+void spawn_download_probe(EventQueue& queue, const ProviderRegistry& registry,
+                          const http::Client* http, std::uint64_t token,
+                          std::string provider_name, std::string provider_id,
+                          std::string episode, Translation translation, Quality quality);
 
 void spawn_cover(EventQueue& queue, Covers& covers, std::string url,
                  std::int64_t for_id, std::uint32_t box_w, std::uint32_t box_h,

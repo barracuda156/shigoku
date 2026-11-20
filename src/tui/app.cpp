@@ -29,6 +29,7 @@
 #include "../aniskip.hpp"
 #include "../debug_log.hpp"
 #include "../download.hpp"
+#include "../download_library.hpp"
 #include "../login.hpp"
 #include "../loopback.hpp"
 #include "../mal_loopback.hpp"
@@ -90,6 +91,7 @@ inline constexpr std::string_view kAnilistTopic = "anilist";
 // one provider that served the grid. Returns a view into play.provider / the
 // registry (both outlive the write). "" when there is no provider at all.
 std::string_view play_provider_name(const App& app) {
+  if (app.play.from_disk) return {};
   if (!app.play.provider.empty()) return app.play.provider;
   if (app.deps != nullptr && app.deps->registry != nullptr &&
       app.deps->registry->primary() != nullptr) {
@@ -440,7 +442,12 @@ namespace {
 // Bump the spinner phase and slow-color derivation is a draw concern; here we
 // only advance the animation frame while something is loading.
 void advance_spinner(App& app) {
-  if (app.any_loading) {
+  // The picker's probe and a transfer on the Transfers view have spinners of
+  // their own, outside the bottom bar's loading state.
+  const bool transfers_busy =
+      (app.download_picker.open && app.download_picker.loading) ||
+      (app.view == View::Transfers && app.downloads.in_flight() > 0);
+  if (app.any_loading || transfers_busy) {
     app.spinner_phase = (app.spinner_phase + 1) % kSpinnerFrameCount;
     app.dirty = true;
   }
@@ -1003,6 +1010,16 @@ void apply_enrichment_to_selection(App& app, std::int64_t for_id, const Enrichme
     if (Enrichment* e = app.discover.selected_entry_mut(); e != nullptr) *e = merged;
     return;
   }
+  // Transfers: the page's own copy, and the on-disk show it was opened over.
+  if (source == View::Transfers) {
+    if (app.transfers.zoomed.has_value() && app.transfers.zoomed->anilist_id == for_id) {
+      app.transfers.zoomed = merged;
+    }
+    for (DiskShow& ds : app.transfers.disk) {
+      if (ds.entry.has_value() && ds.entry->anilist_id == for_id) ds.entry = merged;
+    }
+    return;
+  }
   // Browse (and the Detail zoom's Browse origin): the catalog cursor row.
   if (app.list_cursor >= 0 &&
       static_cast<std::size_t>(app.list_cursor) < app.catalog.size()) {
@@ -1024,7 +1041,9 @@ struct HealedRow {
 // probe) and would mint the old row straight back.
 bool writes_in_flight(const App& app, std::int64_t id) {
   if (app.play.active && app.play.for_id == id) return true;
-  if (app.download.active && app.download.for_id == id) return true;
+  for (const DownloadJob& job : app.downloads.jobs) {
+    if (job.active() && job.show_id == id) return true;
+  }
   if (app.play_continuation.has_value() && app.play_continuation->for_id == id) return true;
   if (app.episode_session && app.episode_session->has_for_id() &&
       app.episode_session->for_id() == id &&
@@ -1050,6 +1069,11 @@ std::optional<HealedRow> rekey_row(App& app, std::int64_t old_id, std::int64_t n
     return std::nullopt;
   }
   download::move_show_downloads(app.deps->download_dir, old_id, new_id);
+  // A job that rests (failed, cancelled) follows the row: a retry lands in
+  // the folder the files moved to.
+  for (DownloadJob& job : app.downloads.jobs) {
+    if (job.show_id == old_id) job.show_id = new_id;
+  }
   for (Show& row : app.history.rows) {
     if (row.enrichment.anilist_id == old_id) row.enrichment.anilist_id = new_id;
   }
@@ -1297,6 +1321,8 @@ void fire_play_at(App& app, std::size_t idx) {
   app.play.position = 0.0;
   app.play.duration = 0.0;
   app.play.provider = *s.serving();
+  app.play.from_disk = false;
+  app.play.disk_file.clear();
   app.play.mal_id = cont.mal_id;
   app.play.title_romaji = cont.title_romaji;
   spawn_play(*app.queue, *app.deps->registry, *app.deps, app.play.provider,
@@ -1480,6 +1506,221 @@ void set_grid_cursor(App& app, int ix) {
   if (app.episode_session && ix >= 0) {
     app.episode_session->set_cursor(static_cast<std::size_t>(ix));
   }
+}
+
+// --- downloads ----------------------------------------------------------------
+
+// Start what the queue has room for.
+void pump_downloads(App& app) {
+  if (app.deps == nullptr || app.deps->registry == nullptr || app.queue == nullptr) return;
+  const std::uint32_t parallel = app.config.effective_download_parallel();
+  while (DownloadJob* next = app.downloads.next_to_start(parallel)) {
+    const std::uint64_t id = next->id;
+    if (!app.downloads.begin(id, app.tick_count)) break;
+    spawn_download(*app.queue, *app.deps->registry, app.deps->http, *app.downloads.find(id),
+                   app.deps->download_dir, app.deps->ffmpeg_path);
+  }
+  app.dirty = true;
+}
+
+// Stop a job. One that was only waiting leaves the queue's line at once; one
+// in flight has its flag set and its ffmpeg signalled, and reports back
+// itself.
+void cancel_download(App& app, std::uint64_t id) {
+  if (!app.downloads.cancel(id)) return;
+  if (const DownloadJob* job = app.downloads.find(id); job != nullptr && job->child_pid) {
+    const long pid = job->child_pid->load(std::memory_order_acquire);
+    if (pid > 0) ::kill(static_cast<pid_t>(pid), SIGTERM);
+  }
+  app.dirty = true;
+}
+
+// "Frieren ep 7", for a toast.
+std::string download_name(const DownloadJob& job) {
+  const std::string ep = "ep " + strip_controls(job.episode);
+  return job.title.empty() ? ep : job.title + " " + ep;
+}
+
+// What the Transfers cursor rests on, by identity rather than position: a
+// job's id, a show's folder, a file's path. The list regroups whenever a job
+// changes state and reindexes whenever the disk is read again, so whatever
+// changes either takes the anchor first and puts the cursor back after.
+struct TransfersAnchor {
+  std::optional<std::uint64_t> job;
+  std::string folder;
+  std::string path;
+};
+
+TransfersAnchor transfers_anchor(const App& app) {
+  TransfersAnchor anchor;
+  const auto item = app.transfers.selected(app.downloads);
+  if (!item.has_value()) return anchor;
+  if (item->kind == TransfersState::Item::Kind::Job) {
+    anchor.job = item->job;
+    return anchor;
+  }
+  const DiskShow& ds = app.transfers.disk[item->show];
+  anchor.folder = ds.folder;
+  if (item->kind == TransfersState::Item::Kind::File) anchor.path = ds.files[item->file].path;
+  return anchor;
+}
+
+// The cursor back on what it was on: the same job, the same file, else that
+// file's show; when none of it is listed any more, the nearest row in range.
+void restore_transfers_anchor(App& app, const TransfersAnchor& anchor) {
+  const int visible = content_height(app.win.rows);
+  bool placed = false;
+  if (anchor.job.has_value()) {
+    TransfersState::Item item;
+    item.kind = TransfersState::Item::Kind::Job;
+    item.job = *anchor.job;
+    placed = app.transfers.select(item, visible, app.downloads);
+  } else if (!anchor.folder.empty()) {
+    for (std::size_t si = 0; si < app.transfers.disk.size() && !placed; ++si) {
+      const DiskShow& ds = app.transfers.disk[si];
+      if (ds.folder != anchor.folder) continue;
+      TransfersState::Item item;
+      item.kind = TransfersState::Item::Kind::Show;
+      item.show = si;
+      for (std::size_t fi = 0; fi < ds.files.size(); ++fi) {
+        if (!anchor.path.empty() && ds.files[fi].path == anchor.path) {
+          item.kind = TransfersState::Item::Kind::File;
+          item.file = fi;
+        }
+      }
+      placed = app.transfers.select(item, visible, app.downloads);
+    }
+  }
+  if (!placed) app.transfers.clamp(visible, app.downloads);
+}
+
+// Read the download root again: every show folder, named from the library
+// where the library knows it. A .part some transfer in flight is writing is
+// left out — the queue section already shows it.
+void rescan_transfers(App& app, const TransfersAnchor& anchor) {
+  app.transfers.disk.clear();
+  app.transfers.confirm_delete = std::nullopt;
+  if (app.deps != nullptr && !app.deps->download_dir.empty()) {
+    std::vector<std::string> writing;
+    for (const DownloadJob& job : app.downloads.jobs) {
+      if (job.in_flight() && !job.dest.empty()) writing.push_back(download::part_path(job.dest));
+    }
+    const TitleLanguage pref = parse_title_language(app.config.title_language);
+    for (download::LocalShow& local : download::scan_library(app.deps->download_dir)) {
+      DiskShow ds;
+      ds.folder = local.folder;
+      ds.show_id = local.anilist_id;
+      ds.title = local.folder;
+      if (local.anilist_id.has_value() && app.deps->store != nullptr) {
+        // The library row, else the catalog's cached card.
+        if (auto row = app.deps->store->get_show(*local.anilist_id);
+            row.has_value() && row->has_value()) {
+          ds.entry = (*row)->enrichment;
+        } else if (auto hit = app.deps->store->get_catalog(*local.anilist_id);
+                   hit.has_value() && hit->has_value()) {
+          ds.entry = (*hit)->enrichment;
+        }
+      }
+      if (ds.entry.has_value()) {
+        const Enrichment& e = *ds.entry;
+        const std::string_view title = preferred_title(
+            e.title_romaji,
+            e.title_english ? std::optional<std::string_view>(*e.title_english) : std::nullopt,
+            e.title_native ? std::optional<std::string_view>(*e.title_native) : std::nullopt,
+            pref);
+        if (!title.empty()) ds.title = std::string(title);
+      }
+      for (download::LocalEpisode& ep : local.episodes) {
+        if (ep.partial &&
+            std::find(writing.begin(), writing.end(), ep.path) != writing.end()) {
+          continue;
+        }
+        ds.files.push_back(
+            DiskFile{std::move(ep.label), ep.translation, std::move(ep.path), ep.bytes, ep.partial});
+      }
+      if (!ds.files.empty()) app.transfers.disk.push_back(std::move(ds));
+    }
+    std::stable_sort(app.transfers.disk.begin(), app.transfers.disk.end(),
+                     [](const DiskShow& a, const DiskShow& b) { return a.title < b.title; });
+  }
+  restore_transfers_anchor(app, anchor);
+  app.dirty = true;
+}
+
+// After the queue changed: the cursor goes back on what `anchor` named, and
+// with the Transfers view up the disk is read again too — a finished file
+// belongs in its on-disk section, a stopped one may have left a .part there.
+void refresh_transfers_view(App& app, const TransfersAnchor& anchor) {
+  if (app.view == View::Transfers) {
+    rescan_transfers(app, anchor);
+  } else {
+    restore_transfers_anchor(app, anchor);
+  }
+}
+
+// The size of a finished file on disk, when there is one.
+std::optional<std::uint64_t> file_size(const std::string& path) {
+  struct stat st{};
+  if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return std::nullopt;
+  return static_cast<std::uint64_t>(st.st_size);
+}
+
+// The grid position a saved label stands for, for the progress ratchet: the
+// label itself when it is a plain episode number the show can have, else 0
+// (the play is then checkpointed but moves no progress).
+std::uint32_t ordinal_of_label(std::string_view label, std::optional<std::uint32_t> total) {
+  if (label.empty() || label.size() > 5) return 0;
+  std::uint32_t n = 0;
+  for (const char c : label) {
+    if (c < '0' || c > '9') return 0;
+    n = n * 10 + static_cast<std::uint32_t>(c - '0');
+  }
+  if (n == 0 || (total.has_value() && n > *total)) return 0;
+  return n;
+}
+
+// Play a finished file from the Transfers view: the file itself, no source
+// asked. A show the catalogue knows is checkpointed and counted like any
+// play; one only its source names (no id) just plays.
+void play_disk_file(App& app, const DiskShow& show, const DiskFile& file) {
+  if (app.play.active) {
+    app.toasts.push(ToastKind::Info, "something is already playing", app.tick_count);
+    return;
+  }
+  if (app.deps == nullptr || app.deps->registry == nullptr || app.queue == nullptr) return;
+  const std::int64_t for_id = show.show_id.value_or(0);
+  const std::optional<std::uint32_t> total =
+      show.entry.has_value() ? show.entry->total_episodes : std::nullopt;
+  double start_secs = 0.0;
+  if (for_id != 0 && app.deps->store != nullptr) {
+    auto r = app.deps->store->get_resume(for_id, file.translation, file.label);
+    if (r.has_value() && r->has_value()) {
+      start_secs = (*r)->start_secs(app.config.resume_offset_sec);
+    }
+  }
+  app.play_continuation.reset();
+  app.play.active = true;
+  app.play.for_id = for_id;
+  app.play.episode = file.label;
+  app.play.translation = file.translation;
+  app.play.episode_index = for_id != 0 ? ordinal_of_label(file.label, total) : 0;
+  app.play.started_tick = app.tick_count;
+  app.play.last_checkpoint_tick = app.tick_count;
+  app.play.position = 0.0;
+  app.play.duration = 0.0;
+  app.play.mal_id = show.entry.has_value() ? show.entry->mal_id : std::nullopt;
+  app.play.title_romaji = show.entry.has_value() ? show.entry->title_romaji : show.title;
+  app.play.provider.clear();
+  app.play.from_disk = true;
+  app.play.disk_file = file.path;
+  spawn_play(*app.queue, *app.deps->registry, *app.deps, /*provider_name=*/{},
+             /*provider_id=*/{}, file.label, for_id, start_secs, file.translation,
+             parse_quality(app.config.default_quality), app.play.mal_id,
+             app.play.title_romaji, app.play.episode_index,
+             aniskip::parse_skip_mode(app.config.skip_mode),
+             player::parse_backend(app.config.player), app.config.player_path, file.path);
+  app.toasts.push(ToastKind::Info, "playing " + show.title + " ep " + strip_controls(file.label),
+                  app.tick_count);
 }
 
 void on_key(App& app, const KeyEvent& k) {
@@ -1884,6 +2125,8 @@ void on_key(App& app, const KeyEvent& k) {
     app.play.title_romaji = show->title_romaji;  // relaunch (fire_play_at).
     // The grid's serving provider (empty on the degraded P7 path → primary()).
     app.play.provider = app.episode.serving;
+    app.play.from_disk = false;
+    app.play.disk_file.clear();
     spawn_play(*app.queue, *app.deps->registry, *app.deps, app.play.provider,
               app.episode.provider_id, episode, show->anilist_id, start_secs,
               translation, parse_quality(app.config.default_quality),
@@ -1892,14 +2135,12 @@ void on_key(App& app, const KeyEvent& k) {
               player::parse_backend(app.config.player), app.config.player_path);
   };
 
-  // Download the grid cell at app.episode.cursor (P35 slice 3): resolve +
-  // download_link via the detached worker. Mirrors play_focused_episode's
-  // gates (grid ownership, provider_id trust) with its own one-at-a-time law.
-  auto download_focused_episode = [&]() {
-    if (app.download.active) {
-      app.toasts.push(ToastKind::Info, "a download is already running", app.tick_count);
-      return;
-    }
+  // `d` on the grid cell at app.episode.cursor: open the download picker over
+  // it. An episode that already has a job (waiting, in flight, or stopped)
+  // opens that job instead; otherwise the episode's stream is asked what it
+  // offers, and Enter in the picker queues the row taken. Mirrors
+  // play_focused_episode's gates (grid ownership, provider_id trust).
+  auto open_download_picker = [&]() {
     if (app.episode.cursor < 0 ||
         static_cast<std::size_t>(app.episode.cursor) >= app.episode.episodes.size())
       return;
@@ -1907,8 +2148,6 @@ void on_key(App& app, const KeyEvent& k) {
     if (show == nullptr || app.deps == nullptr || app.deps->registry == nullptr ||
         app.queue == nullptr)
       return;
-    // Same grid-trust gates as play (ROD-222/329): the grid must belong to
-    // the selection and carry the provider-side id it was fetched under.
     if (app.episode.for_id != show->anilist_id) return;
     if (app.episode.provider_id.empty()) return;
     if (app.deps->download_dir.empty()) {
@@ -1919,26 +2158,63 @@ void on_key(App& app, const KeyEvent& k) {
     const std::string episode = app.episode.episodes[idx];
     const Translation translation =
         parse_translation(app.config.translation).value_or(Translation::Sub);
-    app.download.active = true;
-    app.download.for_id = show->anilist_id;
-    app.download.episode = episode;
-    app.download.bytes = 0;
-    app.download.total = 0;
-    app.download.started_tick = app.tick_count;
-    app.download.cancel = std::make_shared<std::atomic<bool>>(false);
-    app.download.child_pid = std::make_shared<std::atomic<long>>(0);
-    // Say what is being fetched: track, source, and the quality asked for.
-    const std::string quality = app.config.effective_download_quality();
-    std::string what = "downloading ep " + episode + " \xC2\xB7 " +
-                       std::string(to_string(translation));
-    if (!app.episode.serving.empty()) what += " \xC2\xB7 " + app.episode.serving;
-    what += " \xC2\xB7 " + quality;
-    app.toasts.push(ToastKind::Info, what, app.tick_count);
-    spawn_download(*app.queue, *app.deps->registry, app.deps->http,
-                   app.episode.serving, app.episode.provider_id, episode,
-                   show->anilist_id, translation, parse_quality(quality),
-                   app.deps->download_dir, app.deps->ffmpeg_path,
-                   app.download.cancel, app.download.child_pid);
+
+    DownloadPicker& picker = app.download_picker;
+    const std::uint64_t token = picker.token + 1;
+    picker = DownloadPicker{};
+    picker.token = token;
+    picker.open = true;
+
+    DownloadJob& draft = picker.draft;
+    draft.show_id = show->anilist_id;
+    draft.title = std::string(preferred_title(
+        show->title_romaji,
+        show->title_english ? std::optional<std::string_view>(*show->title_english)
+                            : std::nullopt,
+        show->title_native ? std::optional<std::string_view>(*show->title_native)
+                           : std::nullopt,
+        parse_title_language(app.config.title_language)));
+    draft.episode = episode;
+    draft.ordinal = static_cast<std::uint32_t>(idx) + 1;
+    draft.translation = translation;
+    draft.provider = app.episode.serving;
+    draft.provider_label =
+        app.episode.serving.empty() ? std::string() : display_provider_name(app, app.episode.serving);
+    draft.provider_id = app.episode.provider_id;
+    draft.quality = parse_quality(app.config.effective_download_quality());
+    draft.duration_secs = show->duration_minutes.value_or(0) * 60u;
+
+    if (const DownloadJob* job =
+            app.downloads.for_episode(show->anilist_id, translation, episode);
+        job != nullptr && job->state != DownloadJob::State::Done) {
+      picker.job = job->id;
+      return;
+    }
+    if (const auto local = download::find_local_episode(app.deps->download_dir,
+                                                        show->anilist_id, translation, episode)) {
+      picker.on_disk = file_size(*local);
+    }
+    picker.loading = true;
+    spawn_download_probe(*app.queue, *app.deps->registry, app.deps->http, token,
+                         draft.provider, draft.provider_id, episode, translation, draft.quality);
+  };
+
+  // The show page over the Transfers view's selection: the show row itself,
+  // or the show a file belongs to. Only a show the library or the catalog
+  // cache can describe has a page.
+  auto open_transfers_show = [&]() {
+    const auto item = app.transfers.selected(app.downloads);
+    if (!item.has_value() || item->kind == TransfersState::Item::Kind::Job) return;
+    if (!app.transfers.disk[item->show].entry.has_value()) {
+      app.toasts.push(ToastKind::Info, "no catalogue entry for this folder", app.tick_count);
+      return;
+    }
+    // The page holds its own copy of the show: the list under it regroups
+    // and is read again while the page is up.
+    app.transfers.zoomed = app.transfers.disk[item->show].entry;
+    app.detail_origin = View::Transfers;
+    app.view = View::Detail;
+    open_detail();
   };
 
   // Demote out of the Detail zoom (DESIGN §7.4: Space/h/Esc all do this).
@@ -1948,9 +2224,14 @@ void on_key(App& app, const KeyEvent& k) {
   auto demote_zoom = [&]() {
     app.view = app.detail_origin;
     app.pane = (app.detail_origin != View::Discover && app.detail_origin != View::Schedule &&
-               app.win.cols >= kPaneSplitMin)
+                app.detail_origin != View::Transfers && app.win.cols >= kPaneSplitMin)
                    ? Pane::Detail
                    : Pane::List;
+    // Back on the Transfers list: what finished while the page was up shows.
+    if (app.view == View::Transfers) {
+      app.transfers.zoomed.reset();
+      rescan_transfers(app, transfers_anchor(app));
+    }
     // The section's Tab-focus is a zoom-local sub-focus: leaving the zoom
     // drops it so a re-zoom always lands on the grid (the documented
     // CharactersRecsState::focused invariant — P36 review).
@@ -2146,11 +2427,91 @@ void on_key(App& app, const KeyEvent& k) {
     }
   }
 
+  // The download picker captures every key, the same tier as the two modals
+  // above. Offer face: jk/arrows move, g/G jump, enter queues the row under
+  // the cursor, esc leaves (a probe still out answers into a closed picker
+  // and is dropped). Job face: x cancels a job that is still wanted or takes
+  // a stopped one off the list, r retries a stopped one.
+  if (app.download_picker.open) {
+    using S = KeyEvent::Special;
+    DownloadPicker& picker = app.download_picker;
+    if (k.special == S::Escape) {
+      picker.open = false;
+      return;
+    }
+    if (k.ctrl) return;
+    if (picker.job.has_value()) {
+      const DownloadJob* job = app.downloads.find(*picker.job);
+      if (job == nullptr || k.special != S::None) return;
+      const TransfersAnchor anchor = transfers_anchor(app);
+      if (k.codepoint == U'x') {
+        if (job->active()) {
+          cancel_download(app, job->id);
+        } else {
+          (void)app.downloads.remove(job->id);
+          picker.open = false;
+        }
+        refresh_transfers_view(app, anchor);
+      } else if (k.codepoint == U'r') {
+        if (app.downloads.retry(job->id)) pump_downloads(app);
+        refresh_transfers_view(app, anchor);
+      }
+      return;
+    }
+    if (picker.loading || !picker.failed.empty() || picker.offer.rows.empty()) return;
+    const std::size_t last = picker.offer.rows.size() - 1;
+    if (k.special == S::Down || (k.special == S::None && k.codepoint == U'j')) {
+      if (picker.cursor < last) ++picker.cursor;
+    } else if (k.special == S::Up || (k.special == S::None && k.codepoint == U'k')) {
+      if (picker.cursor > 0) --picker.cursor;
+    } else if (k.special == S::None && k.codepoint == U'g') {
+      picker.cursor = 0;
+    } else if (k.special == S::None && k.codepoint == U'G') {
+      picker.cursor = last;
+    } else if (k.special == S::Enter) {
+      const OfferRow& row = picker.offer.rows[std::min(picker.cursor, last)];
+      DownloadJob job = picker.draft;
+      // A stream with nothing to choose from still takes the quality: its
+      // list may read when the job resolves it again.
+      job.rung = picker.offer.shape == StreamOffer::Shape::Ladder ? row.rung
+                                                                  : Rung(picker.draft.quality);
+      std::string what = "queued " + download_name(job) + " \xC2\xB7 " + offer_row_size(row);
+      if (!job.provider_label.empty()) what += " \xC2\xB7 " + job.provider_label;
+      const TransfersAnchor anchor = transfers_anchor(app);
+      (void)app.downloads.add(std::move(job));
+      picker.open = false;
+      app.toasts.push(ToastKind::Info, what, app.tick_count);
+      pump_downloads(app);
+      refresh_transfers_view(app, anchor);
+    }
+    return;
+  }
+
   // The armed confirm freezes EVERY other key (DESIGN §6.5): q does not quit,
   // cursor keys do not move, view switches do not fire. Only Ctrl-C (handled
   // above, unconditionally) escapes this gate.
   if (app.confirm_delete.has_value()) {
     on_confirm_key(k);
+    return;
+  }
+
+  // The Transfers view's armed file delete, the same law: y deletes, a repeat
+  // X stays armed, anything else cancels.
+  if (app.transfers.confirm_delete.has_value()) {
+    const std::string path = *app.transfers.confirm_delete;
+    const bool plain = k.special == KeyEvent::Special::None && !k.ctrl;
+    if (plain && k.codepoint == U'X') return;
+    app.transfers.confirm_delete = std::nullopt;
+    if (!plain || (k.codepoint != U'y' && k.codepoint != U'Y')) return;
+    const TransfersAnchor anchor = transfers_anchor(app);
+    download::LocalEpisode gone;
+    gone.path = path;
+    if (download::remove_local_episode(gone)) {
+      app.toasts.push(ToastKind::Info, "deleted", app.tick_count);
+    } else {
+      app.toasts.push(ToastKind::Error, "couldn't delete the file", app.tick_count);
+    }
+    rescan_transfers(app, anchor);
     return;
   }
 
@@ -2275,6 +2636,14 @@ void on_key(App& app, const KeyEvent& k) {
         app.view_back = back_target(app);
         app.view = View::Settings;
         return;
+      case U'T':
+        if (app.view == View::Transfers) return;
+        if (app.view == View::Settings) persist_settings(app);
+        app.view_back = back_target(app);
+        app.view = View::Transfers;
+        app.pane = Pane::List;
+        rescan_transfers(app, transfers_anchor(app));
+        return;
       // Discover axis controls (04 §7.5): `[`/`]` cycle with wraparound (both
       // re-arm a failed slot); `1`-`4` direct select. Inert off Discover.
       case U'[': if (app.view == View::Discover) app.discover.cycle_axis(-1); return;
@@ -2352,6 +2721,8 @@ void on_key(App& app, const KeyEvent& k) {
           app.history.nav(1, list_visible);
         } else if (app.view == View::Schedule) {
           app.schedule.nav(1, list_visible);
+        } else if (app.view == View::Transfers) {
+          app.transfers.nav(1, list_visible, app.downloads);
         } else if (app.view == View::Detail && char_recs_section_shown(app) &&
                    app.char_recs.focused) {
           // The section owns j/k while Tab-focused AND actually rendered (a
@@ -2381,6 +2752,8 @@ void on_key(App& app, const KeyEvent& k) {
           app.history.nav(-1, list_visible);
         } else if (app.view == View::Schedule) {
           app.schedule.nav(-1, list_visible);
+        } else if (app.view == View::Transfers) {
+          app.transfers.nav(-1, list_visible, app.downloads);
         } else if (app.view == View::Detail && char_recs_section_shown(app) &&
                    app.char_recs.focused) {
           if (app.char_recs.cursor > 0) --app.char_recs.cursor;
@@ -2443,6 +2816,9 @@ void on_key(App& app, const KeyEvent& k) {
         }
         if (app.view == View::Schedule) {
           app.schedule.jump(top, list_visible);
+        }
+        if (app.view == View::Transfers) {
+          app.transfers.jump(top, list_visible, app.downloads);
         }
         return;
       }
@@ -2517,6 +2893,7 @@ void on_key(App& app, const KeyEvent& k) {
           }
           return;
         }
+        if (app.view == View::Transfers) open_transfers_show();
         return;
       case U'v':
         // P15: cycle the per-show provider pin (unpinned → each provider →
@@ -2533,19 +2910,37 @@ void on_key(App& app, const KeyEvent& k) {
         }
         return;
       case U'd':
-        // P35 slice 3: download the focused grid cell. Same detail contexts
+        // The download picker over the focused grid cell. Same detail contexts
         // as Enter's play arm; inert anywhere else ('D' is the Discover tab).
         if ((app.view == View::Browse && app.pane == Pane::Detail) ||
             (app.view == View::History && app.pane == Pane::Detail) ||
             app.view == View::Detail) {
           if (app.episode.fetched && !app.episode.episodes.empty()) {
-            download_focused_episode();
+            open_download_picker();
           }
         }
         return;
       // --- History status/undo/recompute/delete (P16, 05 §3-§4) ------------
       case U'p': on_status_key(ListStatus::Paused); return;
-      case U'x': on_status_key(ListStatus::Dropped); return;
+      case U'x':
+        // Transfers: stop the job under the cursor, or take a stopped one
+        // off the list. History: the Dropped status.
+        if (app.view == View::Transfers) {
+          const auto item = app.transfers.selected(app.downloads);
+          if (!item.has_value() || item->kind != TransfersState::Item::Kind::Job) return;
+          const DownloadJob* job = app.downloads.find(item->job);
+          if (job == nullptr) return;
+          const TransfersAnchor anchor = transfers_anchor(app);
+          if (job->active()) {
+            cancel_download(app, job->id);
+          } else {
+            (void)app.downloads.remove(job->id);
+          }
+          refresh_transfers_view(app, anchor);
+          return;
+        }
+        on_status_key(ListStatus::Dropped);
+        return;
       case U'c':
         // P36: in the Detail zoom, `c` toggles the Characters/Recommendations
         // section (the fetch itself is armed by reconcile_char_recs, not
@@ -2586,8 +2981,43 @@ void on_key(App& app, const KeyEvent& k) {
         }
         return;
       case U'u': on_undo(); return;
-      case U'r': on_recompute(); return;
-      case U'X': on_arm_delete(); return;
+      case U'r':
+        // Transfers: a stopped job goes back in line.
+        if (app.view == View::Transfers) {
+          const auto item = app.transfers.selected(app.downloads);
+          const TransfersAnchor anchor = transfers_anchor(app);
+          if (item.has_value() && item->kind == TransfersState::Item::Kind::Job &&
+              app.downloads.retry(item->job)) {
+            pump_downloads(app);
+            refresh_transfers_view(app, anchor);
+          }
+          return;
+        }
+        on_recompute();
+        return;
+      case U'X':
+        // Transfers: arm the delete of the file under the cursor. A file a
+        // play or a transfer still holds is refused.
+        if (app.view == View::Transfers) {
+          const auto item = app.transfers.selected(app.downloads);
+          if (!item.has_value() || item->kind != TransfersState::Item::Kind::File) return;
+          const DiskShow& ds = app.transfers.disk[item->show];
+          const DiskFile& file = ds.files[item->file];
+          const bool playing_it =
+              app.play.from_disk ? app.play.disk_file == file.path
+                                 : ds.show_id.has_value() && app.play.for_id == *ds.show_id &&
+                                       app.play.episode == file.label &&
+                                       app.play.translation == file.translation;
+          if (app.play.active && playing_it) {
+            app.toasts.push(ToastKind::Warning, "can't delete, currently playing",
+                            app.tick_count);
+            return;
+          }
+          app.transfers.confirm_delete = file.path;
+          return;
+        }
+        on_arm_delete();
+        return;
       case U's':
         // P34: opens the score prompt over the selected row. Pre-fills from
         // the show's current score (÷10, trailing .0 dropped) so re-editing
@@ -2661,6 +3091,39 @@ void on_key(App& app, const KeyEvent& k) {
       }
       return;
     }
+    if (app.view == View::Transfers) {
+      // A finished file plays; a show row, or an unfinished file, opens the
+      // show's page (where d picks the transfer up again); a job opens in
+      // the picker's job face.
+      const auto item = app.transfers.selected(app.downloads);
+      if (!item.has_value()) return;
+      switch (item->kind) {
+        case TransfersState::Item::Kind::Job:
+          if (const DownloadJob* job = app.downloads.find(item->job); job != nullptr) {
+            const std::uint64_t token = app.download_picker.token + 1;
+            app.download_picker = DownloadPicker{};
+            app.download_picker.token = token;
+            app.download_picker.open = true;
+            app.download_picker.draft = *job;
+            app.download_picker.job = job->id;
+          }
+          return;
+        case TransfersState::Item::Kind::Show:
+          open_transfers_show();
+          return;
+        case TransfersState::Item::Kind::File: {
+          const DiskShow& ds = app.transfers.disk[item->show];
+          const DiskFile& file = ds.files[item->file];
+          if (file.partial) {
+            open_transfers_show();
+          } else {
+            play_disk_file(app, ds, file);
+          }
+          return;
+        }
+      }
+      return;
+    }
     if (app.view == View::Detail && char_recs_section_shown(app) && app.char_recs.focused) {
       // Enter on the section (not the grid) opens its focused row instead
       // of playing. Gated on the section actually rendering — a cramped
@@ -2716,6 +3179,7 @@ void on_key(App& app, const KeyEvent& k) {
         case View::Discover: back.codepoint = U'D'; break;
         case View::Schedule: back.codepoint = U'C'; break;
         case View::Settings: back.codepoint = U'S'; break;
+        case View::Transfers: back.codepoint = U'T'; break;
         case View::Detail: return;  // never stored (back_target unwraps it).
       }
       on_key(app, back);
@@ -2759,8 +3223,13 @@ void on_mouse(App& app, const MouseEvent& m) {
   // (04 §8) renders no content to hit.
   if (app.connect.has_value()) return;
   if (app.discover_filters.visible) return;  // P38: same swallow-everything tier as connect.
+  if (app.download_picker.open) return;      // the picker: the same tier.
   if (app.confirm_delete.has_value()) {
     app.confirm_delete = std::nullopt;
+    return;
+  }
+  if (app.transfers.confirm_delete.has_value()) {
+    app.transfers.confirm_delete = std::nullopt;
     return;
   }
   if (app.bar == BarMode::Search) return;
@@ -2809,12 +3278,13 @@ void on_mouse(App& app, const MouseEvent& m) {
   // Top bar: a tab click IS its view letter (persist-on-leave, the History
   // reload — everything rides the one keyboard path).
   if (m.y == 0) {
-    if (const auto v = detail::top_bar_tab_at(m.x); v.has_value()) {
+    if (const auto v = detail::top_bar_tab_at(m.x, app.win.cols); v.has_value()) {
       switch (*v) {
         case View::Browse: synth_char(U'B'); break;
         case View::History: synth_char(U'H'); break;
         case View::Discover: synth_char(U'D'); break;
         case View::Schedule: synth_char(U'C'); break;
+        case View::Transfers: synth_char(U'T'); break;
         case View::Settings: synth_char(U'S'); break;
         case View::Detail: break;  // never in the tab strip.
       }
@@ -2849,6 +3319,21 @@ void on_mouse(App& app, const MouseEvent& m) {
           grid_geo(app.win.cols, content_height(app.win.rows), app.cover_caps.cell));
       if (dbl && already) {
         synth_enter();  // Enter: the Detail zoom over the card.
+        return;
+      }
+      arm_double();
+    }
+    return;
+  }
+
+  // Transfers: a click selects the job, show or file line; double-click is
+  // its Enter.
+  if (app.view == View::Transfers) {
+    if (const auto item = detail::transfers_item_at(app, m.x, m.y); item.has_value()) {
+      const bool already = app.transfers.cursor == *item;
+      app.transfers.cursor = *item;
+      if (dbl && already) {
+        synth_enter();
         return;
       }
       arm_double();
@@ -3328,7 +3813,7 @@ void tick(App& app, const Event& ev) {
               // the plain partial write: no play_count/ratchet (that is the
               // final record_finish). The store rejects non-finite loud, so
               // gate here rather than hand it a NaN.
-              if (app.deps != nullptr && app.deps->store != nullptr &&
+              if (app.deps != nullptr && app.deps->store != nullptr && app.play.for_id != 0 &&
                   std::isfinite(p.position) && p.position > 0.0 &&
                   (app.tick_count - app.play.last_checkpoint_tick) >= kCheckpointTicks) {
                 app.play.last_checkpoint_tick = app.tick_count;
@@ -3542,64 +4027,99 @@ void tick(App& app, const Event& ev) {
             on_update_available(app, u);
             app.dirty = true;
           },
-          // --- Downloads (P35 slice 3) ---------------------------------------
+          // --- Downloads --------------------------------------------------------
+          [&](const DownloadOfferDone& d) {
+            DownloadPicker& picker = app.download_picker;
+            if (!picker.open || picker.job.has_value() || d.token != picker.token) return;
+            picker.loading = false;
+            picker.failed.clear();
+            picker.offer = d.offer;
+            // The row the download quality setting lands on starts selected.
+            picker.cursor = download::offer_row_for(picker.offer, Rung(picker.draft.quality));
+            app.dirty = true;
+          },
+          [&](const DownloadOfferFailed& f) {
+            DownloadPicker& picker = app.download_picker;
+            if (!picker.open || picker.job.has_value() || f.token != picker.token) return;
+            picker.loading = false;
+            picker.failed = f.detail.empty() ? std::string("couldn't reach the stream")
+                                             : "couldn't reach the stream \xC2\xB7 " + f.detail;
+            app.dirty = true;
+          },
+          [&](const DownloadStarted& d) {
+            app.downloads.on_started(d.job, d.dest, d.height, d.estimate);
+            app.dirty = true;
+          },
           [&](const DownloadProgress& p) {
-            if (app.download.active && p.for_id == app.download.for_id &&
-                p.episode == app.download.episode) {
-              app.download.bytes = p.bytes;
-              app.download.total = p.total;
-              app.dirty = true;
-            }
+            app.downloads.on_progress(p.job, p.bytes, p.total);
+            app.dirty = true;
           },
           [&](const DownloadDone& d) {
-            if (app.download.active && d.for_id == app.download.for_id &&
-                d.episode == app.download.episode) {
-              app.download.active = false;
-              app.toasts.push(ToastKind::Success, "downloaded ep " + d.episode,
-                              app.tick_count);
-              app.dirty = true;
+            const DownloadJob* job = app.downloads.find(d.job);
+            if (job == nullptr || !job->in_flight()) return;
+            const std::string name = download_name(*job);
+            const TransfersAnchor anchor = transfers_anchor(app);
+            app.downloads.on_done(d.job, d.bytes);
+            // The finished file is the record now; the job leaves the list.
+            (void)app.downloads.remove(d.job);
+            if (app.download_picker.open && app.download_picker.job == d.job) {
+              app.download_picker.open = false;
             }
+            app.toasts.push(ToastKind::Success, "downloaded " + name, app.tick_count);
+            pump_downloads(app);
+            refresh_transfers_view(app, anchor);
           },
           [&](const DownloadFailed& f) {
-            if (!app.download.active || f.for_id != app.download.for_id ||
-                f.episode != app.download.episode) {
-              return;
-            }
-            app.download.active = false;
+            const DownloadJob* job = app.downloads.find(f.job);
+            if (job == nullptr || !job->in_flight()) return;
+            const std::string name = download_name(*job);
             // The toast matrix over the closed outcome set (A2: exhaustive, a
-            // new kind forces a copy decision here).
+            // new kind forces a copy decision here); `reason` is the same
+            // answer in the few words the job's row has room for.
+            std::string reason;
             switch (f.outcome) {
               case DownloadOutcome::Fetch:
-                app.toasts.push(ToastKind::Error, "download failed · " + f.detail,
+                reason = f.detail;
+                app.toasts.push(ToastKind::Error, "download failed \xC2\xB7 " + f.detail,
                                 app.tick_count);
                 break;
               case DownloadOutcome::Io:
-                app.toasts.push(ToastKind::Error, "download failed · disk error",
+                reason = "disk error";
+                app.toasts.push(ToastKind::Error, "download failed \xC2\xB7 disk error",
                                 app.tick_count);
                 break;
               case DownloadOutcome::Cancelled:
-                app.toasts.push(ToastKind::Info, "download cancelled", app.tick_count);
+                app.toasts.push(ToastKind::Info, "cancelled " + name, app.tick_count);
                 break;
               case DownloadOutcome::UnsafeUrl:
-                app.toasts.push(ToastKind::Error, "download blocked · unsafe url",
+                reason = "unsafe url";
+                app.toasts.push(ToastKind::Error, "download blocked \xC2\xB7 unsafe url",
                                 app.tick_count);
                 break;
               case DownloadOutcome::UnsafeArg:
+                reason = "unsafe stream field";
                 app.toasts.push(ToastKind::Error,
-                                "download blocked · unsafe stream field",
+                                "download blocked \xC2\xB7 unsafe stream field",
                                 app.tick_count);
                 break;
               case DownloadOutcome::FfmpegNotFound:
+                reason = "ffmpeg not found";
                 app.toasts.push(ToastKind::Warning,
                                 "install ffmpeg to download this stream",
                                 app.tick_count);
                 break;
               case DownloadOutcome::Ffmpeg:
-                app.toasts.push(ToastKind::Error, "download failed · ffmpeg " + f.detail,
+                reason = "ffmpeg " + f.detail;
+                app.toasts.push(ToastKind::Error,
+                                "download failed \xC2\xB7 ffmpeg " + f.detail,
                                 app.tick_count);
                 break;
             }
-            app.dirty = true;
+            const TransfersAnchor anchor = transfers_anchor(app);
+            app.downloads.on_failed(f.job, f.outcome == DownloadOutcome::Cancelled,
+                                    std::move(reason));
+            pump_downloads(app);
+            refresh_transfers_view(app, anchor);
           },
       },
       ev);
@@ -3928,17 +4448,17 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
     }
   }
 
-  // Downloads at quit (P35 slice 3): NO drain rights (A1) — set the cancel
-  // flag (the curl arm's abort poll notices within ~1s if the process lives
-  // that long) and SIGTERM a published ffmpeg child directly, since _exit(0)
-  // below would otherwise orphan it mid-transfer. Never waited on: the .part
-  // convention makes any interruption safe (a rerun resumes or restarts).
-  if (app.download.active) {
-    if (app.download.cancel) {
-      app.download.cancel->store(true, std::memory_order_release);
-    }
-    if (app.download.child_pid) {
-      const long pid = app.download.child_pid->load(std::memory_order_acquire);
+  // Downloads at quit: NO drain rights (A1). Every job in flight gets its
+  // cancel flag set (the curl arm's abort poll notices within ~1s if the
+  // process lives that long) and its published ffmpeg child a SIGTERM, since
+  // _exit(0) below would otherwise orphan it mid-transfer. Never waited on:
+  // the .part convention makes any interruption safe (a rerun resumes or
+  // restarts). What was only queued is simply gone with the session.
+  for (const DownloadJob& job : app.downloads.jobs) {
+    if (!job.in_flight()) continue;
+    if (job.cancel) job.cancel->store(true, std::memory_order_release);
+    if (job.child_pid) {
+      const long pid = job.child_pid->load(std::memory_order_acquire);
       if (pid > 0) ::kill(static_cast<pid_t>(pid), SIGTERM);
     }
   }

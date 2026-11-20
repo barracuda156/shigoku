@@ -46,6 +46,7 @@
 #include "term.hpp"
 #include "theme.hpp"
 #include "toast.hpp"
+#include "transfers.hpp"
 #include "workers.hpp"
 
 namespace shigoku {
@@ -85,7 +86,8 @@ class PrewarmState;
 // them, A2 fence) but only Browse + Detail render content in P7. Detail is
 // the full-screen zoom (DESIGN §5.3) — a standalone active_view, not a pane.
 // Schedule (P37) joined later: a read-only weekday-grouped countdown list,
-// keybind `C` (Calendar; B/H/D/S were already taken).
+// keybind `C` (Calendar; B/H/D/S were already taken). Transfers, on `T`, is
+// the download queue and what is on disk.
 enum class View {
   Browse,
   History,
@@ -93,6 +95,7 @@ enum class View {
   Settings,
   Detail,
   Schedule,
+  Transfers,
 };
 
 // Which pane holds keyboard focus in a two-pane view (DESIGN §7.3). Detail
@@ -351,23 +354,12 @@ struct PlayState {
   // (03 §6.4) must not read the CURRENT selection — the user may have scrolled.
   std::optional<std::int64_t> mal_id;
   std::string title_romaji;
-};
-
-// The one-at-a-time episode download in flight (P35 slice 3, PlayState's
-// shape). The worker owns the transfer; App owns this mirror for the
-// statusline/grid and the quit path. cancel/child_pid are heap-shared with
-// the worker: quit sets cancel and SIGTERMs the published ffmpeg child
-// directly — downloads have no drain rights (A1), so quit never waits for
-// the worker to notice.
-struct DownloadState {
-  bool active = false;
-  std::int64_t for_id = 0;      // anilist_id the download was fired for.
-  std::string episode;          // raw label in flight.
-  std::uint64_t bytes = 0;      // last DownloadProgress.
-  std::uint64_t total = 0;      // 0 = unknown (ffmpeg arm: indeterminate).
-  TickCount started_tick = 0;   // spinner clock.
-  std::shared_ptr<std::atomic<bool>> cancel;
-  std::shared_ptr<std::atomic<long>> child_pid;  // live ffmpeg pid, 0 = none.
+  // Played as a file from the Transfers view: no source served it, so none
+  // is stamped on the rows it writes. for_id 0 = a show the catalogue does
+  // not know; nothing is written for it at all. `disk_file` is that file,
+  // so the tab can refuse to delete it while it plays.
+  bool from_disk = false;
+  std::string disk_file;
 };
 
 // The live detail cover as the terminal sees it (P8, A4). draw() computes the
@@ -598,7 +590,15 @@ struct App {
   // --- episode grid / playback (P7, 04 §7.1/§7.7) ---
   EpisodeState episode;
   PlayState play;
-  DownloadState download;  // P35 slice 3: the one transfer in flight.
+
+  // --- downloads ---
+  // Every download of the session, the picker `d` opens, and the Transfers
+  // view over the queue and the disk. Quit cancels what is in flight and
+  // never waits for it: downloads have no drain rights (A1), and a .part
+  // resumes.
+  DownloadQueue downloads;
+  DownloadPicker download_picker;
+  TransfersState transfers;
   // The armed play continuation (03 §6.4, playback.rs Continuation): survives
   // across the fallback walk's hops and relaunches, remembering every provider
   // that already failed a play so the successor walk never revisits one. A
@@ -826,11 +826,12 @@ namespace detail {
 // render concern). Exposed so a test can assert the subset.
 [[nodiscard]] std::string idle_help(View v, Pane p);
 
-// P32: the view whose top-bar tab covers column `x` on row 0, or nullopt for
-// the gaps/name/chip. Replays draw_top_bar's span walk off the same label +
-// key sources, so the hit-test can never disagree with the render. Exposed
-// for tests.
-[[nodiscard]] std::optional<View> top_bar_tab_at(int x);
+// P32: the view whose top-bar tab covers column `x` on row 0 of a screen
+// `width` columns wide, or nullopt for the gaps/name/chip. Replays
+// draw_top_bar's span walk off the same label + key sources — the width
+// decides whether the tabs are set apart by " · " or by a space — so the
+// hit-test can never disagree with the render. Exposed for tests.
+[[nodiscard]] std::optional<View> top_bar_tab_at(int x, int width);
 
 // --- P7 pure helpers, exposed for tests + views.cpp -------------------------
 

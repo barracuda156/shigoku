@@ -2,6 +2,8 @@
 
 #include "app_workers.hpp"
 
+#include <sys/stat.h>
+
 #include <chrono>
 #include <string_view>
 #include <thread>
@@ -12,6 +14,7 @@
 #include "../aniskip.hpp"
 #include "../debug_log.hpp"
 #include "../download.hpp"
+#include "../http.hpp"
 #include "../login.hpp"
 #include "../loopback.hpp"
 #include "../mal_catalog.hpp"
@@ -368,7 +371,7 @@ void spawn_resolve_episodes(EventQueue& queue, const ProviderRegistry& registry,
 // Enter on a focused episode grid cell: resolve + play via P5's player::play —
 // unless a completed local download for the exact (show, track, ep) exists, in
 // which case player::play_local skips the resolve pipeline entirely (P35
-// slice 4). player::play() is blocking and calls `resolve` once per retry
+// slice 4). A non-empty `local_file` is played as it is, nothing else tried. player::play() is blocking and calls `resolve` once per retry
 // attempt itself; the inner lambda wraps provider->resolve into ResolveFn.
 void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
                 const AppDeps& deps, std::string provider_name, std::string provider_id,
@@ -376,12 +379,14 @@ void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
                 Translation translation, Quality quality,
                 std::optional<std::int64_t> mal_id, std::string show_title,
                 std::uint32_t episode_ordinal, aniskip::SkipMode skip_mode,
-                player::BackendKind backend, std::string player_path) {
+                player::BackendKind backend, std::string player_path,
+                std::string local_file) {
   spawn_detached([&queue, &registry, &deps, provider_name = std::move(provider_name),
                   provider_id = std::move(provider_id),
                   episode = std::move(episode), for_id, start_secs, translation, quality,
                   mal_id, show_title = std::move(show_title), episode_ordinal, skip_mode,
-                  backend, player_path = std::move(player_path)]() {
+                  backend, player_path = std::move(player_path),
+                  local_file = std::move(local_file)]() {
     player::EventSink on_event = [&queue, for_id, &episode](const player::PlayerEvent& pe) {
       using K = player::PlayerEvent::Kind;
       switch (pe.kind) {
@@ -416,6 +421,12 @@ void spawn_play(EventQueue& queue, const ProviderRegistry& registry,
       opts.chapters_file = std::move(adjuncts.chapters_file);
     }
     auto outcome = [&]() -> Result<player::PlayOutcome, PlayError> {
+      // A file named outright (the Transfers view's Enter) is what plays: no
+      // scan for it, no source asked.
+      if (!local_file.empty()) {
+        debug_log("worker play: named file " + local_file);
+        return player::play_local(opts, local_file, on_event);
+      }
       // Play-prefers-local (P35 slice 4): a completed download for this exact
       // (show, track, ep) short-circuits the whole resolve pipeline — no
       // provider, no network (downloads keep working when every provider is
@@ -488,69 +499,124 @@ std::pair<DownloadOutcome, std::string> download_failed_payload(
 
 }  // namespace
 
-// `d` on a focused episode grid cell (P35 slice 3): resolve once on the
-// serving provider, then the blocking download_link (curl or ffmpeg arm) off
-// the UI thread. One transfer at a time is the CALLER's gate
-// (App::download.active); this worker just runs one. Progress is throttled
-// worker-side (≥500ms between posts, so a slow pty never backs up) with the final
-// tick always posted. No retry/hop law: a failed download toasts and rests
-// (the user re-fires; a .part resumes free of charge).
+// One download job, off the UI thread. The stream is resolved here, when the
+// job starts, never when it was queued: stream links expire. Progress is
+// throttled worker-side (>=500ms between posts, so a slow pty never backs
+// up) with the final tick always posted. No retry or hop law: a failed job
+// rests in the queue until the user retries it (a .part resumes for free).
 void spawn_download(EventQueue& queue, const ProviderRegistry& registry,
-                    const http::Client* http, std::string provider_name,
-                    std::string provider_id, std::string episode,
-                    std::int64_t for_id, Translation translation, Quality quality,
-                    std::string download_dir, std::string ffmpeg_path,
-                    std::shared_ptr<std::atomic<bool>> cancel,
-                    std::shared_ptr<std::atomic<long>> child_pid) {
-  spawn_detached([&queue, &registry, http, provider_name = std::move(provider_name),
-                  provider_id = std::move(provider_id), episode = std::move(episode),
-                  for_id, translation, quality, download_dir = std::move(download_dir),
-                  ffmpeg_path = std::move(ffmpeg_path), cancel = std::move(cancel),
-                  child_pid = std::move(child_pid)]() {
-    // Resolve on the SERVING provider (P15) — same rule as spawn_play.
+                    const http::Client* http, DownloadJob job, std::string download_dir,
+                    std::string ffmpeg_path) {
+  spawn_detached([&queue, &registry, http, job = std::move(job),
+                  download_dir = std::move(download_dir),
+                  ffmpeg_path = std::move(ffmpeg_path)]() {
+    static const std::atomic<bool> kNeverCancelled{false};
+    const std::atomic<bool>& cancel = job.cancel ? *job.cancel : kNeverCancelled;
+    auto fail = [&](DownloadOutcome outcome, std::string detail) {
+      queue.try_post(Event{DownloadFailed{job.id, outcome, std::move(detail)}});
+    };
+    auto fail_with = [&](const download::DownloadError& e) {
+      auto [outcome, detail] = download_failed_payload(e);
+      debug_log("worker download: failed kind=" + std::to_string(static_cast<int>(outcome)));
+      fail(outcome, std::move(detail));
+    };
+
+    // Resolve on the job's own source (the one its grid was served by) — the
+    // same rule as spawn_play.
     const StreamProvider* provider =
-        provider_name.empty() ? registry.primary() : registry.by_name(provider_name);
+        job.provider.empty() ? registry.primary() : registry.by_name(job.provider);
     if (provider == nullptr || http == nullptr) {
-      queue.try_post(Event{DownloadFailed{DownloadOutcome::Fetch, "no provider",
-                                          for_id, episode}});
+      fail(DownloadOutcome::Fetch, "no provider");
       return;
     }
-    auto link = provider->resolve(provider_id, episode, translation, quality);
+    auto link = provider->resolve(job.provider_id, job.episode, job.translation, job.quality);
+    if (cancel.load(std::memory_order_acquire)) {
+      fail(DownloadOutcome::Cancelled, {});
+      return;
+    }
     if (!link.has_value()) {
-      queue.try_post(Event{DownloadFailed{
-          DownloadOutcome::Fetch, std::string(provider_error_copy(link.error().kind)),
-          for_id, episode}});
+      fail(DownloadOutcome::Fetch, std::string(provider_error_copy(link.error().kind)));
       return;
     }
-    const std::string dest = download::episode_dest(download_dir, for_id, translation,
-                                                    episode, *link);
+    if (!http::guard_fetch_url(link->url).has_value()) {
+      fail(DownloadOutcome::UnsafeUrl, {});
+      return;
+    }
+    auto planned = download::plan(*http, *link, job.rung);
+    if (!planned.has_value()) {
+      fail_with(planned.error());
+      return;
+    }
+    const std::string dest = download::episode_dest(download_dir, job.show_id, job.translation,
+                                                    job.episode, *link);
     if (auto md = download::ensure_parent_dirs(dest); !md.has_value()) {
-      auto [outcome, detail] = download_failed_payload(md.error());
-      queue.try_post(Event{DownloadFailed{outcome, std::move(detail), for_id, episode}});
+      fail_with(md.error());
       return;
     }
+
+    // What the transfer turned out to be: the rung the ladder really had,
+    // and the size its bitrate suggests.
+    std::optional<std::uint32_t> height = link->resolution;
+    std::uint64_t estimate = 0;
+    if (planned->variant.has_value()) {
+      height = planned->variant->resolution;
+      OfferRow row;
+      row.bandwidth = planned->variant->bandwidth;
+      estimate = offer_row_bytes(row, job.duration_secs).value_or(0);
+    }
+    queue.try_post(Event{DownloadStarted{job.id, dest, height, estimate}});
+
     auto last_post = std::chrono::steady_clock::now() - std::chrono::seconds(1);
-    download::ProgressFn progress = [&queue, &last_post, for_id, &episode](
+    download::ProgressFn progress = [&queue, &last_post, id = job.id](
                                         std::uint64_t bytes,
                                         std::optional<std::uint64_t> total) {
       const auto now = std::chrono::steady_clock::now();
       const bool final_tick = total.has_value() && bytes >= *total;
       if (!final_tick && now - last_post < std::chrono::milliseconds(500)) return;
       last_post = now;
-      queue.try_post(Event{DownloadProgress{bytes, total.value_or(0), for_id, episode}});
+      queue.try_post(Event{DownloadProgress{id, bytes, total.value_or(0)}});
     };
-    debug_log("worker download: ep=" + episode + " dest=" + dest);
-    auto r = download::download_link(*http, *link, dest, quality, ffmpeg_path,
-                                     *cancel, progress, child_pid.get());
+    debug_log("worker download: ep=" + job.episode + " dest=" + dest);
+    auto r = download::run(*http, *link, *planned, dest, ffmpeg_path, cancel, progress,
+                           job.child_pid.get());
     if (!r.has_value()) {
-      auto [outcome, detail] = download_failed_payload(r.error());
-      debug_log("worker download: failed kind=" +
-                std::to_string(static_cast<int>(outcome)));
-      queue.try_post(Event{DownloadFailed{outcome, std::move(detail), for_id, episode}});
+      fail_with(r.error());
       return;
     }
     debug_log("worker download: done " + dest);
-    queue.try_post(Event{DownloadDone{for_id, episode, dest}});
+    std::uint64_t size = 0;
+    struct stat st{};
+    if (::stat(dest.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+      size = static_cast<std::uint64_t>(st.st_size);
+    }
+    queue.try_post(Event{DownloadDone{job.id, dest, size}});
+  });
+}
+
+void spawn_download_probe(EventQueue& queue, const ProviderRegistry& registry,
+                          const http::Client* http, std::uint64_t token,
+                          std::string provider_name, std::string provider_id,
+                          std::string episode, Translation translation, Quality quality) {
+  spawn_detached([&queue, &registry, http, token, provider_name = std::move(provider_name),
+                  provider_id = std::move(provider_id), episode = std::move(episode),
+                  translation, quality]() {
+    const StreamProvider* provider =
+        provider_name.empty() ? registry.primary() : registry.by_name(provider_name);
+    if (provider == nullptr || http == nullptr) {
+      queue.try_post(Event{DownloadOfferFailed{token, "no provider"}});
+      return;
+    }
+    auto link = provider->resolve(provider_id, episode, translation, quality);
+    if (!link.has_value()) {
+      queue.try_post(Event{DownloadOfferFailed{
+          token, std::string(provider_error_copy(link.error().kind))}});
+      return;
+    }
+    if (!http::guard_fetch_url(link->url).has_value()) {
+      queue.try_post(Event{DownloadOfferFailed{token, "unsafe stream url"}});
+      return;
+    }
+    queue.try_post(Event{DownloadOfferDone{token, download::probe(*http, *link)}});
   });
 }
 

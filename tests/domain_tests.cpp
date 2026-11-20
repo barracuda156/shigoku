@@ -726,9 +726,12 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
         [](const GenreCollectionDone&) { return std::string("genre-collection-done"); },
         [](const GenreCollectionFailed&) { return std::string("genre-collection-failed"); },
         [](const UpdateAvailable&) { return std::string("update-available"); },
+        [](const DownloadStarted&) { return std::string("download-started"); },
         [](const DownloadProgress&) { return std::string("download-progress"); },
         [](const DownloadDone&) { return std::string("download-done"); },
         [](const DownloadFailed&) { return std::string("download-failed"); },
+        [](const DownloadOfferDone&) { return std::string("download-offer-done"); },
+        [](const DownloadOfferFailed&) { return std::string("download-offer-failed"); },
     }, e);
   };
 
@@ -750,10 +753,13 @@ TEST_CASE("Event visit with overloaded{} dispatches every alternative") {
   CHECK(classify(Event{GenreCollectionDone{{"Action"}}}) == "genre-collection-done");
   CHECK(classify(Event{GenreCollectionFailed{}}) == "genre-collection-failed");
   CHECK(classify(Event{UpdateAvailable{"v0.5.0"}}) == "update-available");
-  CHECK(classify(Event{DownloadProgress{512, 1024, 700, "7"}}) == "download-progress");
-  CHECK(classify(Event{DownloadDone{700, "7", "/dl/700/sub/7.mp4"}}) == "download-done");
-  CHECK(classify(Event{DownloadFailed{DownloadOutcome::FfmpegNotFound, {}, 700, "7"}}) ==
+  CHECK(classify(Event{DownloadStarted{3, "/dl/700/sub/7.mp4", 720u, 0}}) == "download-started");
+  CHECK(classify(Event{DownloadProgress{3, 512, 1024}}) == "download-progress");
+  CHECK(classify(Event{DownloadDone{3, "/dl/700/sub/7.mp4", 1024}}) == "download-done");
+  CHECK(classify(Event{DownloadFailed{3, DownloadOutcome::FfmpegNotFound, {}}}) ==
         "download-failed");
+  CHECK(classify(Event{DownloadOfferDone{1, StreamOffer{}}}) == "download-offer-done");
+  CHECK(classify(Event{DownloadOfferFailed{1, "no stream"}}) == "download-offer-failed");
 }
 
 // --- after_play_status (domain.rs after_play tests, ported 1:1 — P30/R-12) --

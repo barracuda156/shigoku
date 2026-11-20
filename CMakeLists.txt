@@ -335,8 +335,10 @@ endif()
 # shigoku_hls, decloak links through the proxy. download_link owns the SSRF guard;
 # the lower-level cores are mechanism (see download.hpp).
 # ---------------------------------------------------------------------------
+# download_library.cpp reads the same tree back (what is on disk); it needs
+# neither curl nor ffmpeg but lives with the code that writes the layout.
 if(SHIGOKU_HAVE_CURL)
-  add_library(shigoku_download STATIC src/download.cpp)
+  add_library(shigoku_download STATIC src/download.cpp src/download_library.cpp)
   target_include_directories(shigoku_download PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(shigoku_download
     PUBLIC shigoku_http shigoku_hls shigoku_proxy shigoku_domain shigoku_flags
@@ -951,6 +953,9 @@ add_library(shigoku_tui_render STATIC
   # GenreCollection fetch worker spawn lives in app.cpp (shigoku_tui below),
   # same split as connect.cpp/settings.cpp.
   src/tui/discover_filters.cpp
+  # The download queue's state machine, the picker modal and the Transfers
+  # view — pure state and render; the workers and the disk scan are app.cpp's.
+  src/tui/transfers.cpp
 )
 target_include_directories(shigoku_tui_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(shigoku_tui_render
@@ -1575,6 +1580,15 @@ if(SHIGOKU_HAVE_CURL)
     shigoku::curl Threads::Threads shigoku_atomic)
   add_test(NAME download_tests COMMAND download_tests)
   set_tests_properties(download_tests PROPERTIES TIMEOUT 60)
+
+  # download_library_tests: the download tree read back — show folders,
+  # tracks, finished and unfinished files, and the delete that tidies the
+  # folders it empties. Filesystem only, under the OS tmpdir.
+  add_executable(download_library_tests tests/download_library_tests.cpp)
+  target_link_libraries(download_library_tests PRIVATE
+    shigoku_download shigoku_http shigoku_domain shigoku_flags shigoku_thirdparty
+    shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME download_library_tests COMMAND download_library_tests)
 endif()
 
 # semver_tests: pure version-parse/compare table (semver.rs tests).
@@ -2236,6 +2250,16 @@ if(WITH_TUI AND SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
     shigoku_tui shigoku_tui_render shigoku_store shigoku_domain shigoku_flags
     shigoku_thirdparty shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
   add_test(NAME discover_tests COMMAND discover_tests)
+
+  # transfers_tests: the download queue's transitions, the Transfers view's
+  # item list / layout / nav, and render smoke for the view and the picker
+  # modal. The code under test is pure; the draw tests build an App, whose
+  # members need the full interface library to link.
+  add_executable(transfers_tests tests/transfers_tests.cpp)
+  target_link_libraries(transfers_tests PRIVATE
+    shigoku_tui shigoku_tui_render shigoku_store shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl shigoku::sqlite3 Threads::Threads shigoku_atomic)
+  add_test(NAME transfers_tests COMMAND transfers_tests)
 endif()
 
 # pty_walk_tests: forkpty()s itself (--child re-invocation) to drive the real event loop

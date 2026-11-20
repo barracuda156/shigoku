@@ -59,6 +59,7 @@ TEST_CASE("round trip preserves everything") {
   cfg.disabled_providers = {"anibd", "anidbapp"};
   cfg.default_quality = "1080";
   cfg.download_quality = "480";
+  cfg.download_parallel = 2;
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());
@@ -110,6 +111,7 @@ TEST_CASE("a value of the wrong type keeps that key's default and the rest of th
     "cover_art": "yes",
     "resume_offset_sec": "12",
     "discover_cover_concurrency": -3,
+    "download_parallel": 2.5,
     "translation": "dub",
     "kanji_chips": false
   })");
@@ -195,4 +197,28 @@ TEST_CASE("cover concurrency clamps at read") {
   CHECK(cfg.effective_cover_concurrency() == 16);
   cfg.discover_cover_concurrency = 4;
   CHECK(cfg.effective_cover_concurrency() == 4);
+}
+
+TEST_CASE("download parallelism defaults to one and clamps at read") {
+  Config cfg;
+  CHECK(cfg.download_parallel == 1);
+  CHECK(cfg.effective_download_parallel() == 1);
+  cfg.download_parallel = 0;
+  CHECK(cfg.effective_download_parallel() == 1);
+  cfg.download_parallel = 2;
+  CHECK(cfg.effective_download_parallel() == 2);
+  cfg.download_parallel = 9;
+  CHECK(cfg.effective_download_parallel() == 3);
+
+  // Stored as written, clamped only when read.
+  const std::string path = tmp("download_parallel.json");
+  REQUIRE(cfg.save(path).has_value());
+  const Config loaded = Config::load(path);
+  CHECK(loaded.download_parallel == 9);
+  CHECK(loaded.effective_download_parallel() == 3);
+
+  write_file(path, R"({"download_parallel": 2})");
+  CHECK(Config::load(path).download_parallel == 2);
+  write_file(path, R"({"translation": "dub"})");
+  CHECK(Config::load(path).download_parallel == 1);
 }

@@ -21,6 +21,7 @@
 
 #include "domain.hpp"
 #include "error.hpp"
+#include "offer.hpp"     // StreamOffer (DownloadOfferDone payload).
 #include "provider.hpp"  // SearchHit (ProviderSearchDone payload).
 
 namespace shigoku {
@@ -510,14 +511,13 @@ struct GenreCollectionFailed {
   friend bool operator==(const GenreCollectionFailed&, const GenreCollectionFailed&) = default;
 };
 
-// --- 4.8 Downloads (P35 slice 3) --------------------------------------------
+// --- 4.8 Downloads -----------------------------------------------------------
 //
-// One transfer at a time (the app's DownloadState is the gate); no generation
-// token — for_id + episode identify the transfer, and the active flag guards
-// adoption. DownloadOutcome mirrors download::DownloadError::Kind
-// dependency-free (download.hpp pulls http.hpp; event.hpp is included by the
-// curl-free render core — the ConnectOutcome pattern). app.cpp converts at
-// the worker boundary.
+// Every report names its job by the queue's id (tui/transfers.hpp); a report
+// for a job that is gone, or no longer in flight, is dropped there.
+// DownloadOutcome mirrors download::DownloadError::Kind dependency-free
+// (download.hpp pulls http.hpp; event.hpp is included by the curl-free render
+// core — the ConnectOutcome pattern). The worker converts at its boundary.
 
 enum class DownloadOutcome {
   Fetch,
@@ -529,37 +529,60 @@ enum class DownloadOutcome {
   Ffmpeg,
 };
 
+// The job's stream resolved and its transfer worked out: where the file
+// lands, which rung is really being fetched, and the size that rung's
+// bitrate suggests (0 = no estimate).
+struct DownloadStarted {
+  std::uint64_t job = 0;
+  std::string dest;
+  std::optional<std::uint32_t> height;
+  std::uint64_t estimate = 0;
+  friend bool operator==(const DownloadStarted&, const DownloadStarted&) = default;
+};
+
 // Throttled progress tick (the worker posts at most ~2/sec, so a slow pty is
-// never flooded — plus the final tick). total 0 = unknown (the ffmpeg arm posts no
-// byte counts in v1; the statusline shows an indeterminate transfer).
+// never flooded — plus the final tick). total 0 = unknown (the ffmpeg arm
+// reports the growing file's size and no total).
 struct DownloadProgress {
+  std::uint64_t job = 0;
   std::uint64_t bytes = 0;
   std::uint64_t total = 0;
-  std::int64_t for_id = 0;
-  std::string episode;
   friend bool operator==(const DownloadProgress&, const DownloadProgress&) = default;
 };
 
 struct DownloadDone {
-  std::int64_t for_id = 0;
-  std::string episode;
-  std::string dest;  // the final published path (toast copy).
+  std::uint64_t job = 0;
+  std::string dest;         // the final published path.
+  std::uint64_t bytes = 0;  // its size, 0 when it could not be read back.
   friend bool operator==(const DownloadDone&, const DownloadDone&) = default;
 };
 
 struct DownloadFailed {
+  std::uint64_t job = 0;
   DownloadOutcome outcome = DownloadOutcome::Fetch;
   std::string detail;  // short human fragment (provider copy / errno text).
-  std::int64_t for_id = 0;
-  std::string episode;
   friend bool operator==(const DownloadFailed&, const DownloadFailed&) = default;
+};
+
+// The picker's probe: what the episode's stream offers, or why that could
+// not be asked. `token` is the picker's stamp; an answer for another is stale.
+struct DownloadOfferDone {
+  std::uint64_t token = 0;
+  StreamOffer offer;
+  friend bool operator==(const DownloadOfferDone&, const DownloadOfferDone&) = default;
+};
+
+struct DownloadOfferFailed {
+  std::uint64_t token = 0;
+  std::string detail;
+  friend bool operator==(const DownloadOfferFailed&, const DownloadOfferFailed&) = default;
 };
 
 // --- The variant -----------------------------------------------------------
 //
 // v0 subset (PORT_CPP.md A2) + P15's PrewarmResult + P17's Discover* / GridCover*
 // + P19's ConnectDone + P20's SyncFlushed + P21's Enrichment* + P28's
-// UpdateAvailable + P32's MouseEvent + P35's Download* (§9). Remaining deferred events
+// UpdateAvailable + P32's MouseEvent + the Download* reports (§9). Remaining deferred events
 // (History*) are NOT in the
 // variant yet — adding one is additive, and until then no visitor is
 // obligated to handle it. The A2 fence turns each addition into a compile
@@ -601,9 +624,12 @@ using Event = std::variant<KeyEvent,
                            GenreCollectionDone,
                            GenreCollectionFailed,
                            UpdateAvailable,
+                           DownloadStarted,
                            DownloadProgress,
                            DownloadDone,
-                           DownloadFailed>;
+                           DownloadFailed,
+                           DownloadOfferDone,
+                           DownloadOfferFailed>;
 
 // overloaded{} — the visitor helper. Compose per-alternative lambdas; a
 // visitor that omits an alternative is a COMPILE ERROR (no generic catch-all

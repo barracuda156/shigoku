@@ -363,7 +363,18 @@ TEST_CASE("pty walk: Discover grid — axis bar, feed, axis switch, add toast") 
   s.pump(300);
   CHECK(s.visible_text().find("added to your list") != std::string::npos);
 
-  // 4) Quit cleanly.
+  // 4) `T` opens Transfers: nothing queued, no download dir, so its one line.
+  s.write_str("T");
+  s.pump(300);
+  CHECK(s.visible_text().find("nothing downloaded yet") != std::string::npos);
+
+  // 5) Esc walks back to Discover: its axis bar is drawn again.
+  const std::size_t mark = s.accumulated.size();
+  s.write_str("\x1b");
+  s.pump(400);
+  CHECK(strip_ansi(s.accumulated.substr(mark)).find("Trending") != std::string::npos);
+
+  // 6) Quit cleanly.
   s.write_str("q");
   int status = 0;
   for (int i = 0; i < 100; ++i) {
@@ -415,9 +426,10 @@ TEST_CASE("pty walk: P32 mouse — click selects, double-click opens, reporting 
   CHECK(after_click.find("[1]") != std::string::npos);  // grid cells rendered.
   CHECK(after_click.find("[2]") != std::string::npos);
 
-  // A top-bar tab click hops views like its letter: [S]ettings spans 0-based
-  // columns 60..69 (P37 inserted [C]alendar before it) → 1-based column 61.
-  s.write_str("\x1b[<0;61;1M\x1b[<0;61;1m");
+  // A top-bar tab click hops views like its letter: on this 100-column pty
+  // the six tabs are set apart by a spaced middle dot, so [S]ettings spans
+  // 0-based columns 74..83, 1-based column 75.
+  s.write_str("\x1b[<0;75;1M\x1b[<0;75;1m");
   s.pump(300);
   CHECK(s.visible_text().find("preferred provider") != std::string::npos);
 

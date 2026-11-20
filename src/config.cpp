@@ -67,6 +67,7 @@ Config from_json(const json& j) {
   c.catalog = field(j, "catalog", c.catalog);
   c.download_dir = field(j, "download_dir", c.download_dir);
   c.download_quality = field(j, "download_quality", c.download_quality);
+  c.download_parallel = field(j, "download_parallel", c.download_parallel);
   c.ffmpeg_path = field(j, "ffmpeg_path", c.ffmpeg_path);
   c.senshi_node = field(j, "senshi_node", c.senshi_node);
   c.player = field(j, "player", c.player);
@@ -107,6 +108,7 @@ json to_json(const Config& c) {
       {"catalog", c.catalog},
       {"download_dir", c.download_dir},
       {"download_quality", c.download_quality},
+      {"download_parallel", c.download_parallel},
       {"ffmpeg_path", c.ffmpeg_path},
       {"senshi_node", c.senshi_node},
       {"player", c.player},
@@ -127,6 +129,10 @@ std::uint32_t Config::effective_cover_concurrency() const {
 
 std::string Config::effective_download_quality() const {
   return download_quality.empty() ? default_quality : download_quality;
+}
+
+std::uint32_t Config::effective_download_parallel() const {
+  return std::clamp(download_parallel, 1u, 3u);
 }
 
 Config Config::load(const std::string& path) {

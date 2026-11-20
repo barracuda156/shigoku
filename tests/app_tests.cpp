@@ -10,10 +10,18 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "../src/auth.hpp"
 #include "../src/provider.hpp"
@@ -1211,7 +1219,8 @@ TEST_CASE("a grid key inside a History zoom acts on the zoomed show") {
   const std::size_t toasts_before = h->app.toasts.size();
   tick(h->app, Event{press(U'd')});
   CHECK(h->app.toasts.size() == toasts_before + 1);
-  CHECK_FALSE(h->app.download.active);
+  CHECK_FALSE(h->app.download_picker.open);
+  CHECK(h->app.downloads.jobs.empty());
 }
 
 TEST_CASE("the episode cell the user moved to is the one a finished play is measured from") {
@@ -1777,21 +1786,74 @@ Event click(int x, int y) {
 
 TEST_CASE("top_bar_tab_at: spans replay draw_top_bar's walk") {
   using shigoku::tui::detail::top_bar_tab_at;
-  // Tabs start at 11 ("SHIGOKU" + glyph + spacing): [B]rowse(8) · [H]istory(9)
-  // · [D]iscover(10) · [C]alendar(10, P37) · [S]ettings(10), " · " = 3 between.
-  CHECK(top_bar_tab_at(10) == std::nullopt);
-  CHECK(top_bar_tab_at(11) == View::Browse);
-  CHECK(top_bar_tab_at(18) == View::Browse);
-  CHECK(top_bar_tab_at(19) == std::nullopt);   // separator.
-  CHECK(top_bar_tab_at(22) == View::History);
-  CHECK(top_bar_tab_at(30) == View::History);
-  CHECK(top_bar_tab_at(34) == View::Discover);
-  CHECK(top_bar_tab_at(43) == View::Discover);  // last char: 10 wide from 34.
-  CHECK(top_bar_tab_at(47) == View::Schedule);
-  CHECK(top_bar_tab_at(56) == View::Schedule);  // last char: 10 wide from 47.
-  CHECK(top_bar_tab_at(60) == View::Settings);
-  CHECK(top_bar_tab_at(69) == View::Settings);  // last char: 10 wide from 60.
-  CHECK(top_bar_tab_at(70) == std::nullopt);   // past the last tab.
+  // Tabs start at 11 ("SHIGOKU" + glyph + spacing): [B]rowse(8) [H]istory(9)
+  // [D]iscover(10) [C]alendar(10) [T]ransfers(11) [S]ettings(10). Set apart
+  // by a spaced middle dot (3 cells) when the strip then ends clear of the
+  // right edge, by one space otherwise.
+  constexpr int kWide = 100;
+  CHECK(top_bar_tab_at(10, kWide) == std::nullopt);
+  CHECK(top_bar_tab_at(11, kWide) == View::Browse);
+  CHECK(top_bar_tab_at(18, kWide) == View::Browse);
+  CHECK(top_bar_tab_at(19, kWide) == std::nullopt);  // separator.
+  CHECK(top_bar_tab_at(21, kWide) == std::nullopt);
+  CHECK(top_bar_tab_at(22, kWide) == View::History);
+  CHECK(top_bar_tab_at(30, kWide) == View::History);
+  CHECK(top_bar_tab_at(34, kWide) == View::Discover);
+  CHECK(top_bar_tab_at(43, kWide) == View::Discover);
+  CHECK(top_bar_tab_at(47, kWide) == View::Schedule);
+  CHECK(top_bar_tab_at(56, kWide) == View::Schedule);
+  CHECK(top_bar_tab_at(59, kWide) == std::nullopt);
+  CHECK(top_bar_tab_at(60, kWide) == View::Transfers);
+  CHECK(top_bar_tab_at(70, kWide) == View::Transfers);  // last char: 11 wide from 60.
+  CHECK(top_bar_tab_at(71, kWide) == std::nullopt);
+  CHECK(top_bar_tab_at(74, kWide) == View::Settings);
+  CHECK(top_bar_tab_at(83, kWide) == View::Settings);
+  CHECK(top_bar_tab_at(84, kWide) == std::nullopt);  // past the last tab.
+
+  constexpr int kNarrow = 80;
+  CHECK(top_bar_tab_at(10, kNarrow) == std::nullopt);
+  CHECK(top_bar_tab_at(11, kNarrow) == View::Browse);
+  CHECK(top_bar_tab_at(18, kNarrow) == View::Browse);
+  CHECK(top_bar_tab_at(19, kNarrow) == std::nullopt);  // the one-space gap.
+  CHECK(top_bar_tab_at(20, kNarrow) == View::History);
+  CHECK(top_bar_tab_at(28, kNarrow) == View::History);
+  CHECK(top_bar_tab_at(29, kNarrow) == std::nullopt);
+  CHECK(top_bar_tab_at(30, kNarrow) == View::Discover);
+  CHECK(top_bar_tab_at(39, kNarrow) == View::Discover);
+  CHECK(top_bar_tab_at(41, kNarrow) == View::Schedule);
+  CHECK(top_bar_tab_at(50, kNarrow) == View::Schedule);
+  CHECK(top_bar_tab_at(52, kNarrow) == View::Transfers);
+  CHECK(top_bar_tab_at(62, kNarrow) == View::Transfers);
+  CHECK(top_bar_tab_at(63, kNarrow) == std::nullopt);
+  CHECK(top_bar_tab_at(64, kNarrow) == View::Settings);
+  CHECK(top_bar_tab_at(73, kNarrow) == View::Settings);
+  CHECK(top_bar_tab_at(74, kNarrow) == std::nullopt);
+
+  // The dotted strip ends at column 84 and must stay clear of the last three
+  // cells: 87 columns take it, 86 do not.
+  CHECK(top_bar_tab_at(20, 87) == std::nullopt);
+  CHECK(top_bar_tab_at(74, 87) == View::Settings);
+  CHECK(top_bar_tab_at(20, 86) == View::History);
+  CHECK(top_bar_tab_at(74, 86) == std::nullopt);
+
+  // The strip is drawn where the hit-test looks.
+  App app;
+  CellBuffer buf;
+  app.win = WinSize{kWide, 24, 0, 0};
+  draw(app, buf);
+  CHECK(buf.at(20, 0).glyph == U'\xB7');
+  CHECK(buf.at(60, 0).glyph == U'[');
+  CHECK(buf.at(61, 0).glyph == U'T');
+  CHECK(buf.at(74, 0).glyph == U'[');
+  CHECK(buf.at(75, 0).glyph == U'S');
+  app.win = WinSize{kNarrow, 24, 0, 0};
+  draw(app, buf);
+  CHECK(buf.at(19, 0).glyph == U' ');
+  CHECK(buf.at(20, 0).glyph == U'[');
+  CHECK(buf.at(52, 0).glyph == U'[');
+  CHECK(buf.at(53, 0).glyph == U'T');
+  CHECK(buf.at(64, 0).glyph == U'[');
+  CHECK(buf.at(65, 0).glyph == U'S');
 }
 
 TEST_CASE("mouse: top-bar tab click rides the view-letter key path") {
@@ -2770,7 +2832,8 @@ TEST_CASE("character page keys: scroll, then walk the appearances; the grid stay
   CHECK(app.episode.cursor == grid_cursor);
   CHECK(app.char_recs.cursor == cast_cursor);
   CHECK(app.char_recs.focused);
-  CHECK_FALSE(app.download.active);
+  CHECK_FALSE(app.download_picker.open);
+  CHECK(app.downloads.jobs.empty());
   CHECK_FALSE(app.play.active);
   CHECK(app.view == View::Detail);
 
@@ -3209,4 +3272,812 @@ TEST_CASE("transparent background: draw leaves the base colour to the terminal")
   h->app.config.transparent_background = true;
   draw(h->app, buf);
   CHECK(buf.see_through() == std::optional<Rgb>(theme::bg));
+}
+
+// --- downloads: the picker, the worker's reports, the Transfers view --------
+
+namespace {
+
+// Every ask for a stream fails.
+class NoStreamProvider final : public StreamProvider {
+ public:
+  std::string_view name() const override { return "nostream"; }
+  std::string_view display_name() const override { return "NoStream"; }
+  std::optional<std::string> canonical_key(const Enrichment&) const override {
+    return std::nullopt;
+  }
+  Result<std::vector<SearchHit>, ProviderError> search(std::string_view,
+                                                        const SearchOptions&) const override {
+    return std::vector<SearchHit>{};
+  }
+  Result<std::vector<std::string>, ProviderError> episodes(
+      std::string_view, Translation, std::optional<std::uint32_t>) const override {
+    return std::vector<std::string>{};
+  }
+  Result<StreamLink, ProviderError> resolve(std::string_view, std::string_view, Translation,
+                                            Quality) const override {
+    return err(ProviderError::network());
+  }
+  Result<CoverRequest, ProviderError> cover_request(std::string_view) const override {
+    return err(ProviderError::unsupported());
+  }
+};
+
+constexpr char32_t kDownArrow = U'\x21E3';
+
+// Show 700's landed grid, episodes 1-3, focused in Browse's detail pane.
+void land_grid(App& app) {
+  app.view = View::Browse;
+  app.pane = Pane::Detail;
+  app.catalog.push_back(row_for(700, "Frieren"));
+  app.list_cursor = 0;
+  app.episode.for_id = 700;
+  app.episode.fetched = true;
+  app.episode.provider_id = "frieren-700";
+  app.episode.episodes = {"1", "2", "3"};
+}
+
+DownloadJob job_for(std::string episode) {
+  DownloadJob job;
+  job.show_id = 700;
+  job.title = "Frieren";
+  job.episode = std::move(episode);
+  job.translation = Translation::Sub;
+  return job;
+}
+
+StreamOffer ladder_offer() {
+  StreamOffer offer;
+  offer.shape = StreamOffer::Shape::Ladder;
+  const std::pair<std::uint32_t, std::uint64_t> rungs[] = {
+      {1080, 4000000}, {720, 2000000}, {480, 800000}};
+  for (const auto& [height, bandwidth] : rungs) {
+    OfferRow row;
+    row.rung = Rung(height, bandwidth);
+    row.height = height;
+    row.bandwidth = bandwidth;
+    offer.rows.push_back(row);
+  }
+  return offer;
+}
+
+std::string temp_path(std::string_view tag) {
+  return "/tmp/shigoku-app-test-" + std::to_string(static_cast<long>(::getpid())) + "-" +
+         std::string(tag);
+}
+
+void wipe_tree(const std::string& path) {
+  struct stat st{};
+  if (::lstat(path.c_str(), &st) != 0) return;
+  if (!S_ISDIR(st.st_mode)) {
+    ::unlink(path.c_str());
+    return;
+  }
+  std::vector<std::string> names;
+  if (DIR* d = ::opendir(path.c_str()); d != nullptr) {
+    while (const struct dirent* e = ::readdir(d)) {
+      const std::string_view name = e->d_name;
+      if (name != "." && name != "..") names.emplace_back(name);
+    }
+    ::closedir(d);
+  }
+  for (const std::string& name : names) wipe_tree(path + "/" + name);
+  ::rmdir(path.c_str());
+}
+
+// mkdir -p the parent, then the file holding `body`.
+void plant_file(const std::string& path, std::string_view body) {
+  for (std::size_t i = 1; i < path.size(); ++i) {
+    if (path[i] == '/') ::mkdir(path.substr(0, i).c_str(), 0755);
+  }
+  FILE* f = std::fopen(path.c_str(), "wb");
+  REQUIRE(f != nullptr);
+  const std::size_t wrote = std::fwrite(body.data(), 1, body.size(), f);
+  REQUIRE(std::fclose(f) == 0);
+  REQUIRE(wrote == body.size());
+}
+
+bool path_exists(const std::string& path) {
+  struct stat st{};
+  return ::stat(path.c_str(), &st) == 0;
+}
+
+// The next T the queue delivers; whatever comes first is ticked into the app.
+template <class T>
+std::optional<T> await_event(App& app, EventQueue& queue) {
+  for (int i = 0; i < 50; ++i) {
+    std::optional<Event> ev = queue.wait_next();
+    if (!ev.has_value()) continue;
+    if (const T* hit = std::get_if<T>(&*ev)) return *hit;
+    tick(app, *ev);
+  }
+  return std::nullopt;
+}
+
+std::string screen_row(const CellBuffer& buf, int y) {
+  std::string out;
+  for (int x = 0; x < buf.width(); ++x) {
+    const char32_t g = buf.at(x, y).glyph;
+    out += (g >= 0x20 && g < 0x7F) ? static_cast<char>(g) : ' ';
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("download picker: d opens it loading; only the current token's answer lands") {
+  auto h = HistoryHarness::make();
+  land_grid(h->app);
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<NoStreamProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->deps.download_dir = temp_path("picker-answers");
+  h->app.queue = &queue;
+  const DownloadPicker& picker = h->app.download_picker;
+
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK(picker.loading);
+  CHECK(picker.failed.empty());
+  CHECK_FALSE(picker.job.has_value());
+  CHECK(picker.token == 1);
+  CHECK(picker.draft.show_id == 700);
+  CHECK(picker.draft.title == "Frieren");
+  CHECK(picker.draft.episode == "1");
+  CHECK(picker.draft.ordinal == 1);
+  CHECK(picker.draft.translation == Translation::Sub);
+  CHECK(picker.draft.provider_id == "frieren-700");
+  CHECK(h->app.downloads.jobs.empty());
+
+  const auto first = await_event<DownloadOfferFailed>(h->app, queue);
+  REQUIRE(first.has_value());
+  CHECK(first->token == 1);
+  tick(h->app, Event{*first});
+  CHECK(picker.open);
+  CHECK_FALSE(picker.loading);
+  CHECK(picker.failed.rfind("couldn't reach the stream", 0) == 0);
+
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK_FALSE(picker.open);
+
+  // Asked again: a fresh token, and an answer to the first ask is stale.
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK(picker.token == 2);
+  CHECK(picker.loading);
+  CHECK(picker.failed.empty());
+  tick(h->app, Event{DownloadOfferDone{1, ladder_offer()}});
+  CHECK(picker.loading);
+  CHECK(picker.offer.rows.empty());
+
+  const auto second = await_event<DownloadOfferFailed>(h->app, queue);
+  REQUIRE(second.has_value());
+  CHECK(second->token == 2);
+  tick(h->app, Event{*second});
+  REQUIRE_FALSE(picker.failed.empty());
+
+  tick(h->app, Event{DownloadOfferDone{1, ladder_offer()}});
+  CHECK_FALSE(picker.failed.empty());
+  CHECK(picker.offer.rows.empty());
+  tick(h->app, Event{DownloadOfferDone{2, ladder_offer()}});
+  CHECK_FALSE(picker.loading);
+  CHECK(picker.failed.empty());
+  CHECK(picker.offer == ladder_offer());
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("download picker: the cursor starts on the row the download quality names") {
+  auto h = HistoryHarness::make();
+  land_grid(h->app);
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<NoStreamProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->deps.download_dir = temp_path("picker-cursor");
+  h->app.queue = &queue;
+  h->app.config.download_quality = "720";
+  const DownloadPicker& picker = h->app.download_picker;
+
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK(picker.draft.quality == Quality::P720);
+  // The worker's own answer is dropped; the ladder stands in for it.
+  REQUIRE(await_event<DownloadOfferFailed>(h->app, queue).has_value());
+  tick(h->app, Event{DownloadOfferDone{picker.token, ladder_offer()}});
+  REQUIRE_FALSE(picker.loading);
+  CHECK(picker.cursor == 1);
+
+  tick(h->app, Event{press(U'j')});
+  CHECK(picker.cursor == 2);
+  tick(h->app, Event{press(U'j')});
+  CHECK(picker.cursor == 2);  // clamped at the last row.
+  tick(h->app, Event{press(U'k')});
+  CHECK(picker.cursor == 1);
+  tick(h->app, Event{press(U'k')});
+  tick(h->app, Event{press(U'k')});
+  CHECK(picker.cursor == 0);  // and at the first.
+  tick(h->app, Event{press(U'G')});
+  CHECK(picker.cursor == 2);
+  tick(h->app, Event{press(U'g')});
+  CHECK(picker.cursor == 0);
+  tick(h->app, Event{special_key(KeyEvent::Special::Down)});
+  CHECK(picker.cursor == 1);
+  tick(h->app, Event{special_key(KeyEvent::Special::Up)});
+  CHECK(picker.cursor == 0);
+  CHECK(picker.open);
+  CHECK(h->app.downloads.jobs.empty());
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("download picker: Enter queues the row under the cursor") {
+  auto h = HistoryHarness::make();
+  land_grid(h->app);
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<NoStreamProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->deps.download_dir = temp_path("picker-enter");
+  h->app.queue = &queue;
+  h->app.config.download_quality = "720";
+  const DownloadPicker& picker = h->app.download_picker;
+  const DownloadQueue& dq = h->app.downloads;
+
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  REQUIRE(await_event<DownloadOfferFailed>(h->app, queue).has_value());
+  tick(h->app, Event{DownloadOfferDone{picker.token, ladder_offer()}});
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(picker.cursor == 2);
+
+  // No queue at Enter: the job is queued, and nothing starts it.
+  h->app.queue = nullptr;
+  const std::size_t toasts_before = h->app.toasts.size();
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK_FALSE(picker.open);
+  REQUIRE(dq.jobs.size() == 1);
+  {
+    const DownloadJob& job = dq.jobs.front();
+    CHECK(job.state == DownloadJob::State::Queued);
+    CHECK(job.rung == Rung(480, 800000));
+    CHECK(job.show_id == 700);
+    CHECK(job.title == "Frieren");
+    CHECK(job.episode == "1");
+    CHECK(job.ordinal == 1);
+    CHECK(job.translation == Translation::Sub);
+    CHECK(job.provider_id == "frieren-700");
+  }
+  REQUIRE(h->app.toasts.size() == toasts_before + 1);
+  CHECK(h->app.toasts.visible().back().text == "queued Frieren ep 1 \xC2\xB7 480p");
+
+  // A stream with nothing to choose from is asked for the download quality.
+  StreamOffer single;
+  single.shape = StreamOffer::Shape::Single;
+  OfferRow only;
+  only.rung = Rung(1080);
+  only.height = 1080;
+  single.rows.push_back(only);
+  h->app.episode.cursor = 1;
+  h->app.queue = &queue;
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  REQUIRE_FALSE(picker.job.has_value());
+  CHECK(picker.draft.episode == "2");
+  REQUIRE(await_event<DownloadOfferFailed>(h->app, queue).has_value());
+  tick(h->app, Event{DownloadOfferDone{picker.token, single}});
+  CHECK(picker.cursor == 0);
+  h->app.queue = nullptr;
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK_FALSE(picker.open);
+  REQUIRE(dq.jobs.size() == 2);
+  CHECK(dq.jobs.back().episode == "2");
+  CHECK(dq.jobs.back().state == DownloadJob::State::Queued);
+  CHECK(dq.jobs.back().rung == Rung(Quality::P720));
+  CHECK(h->app.toasts.visible().back().text == "queued Frieren ep 2 \xC2\xB7 1080p");
+}
+
+TEST_CASE("download picker: every other key and the mouse stop at it") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  h->app.pane = Pane::List;
+  DownloadPicker& picker = h->app.download_picker;
+  picker.open = true;
+  picker.draft = job_for("1");
+  picker.offer = ladder_offer();
+
+  for (const char32_t c : {U'q', U'T', U'H', U'B', U'S', U'd', U'/', U'x'}) {
+    tick(h->app, Event{press(c)});
+  }
+  tick(h->app, click(65, 0));  // the Transfers tab.
+  tick(h->app, click(23, 0));  // the History tab.
+  CHECK(picker.open);
+  CHECK(picker.cursor == 0);
+  CHECK(h->app.view == View::Browse);
+  CHECK_FALSE(h->app.quit);
+  CHECK(h->app.bar == BarMode::Idle);
+  CHECK(h->app.downloads.jobs.empty());
+
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK_FALSE(picker.open);
+  CHECK(h->app.view == View::Browse);
+}
+
+TEST_CASE("download picker: d over an episode that has a job opens that job") {
+  auto h = HistoryHarness::make();
+  land_grid(h->app);
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<NoStreamProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->deps.download_dir = temp_path("picker-job");
+  h->app.queue = &queue;
+  DownloadQueue& dq = h->app.downloads;
+  const DownloadPicker& picker = h->app.download_picker;
+
+  const std::uint64_t waiting = dq.add(job_for("1"));
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK(picker.job == std::optional<std::uint64_t>(waiting));
+  CHECK_FALSE(picker.loading);  // nothing asked of the stream.
+
+  // x stops a job still wanted, then takes the stopped one off the list.
+  tick(h->app, Event{press(U'x')});
+  REQUIRE(dq.find(waiting) != nullptr);
+  CHECK(dq.find(waiting)->state == DownloadJob::State::Cancelled);
+  CHECK(picker.open);
+  tick(h->app, Event{press(U'x')});
+  CHECK(dq.find(waiting) == nullptr);
+  CHECK_FALSE(picker.open);
+
+  // r puts a failed one back in line; with no queue nothing starts it.
+  const std::uint64_t failed = dq.add(job_for("1"));
+  REQUIRE(dq.begin(failed, 0));
+  dq.on_failed(failed, false, "disk error");
+  REQUIRE(dq.find(failed)->state == DownloadJob::State::Failed);
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK(picker.job == std::optional<std::uint64_t>(failed));
+  h->app.queue = nullptr;
+  tick(h->app, Event{press(U'r')});
+  REQUIRE(dq.find(failed) != nullptr);
+  CHECK(dq.find(failed)->state == DownloadJob::State::Queued);
+  CHECK(picker.open);
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK_FALSE(picker.open);
+
+  // A finished job is not one: d asks the stream again.
+  h->app.queue = &queue;
+  h->app.episode.cursor = 1;
+  const std::uint64_t done = dq.add(job_for("2"));
+  REQUIRE(dq.begin(done, 0));
+  dq.on_done(done, 4);
+  REQUIRE(dq.find(done)->state == DownloadJob::State::Done);
+  tick(h->app, Event{press(U'd')});
+  REQUIRE(picker.open);
+  CHECK_FALSE(picker.job.has_value());
+  CHECK(picker.loading);
+  CHECK(picker.draft.episode == "2");
+  REQUIRE(await_event<DownloadOfferFailed>(h->app, queue).has_value());
+  h->app.queue = nullptr;
+}
+
+TEST_CASE("downloads: the worker's reports move its job; reports for any other are dropped") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  DownloadQueue& dq = h->app.downloads;
+  const std::string dest = "/tmp/shigoku-app-test-unused/700/sub/1.mp4";
+
+  const std::uint64_t id = dq.add(job_for("1"));
+  REQUIRE(dq.begin(id, 0));
+  tick(h->app, Event{DownloadStarted{id, dest, 720u, 5000u}});
+  REQUIRE(dq.find(id) != nullptr);
+  CHECK(dq.find(id)->state == DownloadJob::State::Running);
+  CHECK(dq.find(id)->dest == dest);
+  CHECK(dq.find(id)->height == std::optional<std::uint32_t>(720));
+  CHECK(dq.find(id)->estimate == 5000);
+  tick(h->app, Event{DownloadProgress{id, 100, 400}});
+  CHECK(dq.find(id)->bytes == 100);
+  CHECK(dq.find(id)->total == 400);
+  tick(h->app, Event{DownloadProgress{id, 150, 0}});
+  CHECK(dq.find(id)->bytes == 150);
+  CHECK(dq.find(id)->total == 400);  // an unknown total keeps the known one.
+
+  // A job no worker holds yet, and one that does not exist.
+  const std::uint64_t waiting = dq.add(job_for("2"));
+  const std::size_t toasts_before = h->app.toasts.size();
+  for (const std::uint64_t other : {waiting, std::uint64_t{999}}) {
+    tick(h->app, Event{DownloadStarted{other, dest, 480u, 1u}});
+    tick(h->app, Event{DownloadProgress{other, 9, 9}});
+    tick(h->app, Event{DownloadDone{other, dest, 9}});
+    tick(h->app, Event{DownloadFailed{other, DownloadOutcome::Fetch, "network unreachable"}});
+  }
+  CHECK(dq.jobs.size() == 2);
+  REQUIRE(dq.find(waiting) != nullptr);
+  CHECK(dq.find(waiting)->state == DownloadJob::State::Queued);
+  CHECK(dq.find(waiting)->bytes == 0);
+  CHECK(dq.find(id)->state == DownloadJob::State::Running);
+  CHECK(dq.find(id)->bytes == 150);
+  CHECK(h->app.toasts.size() == toasts_before);
+
+  // Done: the file is the record now; the job leaves the list, and a picker
+  // showing it closes.
+  h->app.download_picker.open = true;
+  h->app.download_picker.job = id;
+  h->app.toasts = ToastQueue{};
+  tick(h->app, Event{DownloadDone{id, dest, 400}});
+  CHECK(dq.find(id) == nullptr);
+  CHECK(dq.jobs.size() == 1);
+  CHECK_FALSE(h->app.download_picker.open);
+  REQUIRE(h->app.toasts.size() == 1);
+  CHECK(h->app.toasts.visible().back().kind == ToastKind::Success);
+  CHECK(h->app.toasts.visible().back().text == "downloaded Frieren ep 1");
+
+  // Each way a transfer can fail: the row's reason, and one toast.
+  struct Failure {
+    DownloadOutcome outcome;
+    const char* detail;
+    DownloadJob::State state;
+    const char* reason;
+    ToastKind kind;
+    const char* toast;
+  };
+  const Failure failures[] = {
+      {DownloadOutcome::Fetch, "network unreachable", DownloadJob::State::Failed,
+       "network unreachable", ToastKind::Error, "download failed \xC2\xB7 network unreachable"},
+      {DownloadOutcome::Io, "No space left on device", DownloadJob::State::Failed, "disk error",
+       ToastKind::Error, "download failed \xC2\xB7 disk error"},
+      {DownloadOutcome::Cancelled, "", DownloadJob::State::Cancelled, "", ToastKind::Info,
+       "cancelled Frieren ep 3"},
+      {DownloadOutcome::UnsafeUrl, "", DownloadJob::State::Failed, "unsafe url", ToastKind::Error,
+       "download blocked \xC2\xB7 unsafe url"},
+      {DownloadOutcome::UnsafeArg, "", DownloadJob::State::Failed, "unsafe stream field",
+       ToastKind::Error, "download blocked \xC2\xB7 unsafe stream field"},
+      {DownloadOutcome::FfmpegNotFound, "", DownloadJob::State::Failed, "ffmpeg not found",
+       ToastKind::Warning, "install ffmpeg to download this stream"},
+      {DownloadOutcome::Ffmpeg, "exited with 1", DownloadJob::State::Failed,
+       "ffmpeg exited with 1", ToastKind::Error, "download failed \xC2\xB7 ffmpeg exited with 1"},
+  };
+  for (const Failure& f : failures) {
+    const int outcome = static_cast<int>(f.outcome);
+    CAPTURE(outcome);
+    const std::uint64_t fid = dq.add(job_for("3"));
+    REQUIRE(dq.begin(fid, 0));
+    h->app.toasts = ToastQueue{};
+    tick(h->app, Event{DownloadFailed{fid, f.outcome, f.detail}});
+    const DownloadJob* job = dq.find(fid);
+    REQUIRE(job != nullptr);
+    CHECK(job->state == f.state);
+    CHECK(job->error == f.reason);
+    REQUIRE(h->app.toasts.size() == 1);
+    CHECK(h->app.toasts.visible().back().kind == f.kind);
+    CHECK(h->app.toasts.visible().back().text == f.toast);
+  }
+}
+
+TEST_CASE("Transfers: T opens it, Esc goes back, its tab does what T does") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  tick(h->app, Event{press(U'T')});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.pane == Pane::List);
+  CHECK(h->app.view_back == std::optional<View>(View::Browse));
+  tick(h->app, Event{press(U'T')});  // already there: nothing.
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.view_back == std::optional<View>(View::Browse));
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK(h->app.view == View::Browse);
+  CHECK_FALSE(h->app.view_back.has_value());
+
+  tick(h->app, click(65, 0));  // [T]ransfers spans 60..70 on this 100-column screen.
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.view_back == std::optional<View>(View::Browse));
+}
+
+TEST_CASE("Transfers keys: jk/gG walk the list, x stops then removes, r re-queues") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Browse;
+  tick(h->app, Event{press(U'T')});
+  REQUIRE(h->app.view == View::Transfers);
+
+  // Nothing listed: the action keys have nothing to act on.
+  const std::size_t toasts_before = h->app.toasts.size();
+  for (const char32_t c : {U'x', U'r', U'X'}) tick(h->app, Event{press(c)});
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.downloads.jobs.empty());
+  CHECK_FALSE(h->app.transfers.confirm_delete.has_value());
+  CHECK_FALSE(h->app.download_picker.open);
+  CHECK(h->app.toasts.size() == toasts_before);
+
+  DownloadQueue& dq = h->app.downloads;
+  const std::uint64_t a = dq.add(job_for("1"));
+  const std::uint64_t b = dq.add(job_for("2"));
+  const std::uint64_t c = dq.add(job_for("3"));
+  const TransfersState& ts = h->app.transfers;
+  REQUIRE(ts.cursor == 0);
+  tick(h->app, Event{press(U'j')});
+  CHECK(ts.cursor == 1);
+  tick(h->app, Event{press(U'j')});
+  tick(h->app, Event{press(U'j')});
+  CHECK(ts.cursor == 2);  // clamped at the last row.
+  tick(h->app, Event{press(U'k')});
+  CHECK(ts.cursor == 1);
+  tick(h->app, Event{press(U'G')});
+  CHECK(ts.cursor == 2);
+  tick(h->app, Event{press(U'g')});
+  CHECK(ts.cursor == 0);
+
+  // The last row: x stops it (still listed, now among the stopped), a second
+  // x takes it off the list.
+  tick(h->app, Event{press(U'G')});
+  REQUIRE(ts.cursor == 2);
+  tick(h->app, Event{press(U'x')});
+  REQUIRE(dq.find(c) != nullptr);
+  CHECK(dq.find(c)->state == DownloadJob::State::Cancelled);
+  CHECK(ts.cursor == 2);
+  tick(h->app, Event{press(U'x')});
+  CHECK(dq.find(c) == nullptr);
+  CHECK(ts.cursor == 1);  // pulled back onto the list.
+
+  // r puts a stopped job back in line.
+  tick(h->app, Event{press(U'x')});
+  REQUIRE(dq.find(b) != nullptr);
+  CHECK(dq.find(b)->state == DownloadJob::State::Cancelled);
+  tick(h->app, Event{press(U'r')});
+  CHECK(dq.find(b)->state == DownloadJob::State::Queued);
+  REQUIRE(dq.find(a) != nullptr);
+  CHECK(dq.find(a)->state == DownloadJob::State::Queued);
+  CHECK(ts.cursor == 1);
+
+  // Enter on a job opens it in the picker.
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.download_picker.open);
+  CHECK(h->app.download_picker.job == std::optional<std::uint64_t>(b));
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK_FALSE(h->app.download_picker.open);
+  CHECK(h->app.view == View::Transfers);
+}
+
+TEST_CASE("Transfers on disk: the library names the show, X then y deletes, Enter opens it") {
+  auto h = HistoryHarness::make();
+  h->add(700, "Frieren", 12);
+  const std::string root = temp_path("on-disk");
+  wipe_tree(root);
+  const std::string finished = root + "/700/sub/1.mp4";
+  const std::string partial = root + "/700/sub/2.mp4.part";
+  plant_file(finished, "abcd");
+  plant_file(partial, "ab");
+  plant_file(root + "/hianime-86/sub/1.mp4", "abc");
+  h->deps.download_dir = root;
+  h->app.view = View::Browse;
+  const TransfersState& ts = h->app.transfers;
+
+  tick(h->app, Event{press(U'T')});
+  REQUIRE(ts.disk.size() == 2);
+  CHECK(ts.disk[0].folder == "700");
+  CHECK(ts.disk[0].show_id == std::optional<std::int64_t>(700));
+  CHECK(ts.disk[0].title == "Frieren");
+  CHECK(ts.disk[0].entry.has_value());
+  REQUIRE(ts.disk[0].files.size() == 2);
+  CHECK(ts.disk[0].files[0].label == "1");
+  CHECK(ts.disk[0].files[0].path == finished);
+  CHECK(ts.disk[0].files[0].bytes == 4);
+  CHECK_FALSE(ts.disk[0].files[0].partial);
+  CHECK(ts.disk[0].files[1].label == "2");
+  CHECK(ts.disk[0].files[1].path == partial);
+  CHECK(ts.disk[0].files[1].partial);
+  CHECK(ts.disk[1].title == "hianime-86");
+  CHECK_FALSE(ts.disk[1].show_id.has_value());
+  CHECK_FALSE(ts.disk[1].entry.has_value());
+  REQUIRE(ts.cursor == 0);  // the show row.
+
+  tick(h->app, Event{press(U'X')});
+  CHECK_FALSE(ts.confirm_delete.has_value());  // a show row has no file.
+
+  // A finished file arms; any key but y disarms, and goes no further.
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(ts.cursor == 1);
+  tick(h->app, Event{press(U'X')});
+  CHECK(ts.confirm_delete == std::optional<std::string>(finished));
+  tick(h->app, Event{press(U'j')});
+  CHECK_FALSE(ts.confirm_delete.has_value());
+  CHECK(ts.cursor == 1);
+  CHECK(path_exists(finished));
+
+  // X, a repeated X, then y: the file goes and the rescan drops it.
+  tick(h->app, Event{press(U'X')});
+  tick(h->app, Event{press(U'X')});
+  CHECK(ts.confirm_delete == std::optional<std::string>(finished));
+  tick(h->app, Event{press(U'y')});
+  CHECK_FALSE(ts.confirm_delete.has_value());
+  CHECK_FALSE(path_exists(finished));
+  CHECK(path_exists(partial));
+  REQUIRE(ts.disk.size() == 2);
+  REQUIRE(ts.disk[0].files.size() == 1);
+  CHECK(ts.disk[0].files[0].path == partial);
+  CHECK(h->app.toasts.visible().back().text == "deleted");
+  CHECK(ts.cursor == 0);  // back on the show.
+
+  // Enter and Space on the show row open its page; Esc comes back.
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.view == View::Detail);
+  CHECK(h->app.detail_origin == View::Transfers);
+  const Enrichment* shown = shigoku::tui::detail::selected_enrichment(h->app);
+  REQUIRE(shown != nullptr);
+  CHECK(shown->anilist_id == 700);
+  CHECK(h->app.episode.for_id == 700);
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.pane == Pane::List);
+  CHECK(ts.cursor == 0);
+  tick(h->app, Event{press(U' ')});
+  CHECK(h->app.view == View::Detail);
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK(h->app.view == View::Transfers);
+
+  // An unfinished file has nothing to play: Enter opens the show's page.
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(ts.cursor == 1);
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.view == View::Detail);
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  REQUIRE(h->app.view == View::Transfers);
+
+  // A folder the library does not know has no page.
+  tick(h->app, Event{press(U'g')});
+  tick(h->app, Event{press(U'j')});
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(ts.cursor == 2);
+  const std::size_t toasts_before = h->app.toasts.size();
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.toasts.size() == toasts_before + 1);
+  CHECK(h->app.toasts.visible().back().text == "no catalogue entry for this folder");
+
+  // Nor does X arm anything on a job row.
+  (void)h->app.downloads.add(job_for("5"));
+  tick(h->app, Event{press(U'g')});
+  REQUIRE(ts.cursor == 0);
+  tick(h->app, Event{press(U'X')});
+  CHECK_FALSE(ts.confirm_delete.has_value());
+
+  wipe_tree(root);
+}
+
+TEST_CASE("Transfers: Enter plays a finished file, one play at a time") {
+  auto h = HistoryHarness::make();
+  h->add(700, "Frieren", 12);
+  const std::string root = temp_path("play");
+  const std::string sockets = temp_path("play-sockets");
+  wipe_tree(root);
+  wipe_tree(sockets);
+  plant_file(root + "/700/sub/1.mp4", "abcd");
+  std::vector<std::unique_ptr<StreamProvider>> providers;
+  providers.push_back(std::make_unique<NoStreamProvider>());
+  const ProviderRegistry registry(std::move(providers));
+  EventQueue queue;
+  h->deps.registry = &registry;
+  h->deps.download_dir = root;
+  h->deps.mpv_path = root + "/no-such-mpv";
+  h->deps.socket_dir = sockets;
+  h->app.queue = &queue;
+  h->app.view = View::Browse;
+
+  tick(h->app, Event{press(U'T')});
+  REQUIRE(h->app.transfers.disk.size() == 1);
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(h->app.transfers.cursor == 1);
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.play.active);
+  CHECK(h->app.play.from_disk);
+  CHECK(h->app.play.for_id == 700);
+  CHECK(h->app.play.episode == "1");
+  CHECK(h->app.play.episode_index == 1);
+  CHECK(h->app.play.translation == Translation::Sub);
+  CHECK(h->app.play.provider.empty());
+  CHECK(h->app.toasts.visible().back().text == "playing Frieren ep 1");
+
+  // The file a play holds is not deleted under it.
+  tick(h->app, Event{press(U'X')});
+  CHECK_FALSE(h->app.transfers.confirm_delete.has_value());
+  CHECK(h->app.toasts.visible().back().text == "can't delete, currently playing");
+
+  // A second Enter while it plays only says so.
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.play.active);
+  CHECK(h->app.toasts.visible().back().text == "something is already playing");
+
+  // No player at that path: the worker says so and the play ends.
+  const auto ended = await_event<PlayErrorEvent>(h->app, queue);
+  REQUIRE(ended.has_value());
+  CHECK(ended->for_id == 700);
+  CHECK(ended->episode == "1");
+  tick(h->app, Event{*ended});
+  CHECK_FALSE(h->app.play.active);
+  h->app.queue = nullptr;
+  wipe_tree(root);
+  wipe_tree(sockets);
+}
+
+TEST_CASE("downloads render: the cell's arrow, the line under the grid, the chip, the prompt") {
+  auto h = HistoryHarness::make();
+  land_grid(h->app);
+  DownloadQueue& dq = h->app.downloads;
+  const std::uint64_t running = dq.add(job_for("1"));
+  REQUIRE(dq.begin(running, 0));
+  dq.on_started(running, "/tmp/shigoku-app-test-unused/700/sub/1.mp4", 720u, 0);
+  dq.on_progress(running, 100ull * 1024 * 1024, 400ull * 1024 * 1024);
+  const std::uint64_t failed = dq.add(job_for("3"));
+  REQUIRE(dq.begin(failed, 0));
+  dq.on_failed(failed, false, "disk error");
+
+  std::vector<std::pair<int, int>> origin(3, {-1, -1});
+  for (int y = 0; y < 24; ++y) {
+    for (int x = 0; x < 100; ++x) {
+      if (const auto c = shigoku::tui::detail::episode_cell_at(h->app, x, y);
+          c.has_value() && *c < origin.size() && origin[*c].first < 0) {
+        origin[*c] = {x, y};
+      }
+    }
+  }
+  for (const auto& [ox, oy] : origin) REQUIRE(ox >= 0);
+
+  CellBuffer buf;
+  draw(h->app, buf);
+  // "[1" then the arrow where the bracket closes; idle and failed cells keep it.
+  CHECK(buf.at(origin[0].first + 2, origin[0].second).glyph == kDownArrow);
+  CHECK(buf.at(origin[1].first + 2, origin[1].second).glyph == U']');
+  CHECK(buf.at(origin[2].first + 2, origin[2].second).glyph == U']');
+  CHECK(screen_text(buf).find("ep 1  100 MB / 400 MB  25%") != std::string::npos);
+  const auto chip_x = [&]() {
+    for (int x = 0; x + 1 < buf.width(); ++x) {
+      if (buf.at(x, 0).glyph == kDownArrow && buf.at(x + 1, 0).glyph == U'1') return x;
+    }
+    return -1;
+  };
+  CHECK(chip_x() >= 0);
+
+  // Nothing waiting or in flight: no arrow, no line, no chip.
+  dq.on_failed(running, true, "");
+  draw(h->app, buf);
+  CHECK(buf.at(origin[0].first + 2, origin[0].second).glyph == U']');
+  CHECK(screen_text(buf).find("100 MB / 400 MB") == std::string::npos);
+  bool arrow_on_top = false;
+  for (int x = 0; x < buf.width(); ++x) {
+    if (buf.at(x, 0).glyph == kDownArrow) arrow_on_top = true;
+  }
+  CHECK_FALSE(arrow_on_top);
+
+  // An armed file delete owns the bottom bar.
+  h->app.view = View::Transfers;
+  h->app.pane = Pane::List;
+  DiskShow show;
+  show.folder = "700";
+  show.show_id = 700;
+  show.title = "Frieren";
+  DiskFile file;
+  file.label = "1";
+  file.path = "/tmp/shigoku-app-test-unused/700/sub/1.mp4";
+  file.bytes = 4;
+  show.files.push_back(file);
+  h->app.transfers.disk.push_back(show);
+  h->app.transfers.confirm_delete = file.path;
+  draw(h->app, buf);
+  const std::string armed = screen_row(buf, buf.height() - 1);
+  CHECK(armed.find("[!] delete \"Frieren ep 1\"? the file is removed") != std::string::npos);
+  CHECK(armed.find("y confirm") != std::string::npos);
+  h->app.transfers.confirm_delete = std::nullopt;
+  draw(h->app, buf);
+  const std::string idle = screen_row(buf, buf.height() - 1);
+  CHECK(idle.find("the file is removed") == std::string::npos);
+  CHECK(idle.find("x cancel/remove") != std::string::npos);
+
+  const std::string help = detail::idle_help(View::Transfers, Pane::List);
+  CHECK(help.find("x cancel") != std::string::npos);
+  CHECK(help.find("r retry") != std::string::npos);
+  CHECK(help.find("X delete") != std::string::npos);
 }

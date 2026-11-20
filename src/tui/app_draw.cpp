@@ -239,7 +239,8 @@ const char* view_label(View v) {
     case View::Discover: return "Discover";
     case View::Settings: return "Settings";
     case View::Schedule: return "Calendar";  // P37; label starts with its key letter, 'C'.
-    case View::Detail: return "Detail";  // never in the tab strip (views[]).
+    case View::Transfers: return "Transfers";
+    case View::Detail: return "Detail";  // never in the tab strip (kTabs).
   }
   return "";  // unreachable.
 }
@@ -251,9 +252,40 @@ char view_key(View v) {
     case View::Discover: return 'D';
     case View::Settings: return 'S';
     case View::Schedule: return 'C';
-    case View::Detail: return '?';  // never in the tab strip (views[]).
+    case View::Transfers: return 'T';
+    case View::Detail: return '?';  // never in the tab strip (kTabs).
   }
   return '?';  // unreachable.
+}
+
+// The tab strip, left to right.
+constexpr View kTabs[] = {View::Browse,   View::History,   View::Discover,
+                          View::Schedule, View::Transfers, View::Settings};
+
+// Where the first tab starts: 1 cell of padding, the name, a gap, ░, a gap.
+int tabs_x0() { return 1 + str_width("SHIGOKU") + 3; }
+
+// "[B]rowse": the bracket wraps the key letter, the label's remaining letters
+// follow (DESIGN §3.4). view_label starts with the key letter.
+std::string tab_text(View v) {
+  std::string tab = "[";
+  tab.push_back(view_key(v));
+  tab += "]";
+  tab += (view_label(v) + 1);
+  return tab;
+}
+
+// The cells between two tabs: 3 (" · ") while the strip then ends clear of
+// the right-edge focus dot, else 1 (a space) — six tabs do not fit an
+// 80-column screen with the dots.
+int tab_gap(int width) {
+  int total = 0;
+  int count = 0;
+  for (View v : kTabs) {
+    total += str_width(tab_text(v));
+    ++count;
+  }
+  return tabs_x0() + total + 3 * (count - 1) <= width - 3 ? 3 : 1;
 }
 
 // Top bar (DESIGN §3.4): "SABIGOKU ░ [B]rowse · [H]istory · …  <chip>" plus the
@@ -266,22 +298,18 @@ void draw_top_bar(const App& app, CellBuffer& buf) {
   x = buf.put_str(x + 1, 0, "\xE2\x96\x91", theme::chrome, theme::bg);  // ░
   x += 1;
 
-  const View views[] = {View::Browse, View::History, View::Discover,
-                        View::Schedule, View::Settings};
+  const bool dotted = tab_gap(w) == 3;
   bool first = true;
-  for (View v : views) {
-    if (!first) x = buf.put_str(x, 0, " \xC2\xB7 ", theme::fg3, theme::bg);  // ·
+  for (View v : kTabs) {
+    if (!first) {
+      x = dotted ? buf.put_str(x, 0, " \xC2\xB7 ", theme::fg3, theme::bg)  // ·
+                 : x + 1;
+    }
     first = false;
     const bool active = (v == app.view);
     const Rgb col = active ? theme::focus : theme::fg2;
     const Style st = active ? Style::Bold : Style::None;
-    // "[B]rowse": the bracket wraps the key letter, the label's remaining
-    // letters follow (DESIGN §3.4). view_label starts with the key letter.
-    std::string tab = "[";
-    tab.push_back(view_key(v));
-    tab += "]";
-    tab += (view_label(v) + 1);  // label without its leading (key) letter.
-    x = buf.put_str(x, 0, tab, col, theme::bg, st);
+    x = buf.put_str(x, 0, tab_text(v), col, theme::bg, st);
   }
 
   // Season chip (05 §7 topBarSeasonChip, app.rs top_bar): the selected card's
@@ -305,12 +333,26 @@ void draw_top_bar(const App& app, CellBuffer& buf) {
   // Catalog chip: "MAL" while the browse calls are served by MyAnimeList
   // (mode mal, or auto with AniList latched off). Right-aligned before the
   // focus dot; dropped when it would touch what is already drawn.
+  int right = w - 3;  // one past the last cell a right-aligned chip may use.
   if (app.deps != nullptr && app.deps->catalog_badge) {
     const std::string badge = app.deps->catalog_badge();
     if (!badge.empty()) {
-      const int bx = w - 3 - str_width(badge);
-      if (bx > x + 1) buf.put_str(bx, 0, badge, theme::warn, theme::bg, Style::Bold);
+      const int bx = right - str_width(badge);
+      if (bx > x + 1) {
+        buf.put_str(bx, 0, badge, theme::warn, theme::bg, Style::Bold);
+        right = bx - 1;
+      }
     }
+  }
+
+  // Downloads chip: how many are in flight or waiting, on every view, left
+  // of the catalog chip. Dropped the same way when there is no room.
+  if (const std::size_t pending = app.downloads.pending(); pending > 0) {
+    const std::string chip = "\xE2\x87\xA3" + std::to_string(pending);  // ⇣
+    const int cx = right - str_width(chip);
+    // One clear cell after the last tab is enough: on an 80-column screen
+    // the strip leaves exactly that.
+    if (cx > x) buf.put_str(cx, 0, chip, theme::focus, theme::bg, Style::Bold);
   }
 
   // Right-aligned active-pane focus indicator (·) in focus color.
@@ -341,6 +383,28 @@ void draw_bottom_bar(const App& app, CellBuffer& buf) {
     }();
     x = buf.put_str(x, y, truncate_to_cols(title, 48), theme::warn, theme::bg, Style::Bold);
     x = buf.put_str(x, y, "\"? episode history gone \xC2\xB7 ", theme::fg3, theme::bg);
+    x = buf.put_str(x, y, "y", theme::focus, theme::bg, Style::Bold);
+    x = buf.put_str(x, y, " confirm \xC2\xB7 ", theme::fg3, theme::bg);
+    x = buf.put_str(x, y, "esc", theme::focus, theme::bg, Style::Bold);
+    buf.put_str(x, y, " cancel", theme::fg3, theme::bg);
+    return;
+  }
+
+  if (app.transfers.confirm_delete.has_value()) {
+    // The Transfers view's armed file delete, the same shape as the one
+    // above.
+    std::string what;
+    for (const DiskShow& ds : app.transfers.disk) {
+      for (const DiskFile& f : ds.files) {
+        if (f.path == *app.transfers.confirm_delete) {
+          what = strip_controls(ds.title) + " ep " + strip_controls(f.label);
+        }
+      }
+    }
+    int x = 2;
+    x = buf.put_str(x, y, "[!] delete \"", theme::warn, theme::bg, Style::Bold);
+    x = buf.put_str(x, y, truncate_to_cols(what, 48), theme::warn, theme::bg, Style::Bold);
+    x = buf.put_str(x, y, "\"? the file is removed \xC2\xB7 ", theme::fg3, theme::bg);
     x = buf.put_str(x, y, "y", theme::focus, theme::bg, Style::Bold);
     x = buf.put_str(x, y, " confirm \xC2\xB7 ", theme::fg3, theme::bg);
     x = buf.put_str(x, y, "esc", theme::focus, theme::bg, Style::Bold);
@@ -469,23 +533,17 @@ void draw_degraded(CellBuffer& buf) {
 
 namespace detail {
 
-std::optional<View> top_bar_tab_at(int x) {
-  // The same span walk draw_top_bar runs — name, glyph, spacing, then the
-  // four tabs separated by " · " — built from the same view_label/view_key
-  // sources, so a renamed tab moves the render and the hit-test together.
-  // draw: x=1 + "SHIGOKU" → 8; ░ put at x+1 (9, 1 col) → 10; x += 1 → 11.
-  int cx = 1 + str_width("SHIGOKU") + 3;
-  const View views[] = {View::Browse, View::History, View::Discover,
-                        View::Schedule, View::Settings};
+std::optional<View> top_bar_tab_at(int x, int width) {
+  // The same span walk draw_top_bar runs, off the same tab_text / tab_gap /
+  // tabs_x0, so a renamed tab or a narrower screen moves the render and the
+  // hit-test together.
+  int cx = tabs_x0();
+  const int gap = tab_gap(width);
   bool first = true;
-  for (View v : views) {
-    if (!first) cx += 3;  // " · " separator.
+  for (View v : kTabs) {
+    if (!first) cx += gap;
     first = false;
-    std::string tab = "[";
-    tab.push_back(view_key(v));
-    tab += "]";
-    tab += (view_label(v) + 1);
-    const int tw = str_width(tab);
+    const int tw = str_width(tab_text(v));
     if (x >= cx && x < cx + tw) return v;
     cx += tw;
   }
@@ -515,6 +573,8 @@ std::string idle_help(View v, Pane p) {
       return "jk move · hl cycle · space toggle · enter edit · q save+quit";
     case View::Schedule:
       return "jk move · enter detail · q quit";
+    case View::Transfers:
+      return "jk move · enter play/open · x cancel/remove · r retry · X delete file · q quit";
     case View::Detail:
       // §7.5 base copy + the §9 keys that only exist here: `c` characters/
       // recommendations (P36), `d` download (P35). A key the bar never names
@@ -559,6 +619,8 @@ void draw(const App& app, CellBuffer& buf) {
     draw_detail_zoom(app, buf, y0, y1);
   } else if (app.view == View::Schedule) {
     draw_schedule(app, buf, y0, y1);
+  } else if (app.view == View::Transfers) {
+    draw_transfers(app, buf, y0, y1);
   }
 
   // Cover placement (P8, A4). The rect is derived from the live geometry so
@@ -628,6 +690,12 @@ void draw(const App& app, CellBuffer& buf) {
     DiscoverFilterView view{&ov.draft,        ov.row_cursor,     ov.genre_cursor,
                             &ov.genres,       ov.genres_loading, ov.genres_failed};
     draw_discover_filters(view, Rect{0, 0, buf.width(), buf.height()}, buf);
+  }
+
+  // The download picker: the same captured, drawn-last shape.
+  if (app.download_picker.open) {
+    draw_download_picker(app.download_picker, app.downloads, app.spinner_phase,
+                         Rect{0, 0, buf.width(), buf.height()}, buf);
   }
 
   draw_toasts(app, buf);
