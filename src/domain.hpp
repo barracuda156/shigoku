@@ -79,7 +79,10 @@ inline std::optional<Translation> parse_translation(std::string_view s) {
 // Providers with no adaptive master (megaplay, anibd — Rust never caps these
 // either) accept-and-ignore this (A8). Providers that DO advertise a master
 // ladder (senshi) cap via hls::parse_master_playlist/select_variant (P23);
-// Best still always hands mpv the master untouched.
+// Best still always hands mpv the master untouched. Whatever a provider does
+// with it, the player and the download transfer apply it once more to the
+// ladder of the link they are handed (ladder.hpp), so a source that ignores
+// it at resolve is capped all the same.
 enum class Quality {
   Best,
   P1080,
@@ -108,6 +111,31 @@ inline std::optional<std::uint32_t> quality_cap(Quality q) {
   }
   return std::nullopt;  // unreachable.
 }
+
+// A rung of a stream's quality ladder, asked for by size: the highest variant
+// at or under `height` lines, else the lowest there is. `bandwidth` (bits per
+// second) separates variants of one height, and stands in for the height on
+// a ladder that names no resolutions. All zero = the best; `lowest` = the
+// worst. A Quality converts to its rung, so a setting and a picked row name
+// a variant the same way (hls::pick_variant is the rule).
+struct Rung {
+  std::uint32_t height = 0;
+  std::uint64_t bandwidth = 0;
+  bool lowest = false;
+
+  constexpr Rung() = default;
+  constexpr explicit Rung(std::uint32_t h, std::uint64_t bw = 0, bool low = false)
+      : height(h), bandwidth(bw), lowest(low) {}
+  // Implicit on purpose: every call that took a Quality takes a rung.
+  constexpr Rung(Quality q)
+      : height(q == Quality::P1080 ? 1080u : q == Quality::P720 ? 720u
+                                           : q == Quality::P480 ? 480u : 0u),
+        lowest(q == Quality::Worst) {}
+
+  [[nodiscard]] constexpr bool best() const { return height == 0 && bandwidth == 0 && !lowest; }
+
+  friend bool operator==(const Rung&, const Rung&) = default;
+};
 
 // --- Season (domain.rs:198) ------------------------------------------------
 // Broadcast cour. AniList spellings fold here; render maps to kanji.
@@ -332,6 +360,11 @@ struct StreamLink {
   // not its own stream. Set => playback routes through the loopback proxy,
   // which cuts the master down to it (hls::keep_audio_language).
   std::optional<std::string> audio_language;
+
+  // The audio that goes with `url` when `url` is a video-only variant: its
+  // rendition's own playlist. The player takes it as a second input beside
+  // the video; on a relayed link it rides the same proxy.
+  std::optional<std::string> audio_url;
 
   friend bool operator==(const StreamLink&, const StreamLink&) = default;
 };

@@ -69,6 +69,65 @@ std::string_view trim_line(std::string_view line) {
   return line.substr(begin, end - begin + 1);
 }
 
+// The value of attribute `name` in a tag line's attribute list (after the tag's
+// ':'), without its surrounding quotes; nullopt when absent. A comma inside
+// quotes does not end an attribute, so a name inside a quoted value is not one.
+std::optional<std::string_view> attribute(std::string_view line, std::string_view name) {
+  const std::size_t colon = line.find(':');
+  if (colon == std::string_view::npos) return std::nullopt;
+  std::string_view rest = line.substr(colon + 1);
+  while (!rest.empty()) {
+    std::size_t end = 0;
+    bool quoted = false;
+    for (; end < rest.size(); ++end) {
+      if (rest[end] == '"') {
+        quoted = !quoted;
+      } else if (rest[end] == ',' && !quoted) {
+        break;
+      }
+    }
+    const std::string_view attr = rest.substr(0, end);
+    rest = end < rest.size() ? rest.substr(end + 1) : std::string_view{};
+    const std::size_t eq = attr.find('=');
+    if (eq == std::string_view::npos || attr.substr(0, eq) != name) continue;
+    std::string_view value = attr.substr(eq + 1);
+    if (value.starts_with('"')) {
+      value.remove_prefix(1);
+      value = value.substr(0, value.find('"'));
+    }
+    return value;
+  }
+  return std::nullopt;
+}
+
+// All-digit decimal; nullopt when empty, not all digits, or over T's range.
+template <class T>
+std::optional<T> decimal(std::string_view s) {
+  if (s.empty()) return std::nullopt;
+  T v = 0;
+  for (const char c : s) {
+    if (c < '0' || c > '9') return std::nullopt;
+    const T d = static_cast<T>(c - '0');
+    if (v > (std::numeric_limits<T>::max() - d) / 10) return std::nullopt;
+    v = static_cast<T>(v * 10 + d);
+  }
+  return v;
+}
+
+// What an `#EXT-X-STREAM-INF` line advertises; `url` is left for the URI line.
+Variant stream_inf(std::string_view line) {
+  Variant v;
+  v.resolution = stream_inf_height(line);
+  if (const auto res = attribute(line, "RESOLUTION")) {
+    const std::size_t x = res->find('x');
+    if (x != std::string_view::npos) v.width = decimal<std::uint32_t>(res->substr(0, x));
+  }
+  if (const auto bw = attribute(line, "BANDWIDTH")) v.bandwidth = decimal<std::uint64_t>(*bw);
+  v.codecs = std::string(attribute(line, "CODECS").value_or(""));
+  v.audio_group = std::string(attribute(line, "AUDIO").value_or(""));
+  return v;
+}
+
 // Cap rank for a single `>` comparison. <= cap: non-negative, rises with res
 // (highest-<=-cap wins). Over budget: negative, rises toward zero as res
 // shrinks (smallest over-budget wins). Any in-budget always outranks any
@@ -99,7 +158,7 @@ bool preferred(const StreamLink& a, const StreamLink& b, Quality quality) {
 
 std::vector<Variant> parse_master_playlist(std::string_view text) {
   std::vector<Variant> out;
-  std::optional<std::optional<std::uint32_t>> pending_res;
+  std::optional<Variant> pending;
   std::size_t pos = 0;
   while (pos <= text.size()) {
     const auto nl = text.find('\n', pos);
@@ -108,12 +167,13 @@ std::vector<Variant> parse_master_playlist(std::string_view text) {
     const std::string_view line = trim_line(raw);
     if (!line.empty()) {
       if (line.starts_with("#EXT-X-STREAM-INF")) {
-        pending_res = stream_inf_height(line);
+        pending = stream_inf(line);
       } else if (line.front() == '#') {
         // comment/tag, not STREAM-INF: skip.
-      } else if (pending_res.has_value()) {
-        out.push_back(Variant{std::string(line), *pending_res});
-        pending_res.reset();
+      } else if (pending.has_value()) {
+        pending->url = std::string(line);
+        out.push_back(std::move(*pending));
+        pending.reset();
       }
     }
     if (nl == std::string_view::npos) break;
@@ -286,6 +346,139 @@ std::optional<std::string> choose_variant(std::string_view playlist, std::string
   const auto* pick = select_variant(links, quality);
   if (pick == nullptr) return std::nullopt;
   return pick->url;
+}
+
+std::vector<AudioRendition> parse_audio_renditions(std::string_view text) {
+  std::vector<AudioRendition> out;
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto nl = text.find('\n', pos);
+    const std::string_view raw =
+        (nl == std::string_view::npos) ? text.substr(pos) : text.substr(pos, nl - pos);
+    const std::string_view line = trim_line(raw);
+    if (line.starts_with("#EXT-X-MEDIA:") && attribute(line, "TYPE").value_or("") == "AUDIO") {
+      auto value = [&](std::string_view name) {
+        return std::string(attribute(line, name).value_or(""));
+      };
+      AudioRendition r;
+      r.group = value("GROUP-ID");
+      r.name = value("NAME");
+      r.language = value("LANGUAGE");
+      r.uri = value("URI");
+      r.is_default = value("DEFAULT") == "YES";
+      out.push_back(std::move(r));
+    }
+    if (nl == std::string_view::npos) break;
+    pos = nl + 1;
+  }
+  return out;
+}
+
+namespace {
+
+std::uint64_t bandwidth_of(const Variant& v) { return v.bandwidth.value_or(0); }
+
+// The first variant `keep` admits that no later admitted one `beats`; nullptr
+// when none is admitted.
+template <class Keep, class Beats>
+const Variant* first_best(const std::vector<Variant>& variants, Keep keep, Beats beats) {
+  const Variant* pick = nullptr;
+  for (const auto& v : variants) {
+    if (!keep(v)) continue;
+    if (pick == nullptr || beats(v, *pick)) pick = &v;
+  }
+  return pick;
+}
+
+}  // namespace
+
+const Variant* pick_variant(const std::vector<Variant>& variants, const Rung& rung) {
+  if (variants.empty()) return nullptr;
+  const auto any = [](const Variant&) { return true; };
+  const auto higher_bw = [](const Variant& a, const Variant& b) {
+    return bandwidth_of(a) > bandwidth_of(b);
+  };
+  const auto lower_bw = [](const Variant& a, const Variant& b) {
+    return bandwidth_of(a) < bandwidth_of(b);
+  };
+
+  const Variant* low = first_best(
+      variants, [](const Variant& v) { return v.resolution.has_value(); },
+      [](const Variant& a, const Variant& b) { return *a.resolution < *b.resolution; });
+  if (low == nullptr) {
+    if (rung.lowest) return first_best(variants, any, lower_bw);
+    if (rung.bandwidth > 0) {
+      const Variant* under = first_best(
+          variants, [&](const Variant& v) { return bandwidth_of(v) <= rung.bandwidth; },
+          higher_bw);
+      return under != nullptr ? under : first_best(variants, any, lower_bw);
+    }
+    if (rung.height == 0) return first_best(variants, any, higher_bw);
+    return &variants.front();
+  }
+
+  std::uint32_t target = *low->resolution;
+  bool reaching_low = true;
+  if (!rung.lowest) {
+    const std::uint32_t cap =
+        rung.height == 0 ? std::numeric_limits<std::uint32_t>::max() : rung.height;
+    const Variant* under = first_best(
+        variants, [&](const Variant& v) { return v.resolution && *v.resolution <= cap; },
+        [](const Variant& a, const Variant& b) { return *a.resolution > *b.resolution; });
+    if (under != nullptr) {
+      target = *under->resolution;
+      reaching_low = false;
+    }
+  }
+
+  const auto at_target = [&](const Variant& v) { return v.resolution == target; };
+  if (rung.bandwidth > 0) {
+    const auto distance = [&](const Variant& v) {
+      const std::uint64_t bw = bandwidth_of(v);
+      return bw > rung.bandwidth ? bw - rung.bandwidth : rung.bandwidth - bw;
+    };
+    return first_best(variants, at_target, [&](const Variant& a, const Variant& b) {
+      return distance(a) < distance(b);
+    });
+  }
+  if (reaching_low) return first_best(variants, at_target, lower_bw);
+  return first_best(variants, at_target, higher_bw);
+}
+
+const AudioRendition* audio_for(const Variant& variant,
+                                const std::vector<AudioRendition>& renditions) {
+  if (variant.audio_group.empty()) return nullptr;
+  const AudioRendition* first = nullptr;
+  for (const auto& r : renditions) {
+    if (r.group != variant.audio_group || r.uri.empty()) continue;
+    if (r.is_default) return &r;
+    if (first == nullptr) first = &r;
+  }
+  return first;
+}
+
+std::optional<Pair> choose_pair(std::string_view playlist, std::string_view base,
+                                const Rung& rung) {
+  std::vector<Variant> usable;
+  for (auto& v : parse_master_playlist(playlist)) {
+    auto joined = join_url(base, v.url);
+    if (!joined.has_value() || !clean_arg(*joined)) continue;
+    v.url = std::move(*joined);
+    usable.push_back(std::move(v));
+  }
+  const Variant* pick = pick_variant(usable, rung);
+  if (pick == nullptr) return std::nullopt;
+
+  Pair pair;
+  pair.video_url = pick->url;
+  pair.variant = *pick;
+  const auto renditions = parse_audio_renditions(playlist);
+  if (const AudioRendition* audio = audio_for(*pick, renditions)) {
+    auto joined = join_url(base, audio->uri);
+    if (!joined.has_value() || !clean_arg(*joined)) return std::nullopt;
+    pair.audio_url = std::move(*joined);
+  }
+  return pair;
 }
 
 }  // namespace shigoku::hls
