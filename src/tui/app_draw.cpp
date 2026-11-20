@@ -528,6 +528,10 @@ std::string idle_help(View v, Pane p) {
 
 void draw(const App& app, CellBuffer& buf) {
   buf.resize(app.win.cols, app.win.rows);
+  // The transparent-background setting: the base colour is left to the
+  // terminal; the raised surfaces (focused rows, toasts) stay painted.
+  buf.set_see_through(app.config.transparent_background ? std::optional<Rgb>(theme::bg)
+                                                         : std::nullopt);
 
   if (buf.height() < 4 || buf.width() < 16) {
     draw_degraded(buf);

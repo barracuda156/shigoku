@@ -260,14 +260,16 @@ void append_cup(std::string& out, int x, int y) {
 // SGR for a cell: reset, then fg/bg/style. Simple and correct; the diff already
 // minimizes how many cells emit at all, so per-emitted-cell SGR is acceptable
 // for v0 (a run-length SGR optimizer is a deferred nicety).
-void append_sgr(std::string& out, const Cell& c) {
+// A cell on the see-through base emits no background: the reset just before
+// left the terminal's default one in force.
+void append_sgr(std::string& out, const Cell& c, const std::optional<Rgb>& see_through) {
   out += "\x1b[0";  // reset attributes; fg/bg follow.
   if (has(c.style, Style::Bold)) out += ";1";
   if (has(c.style, Style::Dim)) out += ";2";
   if (has(c.style, Style::Italic)) out += ";3";
   out += 'm';
   append_fg(out, c.fg);
-  append_bg(out, c.bg);
+  if (!see_through.has_value() || !(c.bg == *see_through)) append_bg(out, c.bg);
 }
 
 }  // namespace
@@ -277,7 +279,8 @@ void CellBuffer::flush(CellBuffer& prev, std::string& out,
                        std::optional<std::pair<int, int>> cursor) const {
   const bool resized = prev.w_ != w_ || prev.h_ != h_;
   const bool clear = resized || screen_stale_;
-  const bool full = force_full_ || clear;
+  // A changed see-through base changes how unchanged cells are emitted.
+  const bool full = force_full_ || clear || !(prev.see_through_ == see_through_);
   if (full) prev.resize(w_, h_);  // resize clears prev -> every cell differs.
 
   out += "\x1b[?2026h";  // begin synchronized output.
@@ -311,7 +314,7 @@ void CellBuffer::flush(CellBuffer& prev, std::string& out,
         cur_x = x;
         cur_y = y;
       }
-      append_sgr(out, c);
+      append_sgr(out, c, see_through_);
       if (c.glyph == 0) {
         out.push_back(' ');
       } else {
@@ -332,6 +335,7 @@ void CellBuffer::flush(CellBuffer& prev, std::string& out,
   prev.h_ = h_;
   prev.cells_ = cells_;
   prev.exclusions_ = exclusions_;
+  prev.see_through_ = see_through_;
   prev.force_full_ = false;
   force_full_ = false;
   screen_stale_ = false;

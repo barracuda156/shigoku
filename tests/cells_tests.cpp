@@ -249,3 +249,49 @@ TEST_CASE("flush ED-clears when the screen is marked stale, geometry unchanged")
   buf.flush(prev, out3);  // consumed: a plain same-size flush is quiet again.
   CHECK(out3.find("\x1b[2J") == std::string::npos);
 }
+
+TEST_CASE("see-through base: its cells emit no background, every other one still does") {
+  CellBuffer prev;
+  CellBuffer buf(4, 1);
+  buf.clear(theme::bg);
+  buf.put_str(0, 0, "a", theme::fg, theme::bg);
+  buf.put_str(1, 0, "b", theme::fg, theme::surface);
+  std::string base_sgr, surface_sgr;
+  append_bg(base_sgr, theme::bg);
+  append_bg(surface_sgr, theme::surface);
+
+  std::string painted;
+  buf.flush(prev, painted);
+  CHECK(painted.find(base_sgr) != std::string::npos);
+  CHECK(painted.find(surface_sgr) != std::string::npos);
+
+  // The setting flips with no cell changed: everything is repainted (the
+  // diff alone would emit nothing), the base colour is off the wire, and the
+  // raised surface is still painted.
+  buf.set_see_through(theme::bg);
+  std::string clear;
+  buf.flush(prev, clear);
+  CHECK(visible_text(clear).find("a") != std::string::npos);
+  CHECK(clear.find(base_sgr) == std::string::npos);
+  CHECK(clear.find(surface_sgr) != std::string::npos);
+  CHECK(clear.find("\x1b[2J") == std::string::npos);  // a repaint, not a screen clear.
+
+  // Settled: the next frame is an ordinary empty diff again.
+  std::string idle;
+  buf.flush(prev, idle);
+  CHECK(visible_text(idle).find("a") == std::string::npos);
+
+  // A changed cell on the base still carries no background.
+  buf.put_str(2, 0, "c", theme::fg, theme::bg);
+  std::string one;
+  buf.flush(prev, one);
+  CHECK(visible_text(one).find("c") != std::string::npos);
+  CHECK(one.find("\x1b[48;2;") == std::string::npos);
+
+  // And back: one more full repaint, painted this time.
+  buf.set_see_through(std::nullopt);
+  std::string back;
+  buf.flush(prev, back);
+  CHECK(visible_text(back).find("a") != std::string::npos);
+  CHECK(back.find(base_sgr) != std::string::npos);
+}

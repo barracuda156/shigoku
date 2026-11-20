@@ -3200,3 +3200,13 @@ TEST_CASE("compose_grid_apc places the Similar feed's covers, not the axis slot'
   CHECK(placed.count(*axis_row.meta.cover_url) == 1);
   CHECK_FALSE(pre.empty());
 }
+
+TEST_CASE("transparent background: draw leaves the base colour to the terminal") {
+  auto h = HistoryHarness::make();
+  CellBuffer buf;
+  draw(h->app, buf);
+  CHECK_FALSE(buf.see_through().has_value());
+  h->app.config.transparent_background = true;
+  draw(h->app, buf);
+  CHECK(buf.see_through() == std::optional<Rgb>(theme::bg));
+}

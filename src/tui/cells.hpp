@@ -149,10 +149,20 @@ class CellBuffer {
   // can never see.
   void mark_screen_stale() { screen_stale_ = true; }
 
+  // A see-through base: cells whose background is `base` are emitted with the
+  // terminal's own default background instead of that colour, so whatever
+  // opacity or image the emulator puts behind its window shows. Every other
+  // background is still painted. nullopt = paint them all. A flush under a
+  // different setting than the one `prev` was painted with repaints every
+  // cell: nothing in the cells themselves changes with it.
+  void set_see_through(std::optional<Rgb> base) { see_through_ = base; }
+  [[nodiscard]] std::optional<Rgb> see_through() const { return see_through_; }
+
  private:
   int w_ = 0, h_ = 0;
   std::vector<Cell> cells_;
   std::vector<Rect> exclusions_;
+  std::optional<Rgb> see_through_;
   mutable bool force_full_ = false;
   mutable bool screen_stale_ = false;
 };
