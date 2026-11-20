@@ -103,6 +103,29 @@ TEST_CASE("corrupt file is defaults") {
   CHECK(Config::load(path) == Config{});
 }
 
+TEST_CASE("a value of the wrong type keeps that key's default and the rest of the file") {
+  const std::string path = tmp("wrong_types.json");
+  write_file(path, R"({
+    "mpv_path": 7,
+    "cover_art": "yes",
+    "resume_offset_sec": "12",
+    "discover_cover_concurrency": -3,
+    "translation": "dub",
+    "kanji_chips": false
+  })");
+  const Config loaded = Config::load(path);
+  Config want;
+  want.translation = "dub";
+  want.kanji_chips = false;
+  CHECK(loaded == want);
+
+  // A number too large for the field is a bad value too.
+  write_file(path, R"({"resume_offset_sec": 99999999999, "landing": "browse"})");
+  Config big;
+  big.landing = "browse";
+  CHECK(Config::load(path) == big);
+}
+
 TEST_CASE("oversized file is defaults") {
   const std::string path = tmp("oversized.json");
   std::string text = "{\"mpv_path\": \"mpv\", \"pad\": \"";
