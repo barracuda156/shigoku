@@ -2946,6 +2946,110 @@ TEST_CASE("character page render: name, facts and appearances draw; the portrait
   CHECK(screen_text(buf).find("Frieren") != std::string::npos);
 }
 
+TEST_CASE("cover art off: placeholder mode on a graphics terminal, live from Settings") {
+  auto h = HistoryHarness::make();
+  App& app = h->app;
+  app.cover_caps.backend = CoverBackend::Kitty;
+  REQUIRE(app.cover_caps.images());  // on by default.
+
+  // A cover is held for the open show.
+  app.cover_render.have_pixels = true;
+  app.cover_render.for_id = 700;
+  app.cover_render.pixels.w = 2;
+  app.cover_render.pixels.h = 3;
+  const Generation held_gen = app.cover_gen.bump();
+
+  // The Settings toggle is the switch; the same event's reconcile applies it.
+  app.view = View::Settings;
+  app.settings.select(settings_row_index(SettingsRowId::CoverArt));
+  tick(app, Event{press(U' ')});
+  CHECK_FALSE(app.config.cover_art);
+  CHECK_FALSE(app.cover_caps.enabled);
+  CHECK_FALSE(app.cover_caps.images());
+  CHECK(app.cover_caps.backend == CoverBackend::Kitty);  // the terminal did not change.
+  CHECK_FALSE(app.cover_render.have_pixels);  // the held cover is dropped,
+  CHECK_FALSE(app.cover_gen.is_current(held_gen));  // and a fetch in flight is stale.
+
+  // What was on the terminal is taken down: kitty gets its delete, and the
+  // caller its full repaint.
+  detail::PlacedCover placed;
+  placed.id = 7;
+  placed.for_id = 700;
+  std::string pre, post;
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(placed.id == 0);
+  CHECK(pre.find("a=d,d=I,i=7,") != std::string::npos);
+  CHECK(post.empty());
+  // Nothing held: nothing more to send.
+  CHECK_FALSE(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.empty());
+
+  // The cell-inline backends have no delete; the repaint is the erase.
+  app.cover_caps.backend = CoverBackend::Iterm;
+  placed.id = 7;
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.empty());
+  app.cover_caps.backend = CoverBackend::Kitty;
+
+  // Grid covers come down the same way, through the composer's own diff.
+  std::map<std::string, detail::Placed> grid;
+  grid["https://c/a.png"] = detail::Placed{11, Rect{2, 4, 10, 6}};
+  app.view = View::Discover;
+  CHECK(detail::compose_grid_apc(app, grid, pre, post));
+  CHECK(grid.empty());
+  CHECK(pre.find("a=d,d=I,i=11,") != std::string::npos);
+
+  // Back on: images again, nothing else to undo.
+  app.view = View::Settings;
+  tick(app, Event{press(U' ')});
+  CHECK(app.config.cover_art);
+  CHECK(app.cover_caps.images());
+}
+
+TEST_CASE("cover art off never fetches a cover") {
+  // A wired pipeline on a graphics terminal with a selection that has a
+  // cover: on, the reconcile starts a fetch; off, it never does.
+  auto h = HistoryHarness::make();
+  App& app = h->app;
+  EventQueue queue;
+  Covers covers([](std::string_view, const std::optional<std::string>&,
+                   const std::optional<std::string>&)
+                    -> Result<std::vector<unsigned char>, CoverFetchError> {
+    return err(CoverFetchError::Fetch);
+  });
+  h->deps.covers = &covers;
+  app.queue = &queue;
+  app.cover_caps.backend = CoverBackend::Kitty;
+  CatalogRow row = row_for(700, "Frieren");
+  row.meta.cover_url = "https://example.com/covers/700.jpg";
+  app.catalog.push_back(row);
+  app.list_cursor = 0;
+  app.detail_origin = View::Browse;
+  app.view = View::Detail;
+
+  app.config.cover_art = false;
+  tick(app, Event{Tick{}});
+  tick(app, Event{Tick{}});
+  CHECK_FALSE(app.cover.is_loading());
+
+  app.config.cover_art = true;
+  tick(app, Event{Tick{}});
+  CHECK(app.cover.is_loading());
+
+  // Off while that fetch is out: the loading mark does not strand in the
+  // placeholder, and the answer, when it lands, is nobody's.
+  app.config.cover_art = false;
+  tick(app, Event{Tick{}});
+  CHECK_FALSE(app.cover.is_loading());
+  std::optional<Event> ev;
+  for (int i = 0; i < 50 && !ev.has_value(); ++i) ev = queue.wait_next();
+  REQUIRE(ev.has_value());
+  tick(app, *ev);
+  CHECK_FALSE(app.cover.is_loading());
+  CHECK_FALSE(app.cover_render.have_pixels);
+  app.queue = nullptr;
+}
+
 TEST_CASE("resize purge deletes every held placement and empties the records") {
   // The placement model must not survive a geometry change: terminals
   // reflow, re-anchor, or drop images on resize, so run()'s post-SIGWINCH

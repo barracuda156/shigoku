@@ -73,6 +73,36 @@ enum class CoverBackend : std::uint8_t { None, Kitty, Iterm, Sixel };
   return CoverBackend::None;
 }
 
+// Config::image_protocol: which backend the cover pipeline may use. Auto
+// follows the probe; a named protocol is used whatever the probe heard (for a
+// terminal whose answer gets lost on the way, a multiplexer for one); Off
+// shows no images and sends no probe at all — nothing for a slow or mute
+// terminal to stall on, and no late reply for a keypress to collide with.
+// Unknown spellings read as Auto.
+enum class ImageProtocol : std::uint8_t { Auto, Off, Kitty, Iterm, Sixel };
+
+[[nodiscard]] constexpr ImageProtocol parse_image_protocol(std::string_view s) {
+  if (s == "none" || s == "off" || s == "halfblocks") return ImageProtocol::Off;
+  if (s == "kitty") return ImageProtocol::Kitty;
+  if (s == "iterm" || s == "iterm2") return ImageProtocol::Iterm;
+  if (s == "sixel") return ImageProtocol::Sixel;
+  return ImageProtocol::Auto;
+}
+
+// The backend to use under `want`. A forced SIXEL keeps its precondition: no
+// cell geometry, no images.
+[[nodiscard]] constexpr CoverBackend backend_for(ImageProtocol want, const CoverProbe& p) {
+  switch (want) {
+    case ImageProtocol::Auto: break;
+    case ImageProtocol::Off: return CoverBackend::None;
+    case ImageProtocol::Kitty: return CoverBackend::Kitty;
+    case ImageProtocol::Iterm: return CoverBackend::Iterm;
+    case ImageProtocol::Sixel:
+      return p.cell.known() ? CoverBackend::Sixel : CoverBackend::None;
+  }
+  return backend_from(p);
+}
+
 // Run the probe against the controlling terminal. `cols`/`rows` are the current
 // cell grid (from query_winsize) used to divide a CSI 14t window-pixel reply
 // into per-cell geometry. Writes the probe sequence to stdout, then reads the

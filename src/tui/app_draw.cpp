@@ -77,10 +77,12 @@ bool compose_cover_apc(const App& app, PlacedCover& placed,
   post_diff.clear();
   const CoverBackend backend = app.cover_caps.backend;
   if (!app.cover_caps.images()) {
-    // Placeholder mode: never emit; a stale placement record is still cleared
-    // (defensive — the backend can't change mid-session, but keep the
-    // invariant, and the returned true forces the repaint that erases).
+    // Placeholder mode: nothing is transmitted. A cover placed before the
+    // cover-art setting went off is still on the terminal: kitty gets its
+    // delete, and under the other backends the returned true forces the
+    // repaint that overwrites it.
     if (placed.id != 0) {
+      if (backend == CoverBackend::Kitty) pre_diff += kitty::delete_image(placed.id);
       placed = PlacedCover{};
       return true;
     }

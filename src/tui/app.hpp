@@ -388,14 +388,18 @@ struct CoverRender {
 
 // Startup cover-support probe result (P8): which image protocol the terminal
 // speaks (kitty / OSC 1337 / none) and its per-cell pixel geometry (for the
-// poster box sizing). Set once in run() before the loop; draw()/reconcile
-// read it.
+// poster box sizing). Protocol and geometry are set once in run() before the
+// loop; `enabled` follows the cover-art setting. draw()/reconcile read it.
 struct CoverCaps {
   CoverBackend backend = CoverBackend::None;  // None -> placeholder mode.
   CellPx cell;  // {0,0} -> unknown geometry (fixed floors/caps).
-  // Any image backend at all — the fetch/exclusion/grid gates key on this;
+  // The cover-art setting. Off is placeholder mode whatever the terminal
+  // speaks: nothing fetched, nothing placed. `backend` keeps naming the
+  // terminal's protocol, so what is already on screen can still be deleted.
+  bool enabled = true;
+  // Images are shown at all — the fetch/exclusion/grid gates key on this;
   // the emit sites switch on `backend` itself.
-  [[nodiscard]] bool images() const { return backend != CoverBackend::None; }
+  [[nodiscard]] bool images() const { return enabled && backend != CoverBackend::None; }
 };
 
 // Provider + HTTP deps a running app needs to actually fetch (P7). Held by

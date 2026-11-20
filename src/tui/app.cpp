@@ -756,6 +756,24 @@ void on_update_available(App& app, const UpdateAvailable& u) {
 inline constexpr std::uint32_t kFallbackCellW = 8;
 inline constexpr std::uint32_t kFallbackCellH = 16;
 
+// The cover-art setting, applied. Off reads as a terminal without graphics:
+// nothing is fetched and every slot shows its placeholder. What the detail
+// slot held or had in flight is dropped (a fetch landing later finds its
+// generation superseded), so turning the setting back on starts from the
+// selection as it stands then. The grid's decoded covers stay in their store;
+// they are simply not placed.
+void reconcile_cover_art(App& app) {
+  if (app.cover_caps.enabled == app.config.cover_art) return;
+  app.cover_caps.enabled = app.config.cover_art;
+  if (!app.cover_caps.enabled) {
+    app.cover.clear();
+    app.cover_gen.bump();
+    app.cover_render.have_pixels = false;
+    app.cover_render.pixels = CoverPixels{};
+  }
+  app.dirty = true;
+}
+
 // Reconcile the held CoverState against the current selection (05 §12 decision
 // table) and act: Fetch spawns the worker; Clear/Suppress drop or hold the
 // render store; UpToDate/None do nothing. Called from every transition that can
@@ -3592,8 +3610,10 @@ void tick(App& app, const Event& ev) {
   // expiry (via Tick) all route through here. The decision is pure and spawns
   // at most one worker; UpToDate/None are the steady-state no-ops.
   // The character page first: closing it hands the poster slot back to the
-  // show, which the cover reconcile below must see.
+  // show, which the cover reconcile below must see. Likewise the cover-art
+  // setting, which decides whether that reconcile fetches at all.
   reconcile_character(app);
+  reconcile_cover_art(app);
   reconcile_cover(app);
   // Same one-place discipline for refresh-on-view enrichment (P21, 04 §10):
   // spends the network only on a stale/missing show, single-flighted, and
@@ -3695,6 +3715,7 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // the title chain, resume offset, ...). null (demo_mode / most tests) keeps
   // Config{} defaults.
   if (config != nullptr) app.config = *config;
+  app.cover_caps.enabled = app.config.cover_art;
   app.config_file = std::move(config_file);
   // The Settings "version" row shows the build's own version (the same
   // string the update check compares against); blank when none was given
@@ -3722,11 +3743,18 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // is no cover pipeline (a FixtureProvider test). A terminal speaking neither
   // protocol — or a mute one — yields {backend=None, cell={0,0}} → placeholder
   // mode, nothing image-shaped ever emitted.
-  if (!demo_mode && deps != nullptr && deps->covers != nullptr) {
+  //
+  // Config::image_protocol steers it: `none` sends no probe at all (and so
+  // learns no geometry either — the layout takes its fixed sizes), a named
+  // protocol overrides the verdict but still probes for the geometry.
+  const ImageProtocol want_protocol = parse_image_protocol(app.config.image_protocol);
+  if (!demo_mode && deps != nullptr && deps->covers != nullptr &&
+      want_protocol != ImageProtocol::Off) {
     const CoverProbe probe = probe_cover_support(app.win.cols, app.win.rows);
-    app.cover_caps.backend = backend_from(probe);
+    app.cover_caps.backend = backend_for(want_protocol, probe);
     app.cover_caps.cell = probe.cell;
-    debug_log("probe: kitty=" + std::to_string(probe.kitty) +
+    debug_log("probe: image_protocol=" + app.config.image_protocol +
+              " kitty=" + std::to_string(probe.kitty) +
               " iterm=" + std::to_string(probe.iterm) +
               " iterm2=" + std::to_string(probe.iterm2) +
               " sixel=" + std::to_string(probe.sixel) + " cell=" +

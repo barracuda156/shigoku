@@ -355,6 +355,37 @@ TEST_CASE("backend_from: kitty wins, iterm falls back, else none") {
   CHECK(tui::backend_from(p) == tui::CoverBackend::Kitty);
 }
 
+TEST_CASE("image_protocol: spellings, and the backend each one yields") {
+  using tui::ImageProtocol;
+  CHECK(tui::parse_image_protocol("auto") == ImageProtocol::Auto);
+  CHECK(tui::parse_image_protocol("") == ImageProtocol::Auto);
+  CHECK(tui::parse_image_protocol("hand-edited") == ImageProtocol::Auto);  // unknown = auto.
+  CHECK(tui::parse_image_protocol("none") == ImageProtocol::Off);
+  CHECK(tui::parse_image_protocol("off") == ImageProtocol::Off);
+  CHECK(tui::parse_image_protocol("halfblocks") == ImageProtocol::Off);
+  CHECK(tui::parse_image_protocol("kitty") == ImageProtocol::Kitty);
+  CHECK(tui::parse_image_protocol("iterm") == ImageProtocol::Iterm);
+  CHECK(tui::parse_image_protocol("iterm2") == ImageProtocol::Iterm);
+  CHECK(tui::parse_image_protocol("sixel") == ImageProtocol::Sixel);
+
+  tui::CoverProbe mute;  // a terminal that answered nothing.
+  tui::CoverProbe kitty;
+  kitty.kitty = true;
+  // Auto is the probe's own verdict.
+  CHECK(tui::backend_for(ImageProtocol::Auto, mute) == tui::CoverBackend::None);
+  CHECK(tui::backend_for(ImageProtocol::Auto, kitty) == tui::CoverBackend::Kitty);
+  // Off beats any answer.
+  CHECK(tui::backend_for(ImageProtocol::Off, kitty) == tui::CoverBackend::None);
+  // A named protocol is used whatever the probe heard.
+  CHECK(tui::backend_for(ImageProtocol::Kitty, mute) == tui::CoverBackend::Kitty);
+  CHECK(tui::backend_for(ImageProtocol::Iterm, kitty) == tui::CoverBackend::Iterm);
+  // SIXEL keeps its precondition even when forced: no cell geometry, no images.
+  CHECK(tui::backend_for(ImageProtocol::Sixel, mute) == tui::CoverBackend::None);
+  tui::CoverProbe sized;
+  sized.cell = tui::CellPx{8, 16};
+  CHECK(tui::backend_for(ImageProtocol::Sixel, sized) == tui::CoverBackend::Sixel);
+}
+
 TEST_CASE("backend_from: iTerm2 itself outranks its own kitty ack") {
   // iTerm2 3.5 acks a=q but its kitty path doesn't render; the native
   // OSC 1337 backend must win there — and only there.
