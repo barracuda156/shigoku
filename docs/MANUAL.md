@@ -207,10 +207,10 @@ disk.
 | Downloads | download dir | text | Where downloaded episodes are stored; blank = the default, under the data directory |
 | | download quality | cycle | `same as playback` (follows *default quality*) / `worst` / `480` / `720` / `1080` / `best` — see [Downloads](#downloads) |
 | | ffmpeg path | text | Binary used to save HLS streams to disk |
-| Interface | cover art | toggle | Fetch and render cover art |
+| Interface | cover art | toggle | Fetch and show cover art. Off, no cover is downloaded or drawn — each one's place keeps a plain box — even on a terminal that can show images; worth it on a slow link or a slow machine |
 | | kanji chips | toggle | Show season chips in kanji instead of plain text |
 | | palette | cycle | `terminal_ghost` / `phosphor` / `nord` / `tokyonight` — only `terminal_ghost` currently has a visible effect |
-| | transparent background | toggle | |
+| | transparent background | toggle | Leave the base background to the terminal, so its own opacity or wallpaper shows through; focused rows and toasts keep their colour |
 | | landing view | cycle | `history` / `browse` / `last_watched` — which view opens on launch; `last_watched` opens History with your most recently watched show already selected and its detail open |
 | | title language | cycle | `romaji` / `english` / `native` |
 | AniList | connect | action | Opens your browser to sign in — see [Accounts and sync](#accounts-and-sync) |
@@ -218,6 +218,14 @@ disk.
 | MyAnimeList | mal client id | text | Your own registered MAL app's client ID; blank shows `(built-in)` and uses shigoku's own registration |
 | | connect | action | Opens your browser to authorize the MAL mirror |
 | Updates | check for updates | toggle | Checks GitHub for a newer release on launch (never self-updates) |
+
+One cover setting has no row and lives only in `config.json`:
+`image_protocol`. shigoku normally asks the terminal which image protocol
+it speaks (`"auto"`). Set it to `"kitty"`, `"iterm"` or `"sixel"` to use
+that protocol whatever the terminal answered — for a terminal whose answer
+gets lost on the way, inside a multiplexer for instance — or to `"none"` to
+show no images and skip the question altogether (nothing for a slow
+terminal to stall on at start-up). It is read once, at launch.
 
 ## The show page
 
