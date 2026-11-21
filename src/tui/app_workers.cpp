@@ -589,7 +589,9 @@ void spawn_download(EventQueue& queue, const ProviderRegistry& registry,
     if (::stat(dest.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
       size = static_cast<std::uint64_t>(st.st_size);
     }
-    queue.try_post(Event{DownloadDone{job.id, dest, size}});
+    const bool subs_missed = !download::save_subtitle(*http, *link, dest, cancel).has_value();
+    if (subs_missed) debug_log("worker download: softsub not saved for " + dest);
+    queue.try_post(Event{DownloadDone{job.id, dest, size, subs_missed}});
   });
 }
 

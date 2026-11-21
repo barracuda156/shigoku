@@ -1417,6 +1417,66 @@ TEST_CASE("find_local_episode: a .part never plays; ties pick deterministically"
   CHECK(*hit == root + "/700/sub/7.mkv");
 }
 
+TEST_CASE("find_local_episode: a subtitle beside the episode is never the episode") {
+  const std::string root = tmp_dest("local-subs");
+  scrub(root + "/700/sub", {"7.ass", "7.vtt", "7.SRT", "7.mp4"});
+  plant(root + "/700/sub", "7.ass");
+  plant(root + "/700/sub", "7.vtt");
+  plant(root + "/700/sub", "7.SRT");
+  CHECK_FALSE(find_local_episode(root, 700, Translation::Sub, "7").has_value());
+  plant(root + "/700/sub", "7.mp4");
+  CHECK(find_local_episode(root, 700, Translation::Sub, "7") ==
+        std::optional<std::string>(root + "/700/sub/7.mp4"));
+}
+
+TEST_CASE("subtitle_dest: the episode's name with the subtitle's extension") {
+  CHECK(is_subtitle_extension("vtt"));
+  CHECK(is_subtitle_extension("SRT"));
+  CHECK(is_subtitle_extension("ass"));
+  CHECK(is_subtitle_extension("ssa"));
+  CHECK_FALSE(is_subtitle_extension("mp4"));
+  CHECK_FALSE(is_subtitle_extension("vtt2"));
+  CHECK_FALSE(is_subtitle_extension(""));
+
+  CHECK(subtitle_dest("/d/700/sub/7.mp4", "https://cdn.example/s/eng.vtt") ==
+        "/d/700/sub/7.vtt");
+  CHECK(subtitle_dest("/d/700/sub/7.mp4", "https://cdn.example/s/Track.ASS?t=1#x") ==
+        "/d/700/sub/7.ass");
+  CHECK(subtitle_dest("/d/700/sub/7.mp4", "https://cdn.example/s/eng.srt") ==
+        "/d/700/sub/7.srt");
+  // An extension that is not a subtitle's, or none: WebVTT, what the sources send.
+  CHECK(subtitle_dest("/d/700/sub/7.mp4", "https://cdn.example/s/track.php") ==
+        "/d/700/sub/7.vtt");
+  CHECK(subtitle_dest("/d/700/sub/7.mp4", "https://cdn.example.vtt/s/track") ==
+        "/d/700/sub/7.vtt");
+  // A label with a dot keeps it: only the episode's own extension goes.
+  CHECK(subtitle_dest("/d/700/sub/12.5.mp4", "https://cdn.example/a.vtt") ==
+        "/d/700/sub/12.5.vtt");
+}
+
+TEST_CASE("save_subtitle: nothing to save is Ok; the url is guarded before any fetch") {
+  auto client = http::Client::create();
+  REQUIRE(client.has_value());
+  std::atomic<bool> cancel{false};
+  const std::string dest = tmp_dest("subs.mp4");
+  const std::string side = subtitle_dest(dest, "x.vtt");
+  std::remove(side.c_str());
+  std::remove(part_path(side).c_str());
+
+  StreamLink link;
+  link.url = "https://cdn.example/master.m3u8";
+  CHECK(save_subtitle(*client, link, dest, cancel).has_value());
+  CHECK_FALSE(exists(side));
+
+  // A loopback address fails the guard: Err, and nothing on disk.
+  link.sub_url = "http://127.0.0.1:9/ep1.vtt";
+  auto r = save_subtitle(*client, link, dest, cancel);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error().kind == DownloadError::Kind::UnsafeUrl);
+  CHECK_FALSE(exists(side));
+  CHECK_FALSE(exists(part_path(side)));
+}
+
 TEST_CASE("move_show_downloads: a free id takes the whole tree") {
   const std::string root = tmp_dest("rekey-free");
   scrub(root + "/-555/sub", {"1.mp4", "2.mp4"});

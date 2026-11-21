@@ -55,6 +55,7 @@ struct LocalShow {
 //     label "12.5" saved as "12.5.mp4" reads back as "12.5").
 //   * `<stem>.<ext>.part` is an unfinished one, label = <stem>. It is left out
 //     when the same track already holds a finished file with that label.
+//   * A subtitle (is_subtitle_extension), finished or not, is no episode.
 //   * Several finished files for one label and track (different extensions):
 //     the lexicographically smallest path is the one listed — the file
 //     find_local_episode would play.
@@ -64,7 +65,8 @@ struct LocalShow {
 // before dub and, within a track, by episode_label_cmp, equal keys by label.
 [[nodiscard]] std::vector<LocalShow> scan_library(std::string_view download_dir);
 
-// Delete one listed file, then its track folder and its show folder when
+// Delete one listed file — a finished one with the softsubs saved beside it
+// (<stem>.vtt/srt/ass/ssa) — then its track folder and its show folder when
 // that leaves them empty. True when the file is gone (it was removed, or was
 // not there). The folders are best effort and never change the answer.
 bool remove_local_episode(const LocalEpisode& episode);

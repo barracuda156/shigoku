@@ -544,6 +544,49 @@ Result<Unit, DownloadError> download_link(const http::Client& client,
   return run(client, link, *planned, dest, ffmpeg_path, cancel, progress, child_pid_out);
 }
 
+bool is_subtitle_extension(std::string_view ext) {
+  if (ext.size() != 3) return false;
+  std::string lower(ext);
+  for (char& c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return lower == "vtt" || lower == "srt" || lower == "ass" || lower == "ssa";
+}
+
+std::string subtitle_dest(const std::string& dest, std::string_view sub_url) {
+  std::string ext = "vtt";
+  const std::string_view path = sub_url.substr(0, sub_url.find_first_of("?#"));
+  const std::size_t dot = path.rfind('.');
+  const std::size_t slash = path.rfind('/');
+  if (dot != std::string_view::npos && (slash == std::string_view::npos || dot > slash) &&
+      is_subtitle_extension(path.substr(dot + 1))) {
+    ext = path.substr(dot + 1);
+    for (char& c : ext) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  const std::size_t dest_slash = dest.rfind('/');
+  const std::size_t dest_dot = dest.rfind('.');
+  const bool has_ext = dest_dot != std::string::npos &&
+                       (dest_slash == std::string::npos || dest_dot > dest_slash + 1);
+  return (has_ext ? dest.substr(0, dest_dot) : dest) + "." + ext;
+}
+
+Result<Unit, DownloadError> save_subtitle(const http::Client& client, const StreamLink& link,
+                                          const std::string& dest,
+                                          const std::atomic<bool>& cancel) {
+  if (!link.sub_url.has_value()) return Unit{};
+  if (auto g = http::guard_fetch_url(*link.sub_url); !g.has_value()) {
+    return err(DownloadError::unsafe_url(g.error()));
+  }
+  Options opts;
+  opts.url = *link.sub_url;
+  opts.dest = subtitle_dest(dest, *link.sub_url);
+  opts.referer = link.referer;
+  if (link.user_agent) opts.user_agent = *link.user_agent;
+  return download_to_file(client, opts, cancel, {});
+}
+
 StreamOffer probe(const http::Client& client, const StreamLink& link) {
   StreamOffer offer;
   if (classify_link(link) == LinkKind::Direct) {
@@ -719,6 +762,7 @@ std::optional<std::string> find_local_episode(std::string_view download_dir,
     if (name.substr(0, stem.size()) != stem || name[stem.size()] != '.') continue;
     const std::string_view ext = name.substr(stem.size() + 1);
     if (ext == "part" || ext.find('.') != std::string_view::npos) continue;
+    if (is_subtitle_extension(ext)) continue;
     std::string path = dir + '/' + std::string(name);
     struct stat st{};
     if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;

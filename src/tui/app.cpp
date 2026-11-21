@@ -4088,7 +4088,13 @@ void tick(App& app, const Event& ev) {
             if (app.download_picker.open && app.download_picker.job == d.job) {
               app.download_picker.open = false;
             }
-            app.toasts.push(ToastKind::Success, "downloaded " + name, app.tick_count);
+            if (d.subtitles_missed) {
+              app.toasts.push(ToastKind::Warning,
+                              "downloaded " + name + " \xC2\xB7 subtitles not saved",
+                              app.tick_count);
+            } else {
+              app.toasts.push(ToastKind::Success, "downloaded " + name, app.tick_count);
+            }
             pump_downloads(app);
             refresh_transfers_view(app, anchor);
           },

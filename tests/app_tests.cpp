@@ -3716,6 +3716,17 @@ TEST_CASE("downloads: the worker's reports move its job; reports for any other a
   CHECK(h->app.toasts.visible().back().kind == ToastKind::Success);
   CHECK(h->app.toasts.visible().back().text == "downloaded Frieren ep 1");
 
+  // A softsub that could not be saved is said, not dropped silently.
+  const std::uint64_t subbed = dq.add(job_for("3"));
+  REQUIRE(dq.begin(subbed, 0));
+  h->app.toasts = ToastQueue{};
+  tick(h->app, Event{DownloadDone{subbed, dest, 400, true}});
+  CHECK(dq.find(subbed) == nullptr);
+  REQUIRE(h->app.toasts.size() == 1);
+  CHECK(h->app.toasts.visible().back().kind == ToastKind::Warning);
+  CHECK(h->app.toasts.visible().back().text ==
+        "downloaded Frieren ep 3 \xC2\xB7 subtitles not saved");
+
   // Each way a transfer can fail: the row's reason, and one toast.
   struct Failure {
     DownloadOutcome outcome;

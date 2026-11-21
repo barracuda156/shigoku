@@ -166,8 +166,7 @@ enum class LinkKind {
 // same way and vetted the same way (field name "audio_url"): the explicit
 // maps take the video from the first input and the audio from the second.
 // `out_path` is app-constructed (the .part), unvetted like SkipScript.
-// link.sub_url is deliberately ignored: downloads carry the stream as-is,
-// softsubs stay a streaming feature.
+// link.sub_url is not an input here: save_subtitle puts it beside the file.
 [[nodiscard]] Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
     const StreamLink& link, std::string_view input_url,
     std::string_view out_path, bool extension_picky_off = false,
@@ -257,6 +256,25 @@ struct Plan {
     const std::atomic<bool>& cancel, const ProgressFn& progress,
     std::atomic<long>* child_pid_out = nullptr);
 
+// --- The softsub beside the file -------------------------------------------
+
+// vtt, srt, ass or ssa, ASCII case-folded: a subtitle kept beside an episode,
+// never an episode itself.
+[[nodiscard]] bool is_subtitle_extension(std::string_view ext);
+
+// Where the softsub for the episode at `dest` goes: `dest` with its extension
+// swapped for the subtitle url's own, vtt when the url names none of the
+// four — the name a player looks for beside the video.
+[[nodiscard]] std::string subtitle_dest(const std::string& dest, std::string_view sub_url);
+
+// Save link.sub_url at subtitle_dest(dest): guarded here, fetched with the
+// link's headers, under download_to_file's .part + rename law. Ok, with
+// nothing fetched, when the link has no softsub.
+[[nodiscard]] Result<Unit, DownloadError> save_subtitle(const http::Client& client,
+                                                        const StreamLink& link,
+                                                        const std::string& dest,
+                                                        const std::atomic<bool>& cancel);
+
 // --- What a link offers ----------------------------------------------------
 
 // What `link` can deliver, read the way plan() reads it (the same proxy, the
@@ -310,7 +328,8 @@ struct Plan {
 // <safe-label>.<ext> where <ext> is a single dot-free suffix and never
 // "part" — an in-flight or killed transfer's `.part` (and its
 // `<label>.<ext>.part` spelling) must never play. Track lives in the path, so
-// a dub download never answers a sub play. With several extensions present
+// a dub download never answers a sub play, and a subtitle file is never
+// an episode (is_subtitle_extension). With several extensions present
 // the lexicographically smallest wins (deterministic under any readdir
 // order). "" download_dir = downloads disabled = nullopt.
 [[nodiscard]] std::optional<std::string> find_local_episode(

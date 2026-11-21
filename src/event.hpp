@@ -554,6 +554,7 @@ struct DownloadDone {
   std::uint64_t job = 0;
   std::string dest;         // the final published path.
   std::uint64_t bytes = 0;  // its size, 0 when it could not be read back.
+  bool subtitles_missed = false;  // the stream had a softsub that wasn't saved.
   friend bool operator==(const DownloadDone&, const DownloadDone&) = default;
 };
 

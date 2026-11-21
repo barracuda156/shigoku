@@ -14,6 +14,8 @@
 #include <map>
 #include <utility>
 
+#include "download.hpp"
+
 namespace shigoku::download {
 
 namespace {
@@ -50,10 +52,12 @@ std::optional<std::int64_t> parse_show_id(std::string_view s) {
 }
 
 // The stem of a finished file's name `<stem>.<ext>`, split at the last dot.
+// A subtitle kept beside an episode has none.
 std::optional<std::string_view> finished_stem(std::string_view name) {
   const std::size_t dot = name.rfind('.');
   if (dot == std::string_view::npos || dot == 0 || dot + 1 == name.size()) return std::nullopt;
-  if (name.substr(dot + 1) == "part") return std::nullopt;
+  const std::string_view ext = name.substr(dot + 1);
+  if (ext == "part" || is_subtitle_extension(ext)) return std::nullopt;
   return name.substr(0, dot);
 }
 
@@ -139,6 +143,19 @@ std::vector<LocalShow> scan_library(std::string_view download_dir) {
 bool remove_local_episode(const LocalEpisode& episode) {
   const std::string& path = episode.path;
   if (::unlink(path.c_str()) != 0 && errno != ENOENT) return false;
+  if (!episode.partial) {
+    // Its softsub goes with it.
+    const std::size_t dot = path.rfind('.');
+    const std::size_t slash = path.rfind('/');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+      const std::string stem = path.substr(0, dot);
+      for (const char* ext : {"vtt", "srt", "ass", "ssa"}) {
+        const std::string side = stem + '.' + ext;
+        (void)::unlink(side.c_str());
+        (void)::unlink(part_path(side).c_str());
+      }
+    }
+  }
 
   const std::size_t last = path.rfind('/');
   if (last == std::string::npos || last == 0) return true;

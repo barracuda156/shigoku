@@ -797,6 +797,14 @@ int download_flow(const Sources& sources, const PickFn& pick,
   }
 
   std::printf("  %s saved %s\n", g(gl.ok), dest.c_str());
+  if (link->sub_url.has_value()) {
+    if (download::save_subtitle(*client, *link, dest, cancel).has_value()) {
+      std::printf("  %s saved %s\n", g(gl.ok),
+                  download::subtitle_dest(dest, *link->sub_url).c_str());
+    } else {
+      std::printf("  %s the subtitles could not be saved.\n", g(gl.fail));
+    }
+  }
   return 0;
 }
 

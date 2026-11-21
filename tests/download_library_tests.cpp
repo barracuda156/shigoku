@@ -256,6 +256,37 @@ TEST_CASE("remove_local_episode: the file goes, then the folders it leaves empty
   wipe(root);
 }
 
+TEST_CASE("scan_library and remove_local_episode: a softsub goes with its episode") {
+  const std::string root = fresh_root("subs");
+  plant(root + "/500/sub/1.mp4", 4);
+  plant(root + "/500/sub/1.ass", 2);
+  plant(root + "/500/sub/1.vtt.part", 1);
+  plant(root + "/500/sub/2.mp4", 4);
+  plant(root + "/500/sub/2.vtt", 2);
+  plant(root + "/500/sub/3.srt", 2);  // a subtitle alone: no episode.
+
+  const std::vector<LocalShow> shows = scan_library(root);
+  REQUIRE(shows.size() == 1);
+  REQUIRE(shows[0].episodes.size() == 2);
+  CHECK(shows[0].episodes[0].path == root + "/500/sub/1.mp4");
+  CHECK_FALSE(shows[0].episodes[0].partial);
+  CHECK(shows[0].episodes[1].path == root + "/500/sub/2.mp4");
+
+  CHECK(remove_local_episode(shows[0].episodes[0]));
+  CHECK_FALSE(exists(root + "/500/sub/1.mp4"));
+  CHECK_FALSE(exists(root + "/500/sub/1.ass"));
+  CHECK_FALSE(exists(root + "/500/sub/1.vtt.part"));
+  CHECK(exists(root + "/500/sub/2.vtt"));
+  CHECK(exists(root + "/500/sub/3.srt"));
+
+  CHECK(remove_local_episode(shows[0].episodes[1]));
+  CHECK_FALSE(exists(root + "/500/sub/2.vtt"));
+  CHECK(exists(root + "/500/sub/3.srt"));
+  CHECK(scan_library(root).empty());
+
+  wipe(root);
+}
+
 TEST_CASE("remove_local_episode: a file that cannot be removed answers false") {
   const std::string root = fresh_root("remove-fail");
   plant(root + "/plain", 1);
