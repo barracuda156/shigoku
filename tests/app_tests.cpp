@@ -3777,6 +3777,71 @@ TEST_CASE("Transfers: T opens it, Esc goes back, its tab does what T does") {
   CHECK(h->app.view_back == std::optional<View>(View::Browse));
 }
 
+TEST_CASE("Transfers: T from a page opened there leaves Esc its way back") {
+  auto h = HistoryHarness::make();
+  h->add(700, "Frieren", 12);
+  const std::string root = temp_path("esc-back");
+  wipe_tree(root);
+  plant_file(root + "/700/sub/1.mp4", "abcd");
+  h->deps.download_dir = root;
+  h->app.view = View::Browse;
+
+  tick(h->app, Event{press(U'T')});
+  REQUIRE(h->app.view == View::Transfers);
+  tick(h->app, Event{press(U' ')});
+  REQUIRE(h->app.view == View::Detail);
+  REQUIRE(h->app.detail_origin == View::Transfers);
+  tick(h->app, Event{press(U'T')});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.view_back == std::optional<View>(View::Browse));
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  CHECK(h->app.view == View::Browse);
+
+  // The same for any view's letter typed on a page opened over it.
+  h->app.catalog.push_back(row_for(700, "Frieren"));
+  h->app.list_cursor = 0;
+  tick(h->app, Event{press(U'H')});
+  REQUIRE(h->app.view == View::History);
+  tick(h->app, Event{press(U'B')});
+  REQUIRE(h->app.view_back == std::optional<View>(View::History));
+  tick(h->app, Event{press(U' ')});
+  REQUIRE(h->app.view == View::Detail);
+  tick(h->app, Event{press(U'B')});
+  CHECK(h->app.view == View::Browse);
+  CHECK(h->app.view_back == std::optional<View>(View::History));
+  wipe_tree(root);
+}
+
+TEST_CASE("Transfers: Space on a download opens its show's page") {
+  auto h = HistoryHarness::make();
+  h->add(700, "Frieren", 12);
+  h->app.view = View::Browse;
+  tick(h->app, Event{press(U'T')});
+  REQUIRE(h->app.view == View::Transfers);
+
+  DownloadJob unknown = job_for("1");
+  unknown.show_id = 999;
+  h->app.downloads.add(job_for("1"));
+  h->app.downloads.add(std::move(unknown));
+  REQUIRE(h->app.transfers.cursor == 0);
+  tick(h->app, Event{press(U' ')});
+  CHECK(h->app.view == View::Detail);
+  CHECK(h->app.detail_origin == View::Transfers);
+  const Enrichment* shown = shigoku::tui::detail::selected_enrichment(h->app);
+  REQUIRE(shown != nullptr);
+  CHECK(shown->anilist_id == 700);
+  CHECK_FALSE(h->app.download_picker.open);
+  tick(h->app, Event{special_key(KeyEvent::Special::Escape)});
+  REQUIRE(h->app.view == View::Transfers);
+
+  // A show neither the library nor the catalog cache holds has no page.
+  tick(h->app, Event{press(U'j')});
+  REQUIRE(h->app.transfers.cursor == 1);
+  tick(h->app, Event{press(U' ')});
+  CHECK(h->app.view == View::Transfers);
+  CHECK(h->app.toasts.visible().back().text == "no catalogue entry for this show");
+}
+
 TEST_CASE("Transfers keys: jk/gG walk the list, x stops then removes, r re-queues") {
   auto h = HistoryHarness::make();
   h->app.view = View::Browse;

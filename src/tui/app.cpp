@@ -1497,6 +1497,14 @@ View back_target(const App& app) {
   return app.view == View::Detail ? app.detail_origin : app.view;
 }
 
+// Arm Esc before switching to `to`. Leaving a show's page for the view it was
+// opened over keeps the slot already armed: one naming `to` itself would
+// leave Esc nothing to do there.
+void arm_back(App& app, View to) {
+  const View from = back_target(app);
+  if (from != to) app.view_back = from;
+}
+
 // Move the episode grid's focus. The session owns the cursor and App.episode
 // mirrors it, so navigation writes both: a later transport step (a finished
 // play, a pin flip) must see the cell the user is on, not the one the grid
@@ -1594,6 +1602,18 @@ void restore_transfers_anchor(App& app, const TransfersAnchor& anchor) {
   if (!placed) app.transfers.clamp(visible, app.downloads);
 }
 
+// The library row for a show, else the catalog's cached card.
+std::optional<Enrichment> stored_entry(const App& app, std::int64_t id) {
+  if (app.deps == nullptr || app.deps->store == nullptr) return std::nullopt;
+  if (auto row = app.deps->store->get_show(id); row.has_value() && row->has_value()) {
+    return (*row)->enrichment;
+  }
+  if (auto hit = app.deps->store->get_catalog(id); hit.has_value() && hit->has_value()) {
+    return (*hit)->enrichment;
+  }
+  return std::nullopt;
+}
+
 // Read the download root again: every show folder, named from the library
 // where the library knows it. A .part some transfer in flight is writing is
 // left out — the queue section already shows it.
@@ -1611,16 +1631,7 @@ void rescan_transfers(App& app, const TransfersAnchor& anchor) {
       ds.folder = local.folder;
       ds.show_id = local.anilist_id;
       ds.title = local.folder;
-      if (local.anilist_id.has_value() && app.deps->store != nullptr) {
-        // The library row, else the catalog's cached card.
-        if (auto row = app.deps->store->get_show(*local.anilist_id);
-            row.has_value() && row->has_value()) {
-          ds.entry = (*row)->enrichment;
-        } else if (auto hit = app.deps->store->get_catalog(*local.anilist_id);
-                   hit.has_value() && hit->has_value()) {
-          ds.entry = (*hit)->enrichment;
-        }
-      }
+      if (local.anilist_id.has_value()) ds.entry = stored_entry(app, *local.anilist_id);
       if (ds.entry.has_value()) {
         const Enrichment& e = *ds.entry;
         const std::string_view title = preferred_title(
@@ -2200,18 +2211,30 @@ void on_key(App& app, const KeyEvent& k) {
   };
 
   // The show page over the Transfers view's selection: the show row itself,
-  // or the show a file belongs to. Only a show the library or the catalog
-  // cache can describe has a page.
+  // the show a file belongs to, or the show a job is fetching. Only a show
+  // the library or the catalog cache can describe has a page.
   auto open_transfers_show = [&]() {
     const auto item = app.transfers.selected(app.downloads);
-    if (!item.has_value() || item->kind == TransfersState::Item::Kind::Job) return;
-    if (!app.transfers.disk[item->show].entry.has_value()) {
-      app.toasts.push(ToastKind::Info, "no catalogue entry for this folder", app.tick_count);
+    if (!item.has_value()) return;
+    std::optional<Enrichment> entry;
+    if (item->kind == TransfersState::Item::Kind::Job) {
+      if (const DownloadJob* job = app.downloads.find(item->job); job != nullptr) {
+        entry = stored_entry(app, job->show_id);
+      }
+    } else {
+      entry = app.transfers.disk[item->show].entry;
+    }
+    if (!entry.has_value()) {
+      app.toasts.push(ToastKind::Info,
+                      item->kind == TransfersState::Item::Kind::Job
+                          ? "no catalogue entry for this show"
+                          : "no catalogue entry for this folder",
+                      app.tick_count);
       return;
     }
     // The page holds its own copy of the show: the list under it regroups
     // and is read again while the page is up.
-    app.transfers.zoomed = app.transfers.disk[item->show].entry;
+    app.transfers.zoomed = std::move(entry);
     app.detail_origin = View::Transfers;
     app.view = View::Detail;
     open_detail();
@@ -2590,7 +2613,7 @@ void on_key(App& app, const KeyEvent& k) {
         // Settings persists on the way out, same as the view-letter arms.
         if (app.view != View::Browse && app.view != View::History) {
           if (app.view == View::Settings) persist_settings(app);
-          app.view_back = back_target(app);
+          arm_back(app, View::Browse);
           app.view = View::Browse;
           app.pane = Pane::List;
         }
@@ -2606,14 +2629,14 @@ void on_key(App& app, const KeyEvent& k) {
       case U'B':
         if (app.view == View::Browse) return;
         if (app.view == View::Settings) persist_settings(app);
-        app.view_back = back_target(app);
+        arm_back(app, View::Browse);
         app.view = View::Browse;
         app.pane = Pane::List;
         return;
       case U'H':
         if (app.view == View::History) return;  // goto, not toggle — but inert in place.
         if (app.view == View::Settings) persist_settings(app);
-        app.view_back = back_target(app);
+        arm_back(app, View::History);
         app.view = View::History;
         app.pane = Pane::List;
         reload_history();
@@ -2621,25 +2644,25 @@ void on_key(App& app, const KeyEvent& k) {
       case U'D':
         if (app.view == View::Discover) return;
         if (app.view == View::Settings) persist_settings(app);
-        app.view_back = back_target(app);
+        arm_back(app, View::Discover);
         app.view = View::Discover;
         return;
       case U'C':
         if (app.view == View::Schedule) return;
         if (app.view == View::Settings) persist_settings(app);
-        app.view_back = back_target(app);
+        arm_back(app, View::Schedule);
         app.view = View::Schedule;
         reload_schedule();
         return;
       case U'S':
         if (app.view == View::Settings) return;
-        app.view_back = back_target(app);
+        arm_back(app, View::Settings);
         app.view = View::Settings;
         return;
       case U'T':
         if (app.view == View::Transfers) return;
         if (app.view == View::Settings) persist_settings(app);
-        app.view_back = back_target(app);
+        arm_back(app, View::Transfers);
         app.view = View::Transfers;
         app.pane = Pane::List;
         rescan_transfers(app, transfers_anchor(app));
@@ -2673,7 +2696,7 @@ void on_key(App& app, const KeyEvent& k) {
             show->title_native ? std::optional<std::string_view>(*show->title_native)
                                : std::nullopt,
             parse_title_language(app.config.title_language)));
-        app.view_back = back_target(app);
+        arm_back(app, View::Discover);
         app.discover.open_similar(std::move(seed));
         app.view = View::Discover;
         return;
