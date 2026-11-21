@@ -49,8 +49,8 @@ works exactly the same otherwise.
   inside that page to go back to wherever you came from. `Esc` does the
   same "go back" job from inside the page or a preview pane.
 - **Mouse** — click selects whatever is under the pointer (a list row, a
-  Discover card, a Settings row, a Transfers row, an episode cell, a top-bar
-  tab); a second
+  Discover card, a Settings row, a Transfers row, an episode cell,
+  a character or recommendation on a show's page, a top-bar tab); a second
   click on the same spot shortly after is the same as pressing `Enter`; the
   scroll wheel is the same as the up/down arrow, wherever the pointer sits.
   This degrades gracefully — it works even on terminals that only report
@@ -248,6 +248,7 @@ title, status/score chips, a synopsis, and the episode grid.
 | `j`/`k`, `g`/`G` (section focused) | Move / jump through the characters, then the recommendations |
 | `Enter` (a character focused) | Open that character's page — see [Character pages](#character-pages) |
 | `Enter` (a recommendation focused) | Open *that* show's own page |
+| Click / double-click (in the section) | Focus that row / open it |
 | `Space`, `Esc` | Close the page, back to wherever you opened it from |
 | `q` | Quit |
 
@@ -397,6 +398,11 @@ what the setting says.
   not believable.
 - A row marked `audio: …` has its sound as a separate track; shigoku fetches
   both and the saved file has picture and sound together.
+- Soft subtitles the source serves are saved beside the episode under the
+  same name (`7.mp4` gets `7.vtt`, or `.ass`/`.srt`), where mpv picks them up
+  on its own. If they can't be fetched the episode is still saved and the
+  message says the subtitles weren't. Deleting the episode from the
+  Transfers tab deletes its subtitles too.
 - A stream with nothing to choose from shows its one row and says why:
   a single file, a source that serves one size, or a list that could not be
   read just now (the download then goes ahead as the source serves it).
@@ -434,7 +440,7 @@ is listed as `unfinished`.
 |---|---|
 | `j`/`k`, `g`/`G` | Move / jump |
 | `Enter`, double-click | On a finished file: play it. On a show, or an unfinished file: open the show's page. On a download: open it (cancel / retry) |
-| `Space` | Open the show's page |
+| `Space` | Open the show's page (of a download too) |
 | `x` | Cancel the download under the cursor; on one that already stopped, take it off the list |
 | `r` | Start a failed or cancelled download again |
 | `X` then `y` | Delete the file under the cursor (asks first) |
