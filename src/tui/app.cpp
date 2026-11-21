@@ -3399,6 +3399,20 @@ void on_mouse(App& app, const MouseEvent& m) {
   // The character page has no click targets (the wheel scrolls it above).
   if (app.view == View::Detail && app.character.open) return;
 
+  // The zoom's `c` section: a click takes the sub-focus onto that row,
+  // a double-click is its Enter (the character's page, or the recommended show).
+  if (const auto item = detail::char_recs_item_at(app, m.x, m.y); item.has_value()) {
+    const bool already = app.char_recs.focused && app.char_recs.cursor == *item;
+    app.char_recs.focused = true;
+    app.char_recs.cursor = *item;
+    if (dbl && already) {
+      synth_enter();
+      return;
+    }
+    arm_double();
+    return;
+  }
+
   // The detail surface: an episode-cell click selects it, with focus
   // following into the pane — the grid is only hit-testable when it belongs
   // to the current selection (episode_cell_at's stale-grid gate), so no

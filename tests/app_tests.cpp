@@ -2724,6 +2724,53 @@ TEST_CASE("Enter on a cast row opens the character page and fetches it once") {
   h->app.queue = nullptr;
 }
 
+TEST_CASE("mouse: a click on the cast section takes its focus, a double-click opens the row") {
+  auto h = zoom_with_cast();
+  h->app.char_recs.focused = false;
+  h->deps.character = [](std::int64_t) -> Result<std::optional<CharacterDetail>, ProviderError> {
+    return std::optional<CharacterDetail>{};
+  };
+  // 100x24: the section is the 7 rows above the bottom bar, from y=16 —
+  // the Characters header, Frieren, Sein, a blank, the Recommendations
+  // header, Kimetsu no Yaiba, One Piece.
+  using shigoku::tui::detail::char_recs_item_at;
+  CHECK(char_recs_item_at(h->app, 5, 16) == std::nullopt);  // header.
+  CHECK(char_recs_item_at(h->app, 5, 17) == std::optional<std::size_t>(0));
+  CHECK(char_recs_item_at(h->app, 5, 18) == std::optional<std::size_t>(1));
+  CHECK(char_recs_item_at(h->app, 5, 19) == std::nullopt);  // blank.
+  CHECK(char_recs_item_at(h->app, 5, 21) == std::optional<std::size_t>(2));
+  CHECK(char_recs_item_at(h->app, 5, 22) == std::optional<std::size_t>(3));
+  CHECK(char_recs_item_at(h->app, 1, 17) == std::nullopt);  // left of the column.
+  CHECK(char_recs_item_at(h->app, 5, 15) == std::nullopt);  // above the section.
+
+  tick(h->app, click(5, 18));
+  CHECK(h->app.char_recs.focused);
+  CHECK(h->app.char_recs.cursor == 1);
+  CHECK_FALSE(h->app.character.open);
+
+  tick(h->app, click(5, 17));  // another row: select only.
+  CHECK(h->app.char_recs.cursor == 0);
+  CHECK_FALSE(h->app.character.open);
+  tick(h->app, click(5, 17));  // the same row again: Enter.
+  REQUIRE(h->app.character.open);
+  CHECK(h->app.character.id == 176754);
+  CHECK(h->app.view == View::Detail);
+  CHECK_FALSE(h->app.play.active);
+
+  // Scrolled: the rows on screen move with the section.
+  h->app.character = CharacterPageState{};
+  h->app.char_recs.scroll = 2;
+  CHECK(char_recs_item_at(h->app, 5, 16) == std::optional<std::size_t>(1));
+  CHECK(char_recs_item_at(h->app, 5, 19) == std::optional<std::size_t>(2));
+
+  // Hidden, or under a character page: nothing to hit.
+  h->app.character.open = true;
+  CHECK(char_recs_item_at(h->app, 5, 16) == std::nullopt);
+  h->app.character.open = false;
+  h->app.char_recs.visible = false;
+  CHECK(char_recs_item_at(h->app, 5, 16) == std::nullopt);
+}
+
 TEST_CASE("character page: a failed fetch rests, a stale answer is dropped") {
   auto h = zoom_with_cast();
   EventQueue queue;

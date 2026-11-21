@@ -1879,6 +1879,26 @@ std::size_t episode_grid_per_row(const App& app) {
   return static_cast<std::size_t>(std::max(1, cw / cell_w));
 }
 
+std::optional<std::size_t> char_recs_item_at(const App& app, int px, int py) {
+  const CharactersRecsState& cr = app.char_recs;
+  if (app.view != View::Detail || app.character.open || !cr.visible) return std::nullopt;
+  if (cr.loading || cr.failed || !cr.fetched) return std::nullopt;
+  const int y1 = static_cast<int>(app.win.rows) - 1;
+  const int section_h = char_recs_section_height(y1 - kContentY0);
+  if (section_h <= 0) return std::nullopt;
+  // draw_detail_zoom's split: the section's first row is y1 - section_h.
+  const int top = y1 - section_h;
+  const int x0 = 2;
+  const int w = static_cast<int>(app.win.cols) - 4;
+  if (py < top || py >= y1 || px < x0 || px >= x0 + w) return std::nullopt;
+  const std::size_t line = cr.scroll + static_cast<std::size_t>(py - top);
+  const std::size_t n = char_recs_item_count(cr.data);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (char_recs_item_line(cr.data, i) == line) return i;
+  }
+  return std::nullopt;
+}
+
 std::optional<std::size_t> episode_cell_at(const App& app, int px, int py) {
   // Grid shows only for the selected show's own fetch (draw_detail_column's
   // stale-grid gate) with cells to hit (draw_episode_grid's early-outs, incl.

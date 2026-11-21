@@ -137,6 +137,10 @@ namespace detail {
 // is content-dependent and draw_detail_header is its single source.
 [[nodiscard]] std::optional<std::size_t> episode_cell_at(const App& app, int x, int y);
 
+// The zoom's `c` section: the item (char_recs_item_count's range) whose row
+// covers (x, y), on the lines draw_char_recs_section put on screen.
+[[nodiscard]] std::optional<std::size_t> char_recs_item_at(const App& app, int x, int y);
+
 // P33: cells per visual row of the episode grid on whichever surface
 // currently renders it (the same x0/cw branch episode_cell_at uses) — the
 // single source for h/j/k/l's per-row hop. Always >= 1.
