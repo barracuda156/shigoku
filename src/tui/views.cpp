@@ -364,6 +364,10 @@ const Show* selected_show(const App& app) {
   return nullptr;
 }
 
+bool modal_open(const App& app) {
+  return app.connect.has_value() || app.discover_filters.visible || app.download_picker.open;
+}
+
 std::optional<CoverTarget> cover_target(const App& app) {
   // The character page borrows the poster slot for the portrait.
   if (app.view == View::Detail && app.character.open) {
@@ -1422,7 +1426,7 @@ std::optional<Rect> draw_card(const App& app, CellBuffer& buf, const CatalogRow&
 
   std::optional<Rect> exclusion;
   const CoverRenderEntry* entry =
-      (app.cover_caps.images() && e.cover_url.has_value())
+      (app.cover_caps.images() && e.cover_url.has_value() && !detail::modal_open(app))
           ? app.cover_render_store.get(*e.cover_url)
           : nullptr;
   if (entry != nullptr) {

@@ -869,6 +869,11 @@ struct CoverTarget {
 };
 [[nodiscard]] std::optional<CoverTarget> cover_target(const App& app);
 
+// A captured overlay is up (connect, Discover filters, the download picker).
+// Terminal images sit above every text cell, so no cover is placed while one
+// is: the overlay would be drawn under it.
+[[nodiscard]] bool modal_open(const App& app);
+
 // One grid cover's placement: the id the terminal holds it under + the rect
 // it was last transmitted into (P17b, §6).
 struct Placed {

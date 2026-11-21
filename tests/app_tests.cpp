@@ -490,6 +490,49 @@ TEST_CASE("compose_cover_apc: transmit once, steady state emits nothing") {
   CHECK(pre.empty());
 }
 
+TEST_CASE("compose_cover_apc: no cover while a modal is up, back once it closes") {
+  App app;
+  app.view = View::Detail;
+  app.detail_origin = View::Browse;
+  app.win = WinSize{100, 24, 0, 0};
+  app.cover_caps.backend = CoverBackend::Kitty;
+  CatalogRow row;
+  row.meta.anilist_id = 42;
+  row.meta.title_romaji = "Show";
+  row.meta.cover_url = "https://example.com/c.jpg";
+  app.catalog.push_back(row);
+  app.list_cursor = 0;
+  app.cover_render.have_pixels = true;
+  app.cover_render.for_id = 42;
+  app.cover_render.pixels.w = 2;
+  app.cover_render.pixels.h = 2;
+  app.cover_render.pixels.rgba.assign(16, 0xFF);
+
+  detail::PlacedCover placed;
+  std::string pre, post;
+  REQUIRE(detail::compose_cover_apc(app, placed, pre, post));
+  REQUIRE(placed.id != 0);
+
+  app.download_picker.open = true;
+  CHECK(detail::modal_open(app));
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(pre.find("a=d,d=I") != std::string::npos);
+  CHECK(post.empty());
+  CHECK(placed.id == 0);
+  CHECK_FALSE(detail::compose_cover_apc(app, placed, pre, post));
+
+  // draw() leaves the rect to the cells, so the picker paints over it.
+  CellBuffer buf(100, 24);
+  draw(app, buf);
+  CHECK(buf.exclusions().empty());
+
+  app.download_picker.open = false;
+  CHECK_FALSE(detail::modal_open(app));
+  CHECK(detail::compose_cover_apc(app, placed, pre, post));
+  CHECK(post.find("a=T") != std::string::npos);
+  CHECK(placed.id != 0);
+}
+
 TEST_CASE("compose_cover_apc: iterm backend — OSC 1337 out, no delete bytes") {
   App app;
   app.view = View::Browse;

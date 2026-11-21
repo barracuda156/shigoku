@@ -97,7 +97,7 @@ bool compose_cover_apc(const App& app, PlacedCover& placed,
   // "which show is selected" truth.
   const std::optional<CoverTarget> target = cover_target(app);
   const bool want =
-      app.cover_render.have_pixels && !r.empty() &&
+      app.cover_render.have_pixels && !r.empty() && !modal_open(app) &&
       app.cover_render.pixels.w > 0 && app.cover_render.pixels.h > 0 &&
       target.has_value() && target->id == app.cover_render.for_id;
 
@@ -166,7 +166,7 @@ bool compose_grid_apc(const App& app, std::map<std::string, Placed>& placed,
 
   const CoverBackend backend = app.cover_caps.backend;
   std::map<std::string, Rect> desired;
-  if (app.view == View::Discover && app.cover_caps.images()) {
+  if (app.view == View::Discover && app.cover_caps.images() && !modal_open(app)) {
     const AxisSlot& slot = app.discover.slot();
     const int w = app.win.cols;
     const int y0 = kContentY0, y1 = static_cast<int>(app.win.rows) - 1;
@@ -639,6 +639,7 @@ void draw(const App& app, CellBuffer& buf) {
     const std::optional<detail::CoverTarget> ctarget = detail::cover_target(app);
     const bool image_owned =
         app.cover_caps.images() && app.cover_render.have_pixels && !crect.empty() &&
+        !detail::modal_open(app) &&
         ctarget.has_value() && ctarget->id == app.cover_render.for_id;
     if (image_owned) {
       buf.set_exclusion(crect);
