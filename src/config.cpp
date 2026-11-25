@@ -58,6 +58,7 @@ Config from_json(const json& j) {
   c.transparent_background = field(j, "transparent_background", c.transparent_background);
   c.landing = field(j, "landing", c.landing);
   c.title_language = field(j, "title_language", c.title_language);
+  c.history_sort = field(j, "history_sort", c.history_sort);
   c.discover_cover_concurrency =
       field(j, "discover_cover_concurrency", c.discover_cover_concurrency);
   c.preferred_provider = field(j, "preferred_provider", c.preferred_provider);
@@ -100,6 +101,7 @@ json to_json(const Config& c) {
       {"transparent_background", c.transparent_background},
       {"landing", c.landing},
       {"title_language", c.title_language},
+      {"history_sort", c.history_sort},
       {"discover_cover_concurrency", c.discover_cover_concurrency},
       {"preferred_provider", c.preferred_provider},
       {"anilist_sync_enabled", c.anilist_sync_enabled},

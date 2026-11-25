@@ -44,7 +44,30 @@ namespace {
 constexpr ListStatus kGroupOrder[5] = {ListStatus::Watching, ListStatus::Planning,
                                        ListStatus::Paused, ListStatus::Completed,
                                        ListStatus::Dropped};
+
+std::string_view row_title(const Enrichment& e, TitleLanguage pref);
+
+// ASCII letters fold to lower case; every other byte stays as it is.
+std::string fold_ascii(std::string_view s) {
+  std::string out(s);
+  for (char& c : out) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return out;
+}
 }  // namespace
+
+HistorySort parse_history_sort(std::string_view s) {
+  return s == "title" ? HistorySort::Title : HistorySort::Recent;
+}
+
+std::string_view to_string(HistorySort s) {
+  switch (s) {
+    case HistorySort::Recent: return "recent";
+    case HistorySort::Title:  return "title";
+  }
+  return "recent";  // unreachable (closed enum).
+}
 
 std::optional<std::int64_t> HistoryState::anchor_aid() const {
   if (cursor >= order.size()) return std::nullopt;
@@ -76,12 +99,39 @@ bool HistoryState::matches_filter(const Show& s) const {
 }
 
 void HistoryState::rebuild(std::optional<std::int64_t> anchor) {
+  by_id.clear();
+  by_mal.clear();
+  std::vector<std::string> keys;
+  keys.reserve(rows.size());
+  for (std::size_t ix = 0; ix < rows.size(); ++ix) {
+    const Enrichment& e = rows[ix].enrichment;
+    by_id.emplace(e.anilist_id, ix);
+    if (e.mal_id.has_value()) by_mal.emplace(*e.mal_id, ix);
+    keys.push_back(fold_ascii(row_title(e, title_language)));
+  }
+  const auto by_title = [&](std::size_t a, std::size_t b) {
+    if (keys[a] != keys[b]) return keys[a] < keys[b];
+    return rows[a].enrichment.anilist_id < rows[b].enrichment.anilist_id;
+  };
+  const auto by_recent = [&](std::size_t a, std::size_t b) {
+    const std::optional<std::int64_t> ta = rows[a].last_activity_at();
+    const std::optional<std::int64_t> tb = rows[b].last_activity_at();
+    if (ta.has_value() != tb.has_value()) return ta.has_value();
+    if (ta.has_value() && *ta != *tb) return *ta > *tb;
+    return by_title(a, b);
+  };
   order.clear();
   for (ListStatus status : kGroupOrder) {
+    const std::size_t begin = order.size();
     for (std::size_t ix = 0; ix < rows.size(); ++ix) {
       if (rows[ix].list_status == status && matches_filter(rows[ix])) {
         order.push_back(ix);
       }
+    }
+    const auto first = order.begin() + static_cast<std::ptrdiff_t>(begin);
+    switch (sort) {
+      case HistorySort::Recent: std::stable_sort(first, order.end(), by_recent); break;
+      case HistorySort::Title:  std::stable_sort(first, order.end(), by_title); break;
     }
   }
   if (anchor.has_value()) {
@@ -93,6 +143,27 @@ void HistoryState::rebuild(std::optional<std::int64_t> anchor) {
   } else {
     cursor = order.empty() ? 0 : std::min(cursor, order.size() - 1);
   }
+}
+
+void HistoryState::set_sort(HistorySort next) {
+  const std::optional<std::int64_t> anchor = anchor_aid();
+  sort = next;
+  rebuild(anchor);
+}
+
+const Show* HistoryState::find(const Enrichment& e) const {
+  if (const auto it = by_id.find(e.anilist_id);
+      it != by_id.end() && it->second < rows.size() &&
+      rows[it->second].enrichment.anilist_id == e.anilist_id) {
+    return &rows[it->second];
+  }
+  if (!e.mal_id.has_value()) return nullptr;
+  if (const auto it = by_mal.find(*e.mal_id);
+      it != by_mal.end() && it->second < rows.size() &&
+      rows[it->second].enrichment.mal_id == e.mal_id) {
+    return &rows[it->second];
+  }
+  return nullptr;
 }
 
 bool HistoryState::select_aid(std::int64_t anilist_id, int visible) {
@@ -496,6 +567,25 @@ std::string tried_caption(const EpisodeState& es) {
 
 }  // namespace detail
 
+std::string list_state_text(const Show& s, bool compact) {
+  const char* word = "";
+  switch (s.list_status) {
+    case ListStatus::Watching:  word = "watching"; break;
+    case ListStatus::Paused:    word = "paused"; break;
+    case ListStatus::Planning:  word = "planned"; break;
+    case ListStatus::Completed: word = "completed"; break;
+    case ListStatus::Dropped:   word = "dropped"; break;
+  }
+  const bool counted =
+      s.list_status == ListStatus::Watching || s.list_status == ListStatus::Paused;
+  if (!counted || s.progress == 0) return word;
+  const std::optional<std::uint32_t> total = s.enrichment.total_episodes;
+  const std::string count = total.has_value() && *total > 0
+                                ? std::to_string(s.progress) + "/" + std::to_string(*total)
+                                : "ep " + std::to_string(s.progress);
+  return compact ? count : std::string(word) + " " + count;
+}
+
 namespace {
 
 // The title a catalog row shows: the DESIGN §8.2 fallback chain
@@ -686,7 +776,8 @@ void draw_history_bar_row(CellBuffer& buf, int x0, int w, int y, const Show& sho
 // Returns the next free row.
 int draw_detail_header(CellBuffer& buf, int x0, int w, int y0, const Enrichment& e,
                        TitleLanguage title_pref,
-                       std::optional<std::uint32_t> user_score = std::nullopt) {
+                       std::optional<std::uint32_t> user_score = std::nullopt,
+                       const Show* listed = nullptr) {
   int y = y0;
   const std::string title = truncate_to_cols(row_title(e, title_pref), w);
   buf.put_str(x0, y, title, theme::fg, theme::bg, Style::Bold);
@@ -702,6 +793,16 @@ int draw_detail_header(CellBuffer& buf, int x0, int w, int y0, const Enrichment&
     if (e.year.has_value()) {
       if (x > x0) x = buf.put_str(x, y, " ", theme::bg, theme::bg) ;
       x = buf.put_str(x, y, std::to_string(*e.year), theme::fg2, theme::bg);
+    }
+    // Where the show stands on the user's list, for a page opened from
+    // a catalog view; History's own pages say it by their group.
+    // Separator (4) + glyph and space (2), then at least the state's word.
+    if (listed != nullptr && x0 + w - x >= 6 + 9) {
+      if (x > x0) x = buf.put_str(x, y, "  \xC2\xB7 ", theme::fg3, theme::bg);  // ·
+      x = buf.put_str(x, y, history_status_glyph(listed->list_status), theme::focus, theme::bg);
+      x = buf.put_str(x, y, " ", theme::bg, theme::bg);
+      buf.put_str(x, y, truncate_to_cols(list_state_text(*listed), x0 + w - x), theme::fg,
+                  theme::bg);
     }
     y += 1;
   }
@@ -909,10 +1010,14 @@ void draw_detail_column(const App& app, CellBuffer& buf, int x0, int w, int y0, 
   const Rect crect = detail::cover_rect(app);
   const int y_head = crect.empty() ? y0 : (crect.y + crect.h + 1);
   const Show* lib_show = detail::selected_show(app);
+  // A catalog selection (Browse, Discover) that is on the list all the same.
+  const Show* listed = lib_show == nullptr ? app.history.find(show) : nullptr;
+  const Show* state = lib_show != nullptr ? lib_show : listed;
   const std::optional<std::uint32_t> user_score =
-      lib_show != nullptr ? lib_show->user_score : std::nullopt;
-  const int y_grid = draw_detail_header(
-      buf, x0, w, y_head, show, parse_title_language(app.config.title_language), user_score);
+      state != nullptr ? state->user_score : std::nullopt;
+  const int y_grid = draw_detail_header(buf, x0, w, y_head, show,
+                                        parse_title_language(app.config.title_language),
+                                        user_score, listed);
   // The grid (and its provider caption) belongs to the show it was fetched
   // for (ROD-222/329 render half): after Esc-to-list + scroll, another show's
   // header must not sit over a stale grid — hide it until an engage lands.
@@ -1201,10 +1306,22 @@ void draw_history(const App& app, CellBuffer& buf, int y0, int y1) {
           if (hs.status_filter.has_value() || hs.behind_filter) {
             // The one group on screen is a filter, and the header is the
             // only place that can say so.
-            buf.put_str(x, y,
-                        hs.behind_filter ? "   behind \xC2\xB7 f next \xC2\xB7 F all"
-                                         : "   filter \xC2\xB7 f next \xC2\xB7 F all",
-                        theme::fg3, theme::bg);
+            x = buf.put_str(x, y,
+                            hs.behind_filter ? "   behind \xC2\xB7 f next \xC2\xB7 F all"
+                                             : "   filter \xC2\xB7 f next \xC2\xB7 F all",
+                            theme::fg3, theme::bg);
+          }
+          // A non-default order is named once, on the list's first header
+          // (layout() always opens on one), within the list column.
+          if (i == 0 && hs.sort == HistorySort::Title) {
+            const std::string_view tag = "   by title \xC2\xB7 o latest";
+            const std::string_view short_tag = "   by title";
+            const int end = 2 + list_w;
+            if (x + str_width(tag) <= end) {
+              buf.put_str(x, y, tag, theme::fg3, theme::bg);
+            } else if (x + str_width(short_tag) <= end) {
+              buf.put_str(x, y, short_tag, theme::fg3, theme::bg);
+            }
           }
           break;
         }
@@ -1481,19 +1598,38 @@ std::optional<Rect> draw_card(const App& app, CellBuffer& buf, const CatalogRow&
                 bbold ? Style::Bold : Style::None);
   }
 
+  // A show on the list says where it stands in place of the format row;
+  // finished and dropped ones recede, title included, unless selected.
+  const Show* listed = app.history.find(e);
+  const bool receded = listed != nullptr && (listed->list_status == ListStatus::Completed ||
+                                             listed->list_status == ListStatus::Dropped);
+
   // Title row: resolved primary, clipped; focus+bold when selected.
   const std::string_view title = preferred_title(
       e.title_romaji,
       e.title_english ? std::optional<std::string_view>(*e.title_english) : std::nullopt,
       e.title_native ? std::optional<std::string_view>(*e.title_native) : std::nullopt,
       parse_title_language(app.config.title_language));
-  const Rgb title_col = selected ? theme::focus : theme::fg;
+  const Rgb title_col = selected ? theme::focus : (receded ? theme::fg3 : theme::fg);
   const Style title_st = selected ? Style::Bold : Style::None;
   buf.put_str(x, rank_y + 1, truncate_to_cols(title, cover_w), title_col, theme::bg, title_st);
 
+  const int format_row = rank_y + 2;
+  if (listed != nullptr) {
+    const int text_w = cover_w - 2;  // glyph + space.
+    if (text_w <= 0) return exclusion;
+    std::string text = list_state_text(*listed);
+    if (str_width(text) > text_w) text = list_state_text(*listed, /*compact=*/true);
+    if (str_width(text) > text_w) text = truncate_to_cols(text, text_w);
+    int lx = buf.put_str(x, format_row, history_status_glyph(listed->list_status),
+                         receded ? theme::fg3 : theme::focus, theme::bg);
+    lx = buf.put_str(lx, format_row, " ", theme::bg, theme::bg);
+    buf.put_str(lx, format_row, text, receded ? theme::fg3 : theme::fg, theme::bg);
+    return exclusion;
+  }
+
   // Format + episode count left (discover.rs): "TV · 12ep" / "Movie" / "TV ·
   // ??ep" while airing; "—" when the format is unknown.
-  const int format_row = rank_y + 2;
   const std::optional<const char*> label =
       format_label(e.kind ? std::optional<std::string_view>(*e.kind) : std::nullopt);
   if (label.has_value()) {

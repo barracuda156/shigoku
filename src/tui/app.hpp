@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -217,8 +218,27 @@ struct HistoryLine {
 // deviation from the async-event pattern the rest of the app uses; History
 // never touches the network). Domain-only (Show, from domain.hpp), so this
 // stays in the pure render core alongside EpisodeState.
+// How History orders the rows inside each status group. The groups keep
+// their own fixed order either way.
+enum class HistorySort {
+  // Latest activity first (Show::last_activity_at: a play, or an edit to
+  // the list entry here or on a tracker). Rows with none follow, by title.
+  Recent,
+  // By the title as displayed (the configured title language), case-folded;
+  // equal titles by id.
+  Title,
+};
+
+// Config string form ("recent" / "title"); anything else reads as Recent.
+[[nodiscard]] HistorySort parse_history_sort(std::string_view s);
+[[nodiscard]] std::string_view to_string(HistorySort s);
+
 struct HistoryState {
   std::string filter;
+  // Applied by rebuild(). The loader stamps `title_language` beside it, since
+  // Title order follows the titles the list shows.
+  HistorySort sort = HistorySort::Recent;
+  TitleLanguage title_language = TitleLanguage::Romaji;
   // Status narrowing (the tracker-client "Filter: Watching (41)" idiom):
   // nullopt = every group, else the one group shown. ANDs with `filter`.
   std::optional<ListStatus> status_filter;
@@ -236,6 +256,9 @@ struct HistoryState {
   std::size_t cursor = 0;
   std::size_t scroll = 0;
   bool load_failed = false;
+  // find()'s index into `rows`, by AniList id and by MAL id.
+  std::unordered_map<std::int64_t, std::size_t> by_id;
+  std::unordered_map<std::int64_t, std::size_t> by_mal;
 
   [[nodiscard]] bool empty() const { return rows.empty(); }
   [[nodiscard]] std::size_t count() const { return order.size(); }
@@ -250,9 +273,17 @@ struct HistoryState {
     return rows.front().enrichment.anilist_id;
   }
 
-  // Rebuild `order` (filtered + group-ordered) and re-anchor the cursor onto
-  // `anchor`'s identity, clamping if it fell out (05 §2 setHistory contract).
+  // Rebuild `order` (filtered, group-ordered, each group in `sort` order) and
+  // re-anchor the cursor onto `anchor`'s identity, clamping if it fell out
+  // (05 §2 setHistory contract). Also refreshes the id index find() reads.
   void rebuild(std::optional<std::int64_t> anchor);
+  // Change the order within groups; the cursor stays on its show.
+  void set_sort(HistorySort next);
+  // The library row for a show met outside History (a Discover card,
+  // a search hit): under its AniList id, else under its MAL id — a row
+  // imported from MyAnimeList before its AniList id was known is the same
+  // show under another key. nullptr = not on the list. Ignores the filters.
+  [[nodiscard]] const Show* find(const Enrichment& e) const;
   // Move the cursor onto a show by identity; false if not in the current nav
   // order (e.g. filtered out).
   bool select_aid(std::int64_t anilist_id, int visible);

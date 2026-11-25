@@ -70,6 +70,13 @@ void draw_settings(const App& app, CellBuffer& buf, int y0, int y1);
                                                      std::optional<std::uint32_t> year,
                                                      bool kanji);
 
+// A library row's place on the list as short text: "watching 5/12" (total
+// known), "watching ep 5" (total unknown), "watching" (nothing watched yet),
+// "paused 3/12" / "paused ep 3" / "paused", "planned", "completed", "dropped".
+// `compact` keeps only the count where there is one ("5/12", "ep 5"), else
+// the word.
+[[nodiscard]] std::string list_state_text(const Show& s, bool compact = false);
+
 namespace detail {
 // The `c` section's row budget (P36): 0 when too narrow to split legibly.
 // Single source for both the render split and app.cpp's scroll-into-view

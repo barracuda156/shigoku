@@ -564,7 +564,7 @@ std::string idle_help(View v, Pane p) {
     case View::History:
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
-      return "jk move · / filter · f status · l/enter detail · p/x/c/w/P status · s score · X delete · r/u reset/undo · q quit";
+      return "jk move · / filter · f status · o order · l/enter detail · p/x/c/w/P status · s score · X delete · r/u reset/undo · q quit";
     case View::Discover:
       // "P save" (KEYS_AUDIT F8): add-to-watchlist worked here all along but
       // was advertised only on Browse's line.

@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -65,6 +66,7 @@ void recompute_loading(App& app);
 void load_history(App& app);
 void load_schedule(App& app);  // P37.
 void flush_sync(App& app, bool pull_only);  // P20; on_connect_result fires it post-bootstrap.
+bool fold_twins(App& app);
 
 // Wall-clock seconds for store timestamps (updated_at / last_watched_at). The
 // store only compares these for ordering (latest_resume, History sort), so a
@@ -100,25 +102,45 @@ std::string_view play_provider_name(const App& app) {
   return {};
 }
 
-// Save on leave/quit only, never per-keystroke (P18, settings.rs
-// persist_settings): a no-op unless a Settings key actually mutated config
-// this session. A missing config dir warns rather than erroring — the parent
-// dir is ensure_dirs()'s job at startup, not this call's.
-void persist_settings(App& app) {
-  if (!app.settings.dirty()) return;
-  app.settings.clear_dirty();
+// Write app.config to its file. A missing config dir is reported rather than
+// created — the parent dir is ensure_dirs()'s job at startup, not this call's.
+enum class ConfigWrite { Saved, NoDir, Failed };
+
+ConfigWrite write_config(const App& app) {
   const std::size_t slash = app.config_file.find_last_of('/');
   const std::string parent = slash == std::string::npos ? "" : app.config_file.substr(0, slash);
   struct stat st{};
   if (parent.empty() || ::stat(parent.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-    app.toasts.push(ToastKind::Warning, "no config dir \xC2\xB7 not saved", app.tick_count);
-    return;
+    return ConfigWrite::NoDir;
   }
-  auto r = app.config.save(app.config_file);
-  if (r.has_value()) {
+  return app.config.save(app.config_file).has_value() ? ConfigWrite::Saved : ConfigWrite::Failed;
+}
+
+// The toast for a config write that did not land; nothing for a saved one.
+void toast_config_unsaved(App& app, ConfigWrite w) {
+  switch (w) {
+    case ConfigWrite::Saved:
+      return;
+    case ConfigWrite::NoDir:
+      app.toasts.push(ToastKind::Warning, "no config dir \xC2\xB7 not saved", app.tick_count);
+      return;
+    case ConfigWrite::Failed:
+      app.toasts.push(ToastKind::Error, "settings save failed", app.tick_count);
+      return;
+  }
+}
+
+// Save on leave/quit only, never per-keystroke (P18, settings.rs
+// persist_settings): a no-op unless a Settings key actually mutated config
+// this session. A missing config dir warns rather than erroring.
+void persist_settings(App& app) {
+  if (!app.settings.dirty()) return;
+  app.settings.clear_dirty();
+  const ConfigWrite w = write_config(app);
+  if (w == ConfigWrite::Saved) {
     app.toasts.push(ToastKind::Success, "settings saved", app.tick_count);
   } else {
-    app.toasts.push(ToastKind::Error, "settings save failed", app.tick_count);
+    toast_config_unsaved(app, w);
   }
 }
 
@@ -165,9 +187,19 @@ void load_history(App& app) {
   app.history.load_failed = false;
   app.history.resume.clear();
   app.history.resume.reserve(rows->size());
+  // Only the shows with a partial watch are asked for their resume point; if
+  // that list cannot be read, every row is asked.
+  const auto resumable = app.deps->store->shows_with_resume(Translation::Sub);
+  const std::unordered_set<std::int64_t> with_resume =
+      resumable.has_value()
+          ? std::unordered_set<std::int64_t>(resumable->begin(), resumable->end())
+          : std::unordered_set<std::int64_t>{};
   for (const Show& s : *rows) {
     std::optional<std::uint32_t> ep;
-    auto r = app.deps->store->latest_resume(s.enrichment.anilist_id, Translation::Sub);
+    const bool ask = !resumable.has_value() || with_resume.contains(s.enrichment.anilist_id);
+    auto r = ask ? app.deps->store->latest_resume(s.enrichment.anilist_id, Translation::Sub)
+                 : Result<std::optional<std::pair<std::string, Resume>>, StoreError>(
+                       std::optional<std::pair<std::string, Resume>>{});
     if (r.has_value() && r->has_value()) {
       // The label is the raw episode string; only a numeric label carries the
       // ◐ marker (non-numeric "SP1"-shaped labels carry none — history.rs).
@@ -181,7 +213,14 @@ void load_history(App& app) {
   }
   app.history.rows = std::move(*rows);
   app.history.now_secs = now_epoch_secs();
+  app.history.title_language = parse_title_language(app.config.title_language);
+  app.history.sort = parse_history_sort(app.config.history_sort);
   app.history.rebuild(anchor);
+  // The reload can move the cursor's show (a play lifts it in Recent order):
+  // the scroll follows it.
+  if (const Show* sel = app.history.selected(); sel != nullptr) {
+    (void)app.history.select_aid(sel->enrichment.anilist_id, content_height(app.win.rows));
+  }
 }
 
 // Schedule load (P37): a SYNCHRONOUS local read, same store call as
@@ -650,10 +689,18 @@ bool sync_enabled(const App& app) {
   return app.config.anilist_sync_enabled && anilist_connected(app);
 }
 
+// A MyAnimeList sign-in a sync run can still use: a live token, or one past
+// its date that holds a refresh_token — the run's pull renews it before the
+// push. Only a reconnect mends one with neither.
+bool mal_renewable(const App& app) {
+  return mal_connected(app) ||
+         (app.auth.mal.bearer().has_value() && !app.auth.mal.refresh_token.empty());
+}
+
 // Whether a sync run has any tracker to talk to: AniList under its master
 // switch, or the MAL mirror (which pulls the account's list and pushes edits
-// whenever it is connected — a MAL-only account syncs too).
-bool any_tracker(const App& app) { return sync_enabled(app) || mal_connected(app); }
+// whenever it is signed in — a MAL-only account syncs too).
+bool any_tracker(const App& app) { return sync_enabled(app) || mal_renewable(app); }
 
 // Arm the action-flush debounce after a status/play edit (ROD-291). A no-op
 // when no tracker is connected.
@@ -731,10 +778,20 @@ void on_sync_flushed(App& app, const SyncFlushed& s) {
   } else if (s.mal_pull_failed) {
     app.toasts.push(ToastKind::Warning, "couldn't pull your MyAnimeList list", app.tick_count);
   }
-  // A first import lands in an empty History that check_schedule_notices
-  // (below) would not reload; anything adopted is worth the two local reads.
+  if (s.mal_unsent > 0 && !s.mal_unauthorized) {
+    app.toasts.push(ToastKind::Warning,
+                    std::to_string(s.mal_unsent) +
+                        (s.mal_unsent == 1 ? " change" : " changes") + " not sent to MyAnimeList",
+                    app.tick_count);
+  }
+  // History follows every run: a pull stamps list edit times (its Recent
+  // order) and the mirror's merges adopt MAL's values, and neither shows in
+  // the counts above. A first import lands in an empty History that
+  // check_schedule_notices (below) would not reload either. A run can also
+  // leave a show under two ids (an import, a MAL id filled in): folded first,
+  // which reloads by itself.
+  if (!fold_twins(app)) load_history(app);
   if (s.imported + s.mal_imported + s.reconciled + s.mal_pulled + s.airing_refreshed > 0) {
-    load_history(app);
     load_schedule(app);
   }
   // P37 slice 3: "after each sync pull" re-check. NOTE the honest premise
@@ -1111,6 +1168,60 @@ void finish_heal(App& app, const HealedRow& h, const Enrichment& merged) {
   if (!grid_open || shown == nullptr || shown->anilist_id != h.new_id) return;
   EpisodeDeps ed = build_episode_deps(app);
   apply_feedback(app, app.episode_session->engage(*shown, ed));
+}
+
+enum class TwinAdoption {
+  None,      // no synthetic row holds the show under another id.
+  Adopted,   // that row now lives under the show's id.
+  Deferred,  // it does, but the re-key could not run now (busy or refused).
+};
+
+// A show met in Discover or Browse under its AniList id that the library
+// holds as a synthetic MyAnimeList row (found by its MAL id): the row takes
+// the show's id and metadata, so a later play or add lands on that one row
+// instead of minting a second. Membership and list state stay the row's own.
+// The caller opens a grid itself, so a grid the re-key reset stays closed.
+TwinAdoption adopt_twin(App& app, Enrichment show) {
+  if (show.anilist_id <= 0 || app.deps == nullptr || app.deps->store == nullptr) {
+    return TwinAdoption::None;
+  }
+  const Show* listed = app.history.find(show);
+  if (listed == nullptr || listed->enrichment.anilist_id >= 0) return TwinAdoption::None;
+  std::optional<HealedRow> healed = rekey_row(app, listed->enrichment.anilist_id, show.anilist_id);
+  if (!healed.has_value()) return TwinAdoption::Deferred;
+  (void)app.deps->store->add_to_library(show, now_epoch_secs());
+  load_history(app);
+  if (!app.schedule.rows.empty()) load_schedule(app);
+  healed->grid_reset = false;
+  finish_heal(app, *healed, show);
+  arm_sync(app);
+  return TwinAdoption::Adopted;
+}
+
+// Shows the library holds twice — a synthetic MyAnimeList row and the same
+// show under its AniList id — become one row under the real id. Left as two,
+// both mirror the one MyAnimeList entry. A pair that is busy stays for the
+// next call. True when anything was folded: History is then already reloaded.
+bool fold_twins(App& app) {
+  if (app.deps == nullptr || app.deps->store == nullptr) return false;
+  Store& store = *app.deps->store;
+  const auto twins = store.list_twin_rows();
+  if (!twins.has_value() || twins->empty()) return false;
+  std::vector<HealedRow> healed;
+  for (const auto& [synthetic, real] : *twins) {
+    if (const auto h = rekey_row(app, synthetic, real); h.has_value()) healed.push_back(*h);
+  }
+  if (healed.empty()) return false;
+  // The reload first: a grid reopening below reads the selection from it.
+  load_history(app);
+  if (!app.schedule.rows.empty()) load_schedule(app);
+  for (const HealedRow& h : healed) {
+    if (auto merged = store.get_show(h.new_id); merged.has_value() && merged->has_value()) {
+      finish_heal(app, h, (*merged)->enrichment);
+    }
+  }
+  arm_sync(app);
+  return true;
 }
 
 // --- Enrichment* handlers (P21, 05 §8 three-state law / app.rs) ------------
@@ -1865,9 +1976,21 @@ void on_key(App& app, const KeyEvent& k) {
   // later play is tier-0 (05 §10.4). A no-store build (demo / no-persist) just
   // toasts the add optimistically. The prewarm fire mirrors the PositionUpdate
   // site's gates/deps construction.
+  // A show already on the list (under its own id, or as the synthetic row
+  // a MyAnimeList import left: that row takes the show's id) is not added
+  // again; the toast says where it stands.
   auto add_selected_to_library = [&]() {
     const Enrichment* show = selected_show();
     if (show == nullptr) return;
+    if (app.history.find(*show) != nullptr) {
+      const Enrichment target = *show;
+      (void)adopt_twin(app, target);
+      if (const Show* listed = app.history.find(target); listed != nullptr) {
+        app.toasts.push(ToastKind::Info, "already on your list \xC2\xB7 " + list_state_text(*listed),
+                        app.tick_count);
+      }
+      return;
+    }
     if (app.deps != nullptr && app.deps->store != nullptr) {
       const auto res = app.deps->store->add_to_library(*show, now_epoch_secs());
       if (!res.has_value()) {
@@ -1893,6 +2016,7 @@ void on_key(App& app, const KeyEvent& k) {
         app.prewarm->fire(*show, gates, pd);
       }
       arm_sync(app);
+      load_history(app);
     }
     app.toasts.push(ToastKind::Success, "added to your list", app.tick_count);
   };
@@ -1905,6 +2029,14 @@ void on_key(App& app, const KeyEvent& k) {
   auto open_detail = [&]() {
     const Enrichment* show = selected_show();
     if (show == nullptr) return;
+    // A catalog show the library holds as a synthetic MyAnimeList row:
+    // the row takes the show's id first, so the session engages (and a play
+    // lands) on that row rather than minting a second.
+    if (const View source = app.view == View::Detail ? app.detail_origin : app.view;
+        source == View::Discover || source == View::Browse) {
+      if (adopt_twin(app, *show) == TwinAdoption::Adopted) show = selected_show();
+      if (show == nullptr) return;
+    }
     // P37 slice 3: clear-on-open, regardless of which view opened it (05 §2-
     // style "cleared when the show is opened" — no view-specific branch, the
     // funnel here covers History/Schedule/Discover/Browse uniformly). Both
@@ -2550,6 +2682,7 @@ void on_key(App& app, const KeyEvent& k) {
       }
     }
     const std::string translation_before = app.config.translation;
+    const std::string title_language_before = app.config.title_language;
     const SettingsOutcome outcome = app.settings.on_key(k, app.config, names);
     switch (outcome) {
       case SettingsOutcome::Ignored:
@@ -2557,10 +2690,20 @@ void on_key(App& app, const KeyEvent& k) {
       case SettingsOutcome::Consumed:
         return;
       case SettingsOutcome::ConfigChanged: {
+        // History's title order follows the titles it shows: re-sort it
+        // under the new language, the cursor on its show.
+        if (app.config.title_language != title_language_before) {
+          const Show* sel = app.history.selected();
+          const std::optional<std::int64_t> anchor =
+              sel != nullptr ? std::optional<std::int64_t>(sel->enrichment.anilist_id)
+                             : std::nullopt;
+          app.history.title_language = parse_title_language(app.config.title_language);
+          app.history.rebuild(anchor);
+        }
         // translation is the one row with a live re-key effect (mirrors the
         // :dub command): re-engage an already-engaged grid so it reflects the
-        // new track. title_language/palette/etc. need no callback — draw()
-        // reads app.config fresh every frame (§1 scope table, P18_PLAN.md).
+        // new track. palette/etc. need no callback — draw() reads app.config
+        // fresh every frame (§1 scope table, P18_PLAN.md).
         if (app.config.translation != translation_before && app.episode_session &&
             app.episode_session->has_for_id()) {
           const Enrichment* show = selected_show();
@@ -2728,6 +2871,25 @@ void on_key(App& app, const KeyEvent& k) {
       case U'F':
         if (app.view == View::History && app.pane == Pane::List) {
           app.history.clear_status_filter();
+          app.dirty = true;
+        }
+        return;
+      case U'o':
+        // History: flip the order inside each group between latest activity
+        // and title, remembered in the config at once.
+        if (app.view == View::History && app.pane == Pane::List) {
+          const HistorySort next = app.history.sort == HistorySort::Title ? HistorySort::Recent
+                                                                          : HistorySort::Title;
+          app.history.set_sort(next);
+          if (const Show* sel = app.history.selected(); sel != nullptr) {
+            (void)app.history.select_aid(sel->enrichment.anilist_id, list_visible);
+          }
+          app.config.history_sort = std::string(to_string(next));
+          app.toasts.push(ToastKind::Info,
+                          next == HistorySort::Title ? "sorted by title"
+                                                     : "sorted by latest activity",
+                          app.tick_count);
+          if (!app.config_file.empty()) toast_config_unsaved(app, write_config(app));
           app.dirty = true;
         }
         return;
@@ -2992,14 +3154,14 @@ void on_key(App& app, const KeyEvent& k) {
         return;
       case U'w': on_status_key(ListStatus::Watching); return;
       case U'P':
-        // History-list: the 5th manual transition (re-plan). In Discover and
-        // on the Browse list (05 §4, app.rs on_plan): add the selected show to
-        // the watchlist (Store::add_to_library) + fire the sibling-provider
-        // prewarm walk + a toast.
+        // History-list: the 5th manual transition (re-plan). In Discover, in
+        // Browse and on a show's page (05 §4, app.rs on_plan): add the
+        // selected show to the watchlist (Store::add_to_library) + fire the
+        // sibling-provider prewarm walk + a toast.
         if (app.view == View::History) {
           on_status_key(ListStatus::Planning);
-        } else if (app.view == View::Discover ||
-                   (app.view == View::Browse && app.pane == Pane::List)) {
+        } else if (app.view == View::Discover || app.view == View::Browse ||
+                   app.view == View::Detail) {
           add_selected_to_library();
         }
         return;
@@ -3945,8 +4107,12 @@ void tick(App& app, const Event& ev) {
                   }
                 }
                 // A play under the count tier changed no library row: nothing
-                // for the trackers to hear, so no flush is owed.
-                if (counted.has_value() && *counted) arm_sync(app);
+                // for the trackers to hear, so no flush is owed, and nothing
+                // for History or a Discover card to show.
+                if (counted.has_value() && *counted) {
+                  load_history(app);
+                  arm_sync(app);
+                }
               }
               // Toast (05 §14): natural end (>= 0.80) counts as a full watch;
               // "all caught up" only when the finished ep is the grid's last and
@@ -4337,6 +4503,9 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   app.queue = &queue;
   app.deps = deps;
   if (deps != nullptr) app.settings_covers_dir = deps->covers_dir_display;
+  // Before the launch refresh's worker opens its own connection: a show held
+  // under two ids becomes one row, so the pull meets the library settled.
+  (void)fold_twins(app);
   // Launch pull-refresh (04 §3, 06 §5.2): pull only, so first contact never
   // blind-pushes a session-old snapshot over whatever changed on AniList
   // since the last run.
@@ -4370,9 +4539,11 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
   // — never touches the network. An explicit History landing holds even with
   // an empty watchlist (app.rs landing_view; P30 audit closed the !empty gate
   // narrowing). The last_watched auto-open (05 §10.6) arms here and fires on
-  // the first real geometry — only then is pane-vs-zoom decidable.
+  // the first real geometry — only then is pane-vs-zoom decidable. History
+  // loads whatever the landing: the Discover cards and the `P` key read the
+  // list state from it.
+  load_history(app);
   if (app.config.landing == "last_watched" || app.config.landing == "history") {
-    load_history(app);
     app.view = View::History;
     app.pane = Pane::List;
     if (app.config.landing == "last_watched") {
@@ -4508,12 +4679,13 @@ int run(bool demo_mode, const AppDeps* deps, const Config* config, std::string c
 
   // Quit flush (P20, 04 §11 / A1 §3 amendment): push what's dirty, bounded
   // best-effort. Gated the same as the periodic flush (never overlaps a
-  // pull), spawns with NoSleep (teardown's own deadline is the only budget it
-  // gets), and signals completion via a heap-shared atomic — NOT the event
+  // pull; either tracker's account opens it, each push going quiet without
+  // its own), spawns with NoSleep (teardown's own deadline is the only budget
+  // it gets), and signals completion via a heap-shared atomic — NOT the event
   // queue, which is about to be shut down and has no reader left to act on a
   // summary at quit anyway. Runs BEFORE the queue/reader teardown below since
   // it never touches either.
-  if (!app.syncing && sync_enabled(app) && deps != nullptr && deps->http != nullptr &&
+  if (!app.syncing && any_tracker(app) && deps != nullptr && deps->http != nullptr &&
       !app.db_file.empty()) {
     auto flushed = std::make_shared<std::atomic<bool>>(false);
     spawn_quit_flush_worker(*deps->http, app.db_file, app.auth, app.config.anilist_sync_enabled,

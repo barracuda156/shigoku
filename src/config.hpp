@@ -37,6 +37,9 @@ struct Config {
   bool transparent_background = false;
   std::string landing = "last_watched";
   std::string title_language = "romaji";
+  // How History orders each status group: "recent" (latest activity first)
+  // or "title". Unknown values read as recent (tui::parse_history_sort).
+  std::string history_sort = "recent";
   // Unclamped as stored; read through effective_cover_concurrency().
   std::uint32_t discover_cover_concurrency = 4;
   std::string preferred_provider;  // "" = unset/follow leader.

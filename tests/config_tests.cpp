@@ -60,6 +60,7 @@ TEST_CASE("round trip preserves everything") {
   cfg.default_quality = "1080";
   cfg.download_quality = "480";
   cfg.download_parallel = 2;
+  cfg.history_sort = "title";
 
   auto saved = cfg.save(path);
   REQUIRE(saved.has_value());
@@ -145,6 +146,20 @@ TEST_CASE("unknown fields ignored missing fields defaulted") {
   CHECK(cfg.translation == "dub");
   CHECK(cfg.mpv_path == "mpv");
   CHECK(cfg.resume_offset_sec == 5);
+}
+
+TEST_CASE("history_sort defaults to recent and keeps an unknown value verbatim") {
+  CHECK(Config{}.history_sort == "recent");
+  const std::string path = tmp("history_sort.json");
+  write_file(path, R"({"history_sort": "by-moon-phase"})");
+  const Config odd = Config::load(path);
+  CHECK(odd.history_sort == "by-moon-phase");
+  REQUIRE(odd.save(path).has_value());
+  CHECK(Config::load(path).history_sort == "by-moon-phase");
+  write_file(path, R"({"history_sort": 1, "translation": "dub"})");
+  const Config bad = Config::load(path);
+  CHECK(bad.history_sort == "recent");
+  CHECK(bad.translation == "dub");
 }
 
 TEST_CASE("disabled_providers keeps string names only") {

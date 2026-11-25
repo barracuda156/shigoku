@@ -438,6 +438,170 @@ TEST_CASE("history: select_aid moves the cursor by identity") {
   CHECK(s.cursor == 1);
 }
 
+TEST_CASE("history: Recent puts the latest activity first, the rest by title then id") {
+  Show played = history_show(1, "Charlie", ListStatus::Watching, 1);
+  played.last_watched_at = 100;
+  Show plain_a = history_show(2, "alpha", ListStatus::Watching, 1);
+  Show edited = history_show(3, "Bravo", ListStatus::Watching, 1);
+  edited.list_updated_at = 300;
+  Show both = history_show(4, "Delta", ListStatus::Watching, 1);
+  both.last_watched_at = 200;
+  both.list_updated_at = 50;
+  Show plain_b = history_show(5, "alpha", ListStatus::Watching, 1);
+  Show tied = history_show(6, "Echo", ListStatus::Watching, 1);
+  tied.last_watched_at = 300;
+  Show plain_c = history_show(7, "Beta", ListStatus::Watching, 1);
+  Show done = history_show(8, "Aardvark", ListStatus::Completed, 12);
+  done.last_watched_at = 900;
+  HistoryState s = history_state({plain_c, played, plain_b, edited, done, both, plain_a, tied});
+  REQUIRE(s.sort == HistorySort::Recent);
+  // Activity newest first (a tie by title), then the rows with none by
+  // case-folded title, equal titles by id; the groups keep their order.
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3, 6, 4, 1, 2, 5, 7, 8});
+  // `rows` stays in store order: the resume target is still the first row.
+  CHECK(s.rows.front().enrichment.anilist_id == 7);
+  CHECK_FALSE(s.first_played().has_value());
+  s.rows.front().last_watched_at = 50;
+  CHECK(s.first_played() == std::optional<std::int64_t>(7));
+}
+
+TEST_CASE("history: Title order follows the displayed title in each title language") {
+  Show zeta = history_show(1, "Zeta", ListStatus::Watching, 0);
+  zeta.enrichment.title_english = "Apple";
+  zeta.enrichment.title_native = "Kappa";
+  zeta.last_watched_at = 10;
+  Show mu = history_show(2, "Mu", ListStatus::Watching, 0);
+  mu.enrichment.title_english = "banana";
+  mu.enrichment.title_native = "Iota";
+  Show mango = history_show(3, "Mango", ListStatus::Watching, 0);
+  mango.enrichment.title_english = std::nullopt;  // falls back to romaji.
+  mango.last_watched_at = 30;
+  Show same_hi = history_show(9, "Mu", ListStatus::Watching, 0);
+  same_hi.enrichment.title_english = "banana";
+  same_hi.enrichment.title_native = "Iota";
+  Show planned = history_show(4, "Aaa", ListStatus::Planning, 0);
+  HistoryState s = history_state({zeta, same_hi, planned, mu, mango});
+
+  s.set_sort(HistorySort::Title);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3, 2, 9, 1, 4});
+  s.title_language = TitleLanguage::English;
+  s.rebuild(std::nullopt);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1, 2, 9, 3, 4});
+  s.title_language = TitleLanguage::Native;
+  s.rebuild(std::nullopt);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{2, 9, 1, 3, 4});
+  // Back to Recent: activity first, no matter the language.
+  s.set_sort(HistorySort::Recent);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3, 1, 2, 9, 4});
+}
+
+TEST_CASE("history: set_sort keeps the cursor on its show and the filters in force") {
+  Show a = history_show(1, "Delta", ListStatus::Watching, 1);
+  a.last_watched_at = 400;
+  Show b = history_show(2, "Charlie", ListStatus::Watching, 1);
+  b.last_watched_at = 300;
+  Show c = history_show(3, "Bravo", ListStatus::Watching, 1);
+  c.last_watched_at = 200;
+  Show d = history_show(4, "Alpha", ListStatus::Completed, 12);
+  HistoryState s = history_state({a, b, c, d});
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1, 2, 3, 4});
+  REQUIRE(s.select_aid(1, 24));
+  REQUIRE(s.cursor == 0);
+  s.set_sort(HistorySort::Title);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3, 2, 1, 4});
+  REQUIRE(s.selected() != nullptr);
+  CHECK(s.selected()->enrichment.anilist_id == 1);
+  CHECK(s.cursor == 2);
+
+  // The text filter and the status filter narrow the sorted list as before.
+  s.filter = "ta";  // "Delta" alone.
+  s.on_filter_edited();
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1});
+  s.on_filter_cleared();
+  s.cycle_status_filter(1);  // Watching
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{3, 2, 1});
+  s.set_sort(HistorySort::Recent);
+  CHECK(nav_ids(s) == std::vector<std::int64_t>{1, 2, 3});
+  CHECK(s.status_filter == ListStatus::Watching);
+}
+
+TEST_CASE("history: find by AniList id, else by MAL id, past the filters") {
+  Show real = history_show(1, "Real", ListStatus::Watching, 1);
+  real.enrichment.mal_id = 11;
+  Show synthetic = history_show(-12, "Synthetic", ListStatus::Paused, 2);
+  synthetic.enrichment.mal_id = 12;
+  Show no_mal = history_show(3, "Bare", ListStatus::Planning, 0);
+  Show same_mal = history_show(4, "Second", ListStatus::Completed, 12);
+  same_mal.enrichment.mal_id = 11;
+  HistoryState s = history_state({real, synthetic, no_mal, same_mal});
+
+  Enrichment q;
+  q.anilist_id = 3;
+  REQUIRE(s.find(q) != nullptr);
+  CHECK(s.find(q)->enrichment.anilist_id == 3);
+  // Under another id, through the MAL id: the synthetic twin.
+  q.anilist_id = 500;
+  q.mal_id = 12;
+  REQUIRE(s.find(q) != nullptr);
+  CHECK(s.find(q)->enrichment.anilist_id == -12);
+  // The AniList id wins over the MAL id.
+  q.anilist_id = 4;
+  CHECK(s.find(q)->enrichment.anilist_id == 4);
+  // Two rows on one MAL id: the first row answers.
+  q.anilist_id = 600;
+  q.mal_id = 11;
+  CHECK(s.find(q)->enrichment.anilist_id == 1);
+  // Misses.
+  q.mal_id = 99;
+  CHECK(s.find(q) == nullptr);
+  q.mal_id = std::nullopt;
+  CHECK(s.find(q) == nullptr);
+  // The filters narrow the list, never the lookup.
+  s.filter = "zzz";
+  s.on_filter_edited();
+  REQUIRE(s.count() == 0);
+  q.anilist_id = 1;
+  CHECK(s.find(q) != nullptr);
+  q.anilist_id = 500;
+  q.mal_id = 12;
+  CHECK(s.find(q) != nullptr);
+}
+
+TEST_CASE("history sort: config spellings") {
+  CHECK(parse_history_sort("recent") == HistorySort::Recent);
+  CHECK(parse_history_sort("title") == HistorySort::Title);
+  CHECK(parse_history_sort("") == HistorySort::Recent);
+  CHECK(parse_history_sort("Title") == HistorySort::Recent);
+  CHECK(to_string(HistorySort::Recent) == "recent");
+  CHECK(to_string(HistorySort::Title) == "title");
+}
+
+TEST_CASE("list_state_text: the full and the compact forms") {
+  Show s = history_show(1, "A", ListStatus::Watching, 5);
+  CHECK(list_state_text(s) == "watching 5/12");
+  CHECK(list_state_text(s, true) == "5/12");
+  s.enrichment.total_episodes = std::nullopt;
+  CHECK(list_state_text(s) == "watching ep 5");
+  CHECK(list_state_text(s, true) == "ep 5");
+  s.enrichment.total_episodes = 0;  // a zero total is no total.
+  CHECK(list_state_text(s) == "watching ep 5");
+  s.progress = 0;
+  CHECK(list_state_text(s) == "watching");
+  CHECK(list_state_text(s, true) == "watching");
+  s = history_show(2, "B", ListStatus::Paused, 3);
+  CHECK(list_state_text(s) == "paused 3/12");
+  CHECK(list_state_text(s, true) == "3/12");
+  s.progress = 0;
+  CHECK(list_state_text(s) == "paused");
+  s = history_show(3, "C", ListStatus::Planning, 0);
+  CHECK(list_state_text(s) == "planned");
+  s = history_show(4, "D", ListStatus::Completed, 12);
+  CHECK(list_state_text(s) == "completed");
+  CHECK(list_state_text(s, true) == "completed");
+  s = history_show(5, "E", ListStatus::Dropped, 4);
+  CHECK(list_state_text(s) == "dropped");
+}
+
 // --- compose_cover_apc: transmit-once placement (terminal-flood regression) --
 //
 // The composer must emit the ~180KB transmit ONCE per placement change, not
@@ -4246,4 +4410,714 @@ TEST_CASE("downloads render: the cell's arrow, the line under the grid, the chip
   CHECK(help.find("x cancel") != std::string::npos);
   CHECK(help.find("r retry") != std::string::npos);
   CHECK(help.find("X delete") != std::string::npos);
+}
+
+// --- History order: the `o` key, the header tag, the title language ---------
+
+TEST_CASE("o flips History between latest activity and title, and remembers it") {
+  auto h = HistoryHarness::make();
+  const std::string path =
+      "/tmp/shigoku-app-test-" + std::to_string(static_cast<long>(::getpid())) + "-sort.json";
+  std::remove(path.c_str());
+  h->app.config_file = path;
+  h->add(1, "Zulu", 12);
+  h->add(2, "alpha", 12);
+  h->add(3, "Mike", 12);
+  // The status edits date all three alike; the later play lifts the first.
+  for (std::int64_t aid : {1, 2, 3}) {
+    REQUIRE(h->store.set_list_status(aid, ListStatus::Watching, 600).has_value());
+  }
+  REQUIRE(h->store.record_finish(1, Translation::Sub, "1", 1, 96.0, 100.0, std::nullopt, 700)
+              .has_value());
+  h->reload();
+  REQUIRE(h->app.history.sort == HistorySort::Recent);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{1, 2, 3});
+  REQUIRE(h->app.history.select_aid(3, 24));
+
+  tick(h->app, Event{press(U'o')});
+  CHECK(h->app.history.sort == HistorySort::Title);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{2, 3, 1});
+  REQUIRE(h->app.history.selected() != nullptr);
+  CHECK(h->app.history.selected()->enrichment.anilist_id == 3);
+  CHECK(h->app.config.history_sort == "title");
+  CHECK(h->app.toasts.visible().back().text == "sorted by title");
+  CHECK(h->app.toasts.visible().back().kind == ToastKind::Info);
+  CHECK(Config::load(path).history_sort == "title");
+
+  // The loader reads the order back from the config.
+  h->reload();
+  CHECK(h->app.history.sort == HistorySort::Title);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{2, 3, 1});
+
+  tick(h->app, Event{press(U'o')});
+  CHECK(h->app.history.sort == HistorySort::Recent);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{1, 2, 3});
+  CHECK(h->app.history.selected()->enrichment.anilist_id == 3);
+  CHECK(h->app.config.history_sort == "recent");
+  CHECK(h->app.toasts.visible().back().text == "sorted by latest activity");
+  CHECK(Config::load(path).history_sort == "recent");
+
+  // Only the History list takes it.
+  h->app.pane = Pane::Detail;
+  tick(h->app, Event{press(U'o')});
+  CHECK(h->app.history.sort == HistorySort::Recent);
+  h->app.pane = Pane::List;
+  h->app.view = View::Browse;
+  tick(h->app, Event{press(U'o')});
+  CHECK(h->app.history.sort == HistorySort::Recent);
+  CHECK(h->app.config.history_sort == "recent");
+  std::remove(path.c_str());
+}
+
+TEST_CASE("History names the title order on its first header only") {
+  auto h = HistoryHarness::make();
+  h->add(1, "Alpha", 12);
+  h->add(2, "Beta", 12);
+  REQUIRE(h->store.set_list_status(2, ListStatus::Completed, 60).has_value());
+  h->reload();
+  CellBuffer buf(100, 24);
+  auto row_with = [&](std::string_view needle) {
+    for (int y = 0; y < buf.height(); ++y) {
+      if (screen_row(buf, y).find(needle) != std::string::npos) return y;
+    }
+    return -1;
+  };
+  draw(h->app, buf);
+  CHECK(row_with("by title") < 0);
+  CHECK(row_with("o latest") < 0);
+  const CellBuffer recent = buf;
+
+  h->app.history.set_sort(HistorySort::Title);  // the key's toast would change the frame.
+  draw(h->app, buf);
+  const int first = row_with("planning (1)");
+  const int second = row_with("completed (1)");
+  REQUIRE(first >= 0);
+  REQUIRE(second > first);
+  const std::string head = screen_row(buf, first);
+  CHECK(head.find("by title") != std::string::npos);
+  CHECK(head.find("o latest") != std::string::npos);
+  CHECK(head.find("o latest") + 8 <= static_cast<std::size_t>(2 + pane_split(100).list_w));
+  CHECK(buf.at(static_cast<int>(head.find("by title")), first).fg == theme::fg3);
+  CHECK(screen_row(buf, second).find("by title") == std::string::npos);
+  // Everything but that one header reads as it did in the default order.
+  for (int y = 0; y < buf.height(); ++y) {
+    if (y == first) continue;
+    for (int x = 0; x < buf.width(); ++x) CHECK(buf.at(x, y) == recent.at(x, y));
+  }
+}
+
+TEST_CASE("a title-language change in Settings re-sorts a History in title order") {
+  auto h = HistoryHarness::make();
+  h->add(1, "Zeta", 12);
+  h->add(2, "Mu", 12);
+  Enrichment e1;
+  e1.anilist_id = 1;
+  e1.title_romaji = "Zeta";
+  e1.title_english = "Apple";
+  REQUIRE(h->store.patch_show_enrichment(e1, /*stamp_fresh=*/false, 70).has_value());
+  Enrichment e2;
+  e2.anilist_id = 2;
+  e2.title_romaji = "Mu";
+  e2.title_english = "Banana";
+  REQUIRE(h->store.patch_show_enrichment(e2, /*stamp_fresh=*/false, 70).has_value());
+  h->app.config.history_sort = "title";
+  h->reload();
+  REQUIRE(h->app.history.sort == HistorySort::Title);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{2, 1});
+  REQUIRE(h->app.history.select_aid(2, 24));
+
+  h->app.view = View::Settings;
+  h->app.settings.select(settings_row_index(SettingsRowId::TitleLanguage));
+  tick(h->app, Event{press(U'l')});
+  REQUIRE(h->app.config.title_language == "english");
+  CHECK(h->app.history.title_language == TitleLanguage::English);
+  CHECK(nav_ids(h->app.history) == std::vector<std::int64_t>{1, 2});
+  CHECK(h->app.history.selected()->enrichment.anilist_id == 2);
+}
+
+// --- Discover cards: the list state ------------------------------------------
+
+namespace {
+
+// The UTF-8 text of `w` cells of row `y` from column `x`.
+std::string cells_utf8(const CellBuffer& buf, int x, int y, int w) {
+  std::string out;
+  for (int cx = x; cx < x + w; ++cx) {
+    const Cell& c = buf.at(cx, y);
+    if (c.continuation) continue;
+    encode_utf8(c.glyph == 0 ? U' ' : c.glyph, out);
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
+CatalogRow card_show(std::int64_t aid, std::optional<std::int64_t> mal, std::string_view title) {
+  Enrichment e;
+  e.anilist_id = aid;
+  e.mal_id = mal;
+  e.title_romaji = std::string(title);
+  e.kind = "TV";
+  e.total_episodes = 12;
+  e.genres = {"Romance"};
+  return CatalogRow{e};
+}
+
+void set_history(App& app, std::vector<Show> rows) {
+  app.history.resume.assign(rows.size(), std::nullopt);
+  app.history.rows = std::move(rows);
+  app.history.rebuild(std::nullopt);
+}
+
+void feed_discover(App& app, std::vector<CatalogRow> rows) {
+  app.discover.on_feed(DiscoverAxis::Trending, 1, std::move(rows), /*has_next=*/false, nullptr,
+                       500, app.discover.filter_gen());
+}
+
+// Card `i`'s cover cell on a cols x 24 frame (draw_discover's geometry).
+Rect card_rect(const App& app, std::size_t i, int cols) {
+  const GridGeo geo = grid_geo(cols, 21, app.cover_caps.cell);
+  return card_cover_rect(geo, i, 0, 2, 4, cols, 23);
+}
+
+}  // namespace
+
+TEST_CASE("Discover cards: a show not on the list draws its caption as before") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(500, 50, "Unlisted"), card_show(501, 51, "Other")});
+  CellBuffer before(100, 24);
+  draw(h->app, before);
+  Show elsewhere = history_show(900, "Elsewhere", ListStatus::Watching, 3);
+  elsewhere.enrichment.mal_id = 90;
+  set_history(h->app, {elsewhere});
+  CellBuffer after(100, 24);
+  draw(h->app, after);
+  for (int y = 4; y < 23; ++y) {
+    for (int x = 0; x < 100; ++x) CHECK(after.at(x, y) == before.at(x, y));
+  }
+  const Rect r = card_rect(h->app, 1, 100);
+  REQUIRE_FALSE(r.empty());
+  const int fmt = r.y + r.h + 2;
+  CHECK(cells_utf8(after, r.x, fmt, r.w).rfind("TV \xC2\xB7 12ep", 0) == 0);
+  CHECK(after.at(r.x + r.w - 1, fmt).glyph == U'♥');  // the genre glyph.
+  CHECK(after.at(r.x, r.y + r.h + 1).fg == theme::fg);
+}
+
+TEST_CASE("Discover cards: a listed show's third caption row says where it stands") {
+  struct Case {
+    ListStatus status;
+    std::uint32_t progress;
+    std::optional<std::uint32_t> total;
+    const char* line;
+    bool receded;
+  };
+  const Case cases[] = {
+      {ListStatus::Watching, 5, 12, "\xE2\x96\xB8 watching 5/12", false},
+      {ListStatus::Watching, 5, std::nullopt, "\xE2\x96\xB8 watching ep 5", false},
+      {ListStatus::Watching, 0, 12, "\xE2\x96\xB8 watching", false},
+      {ListStatus::Paused, 3, 12, "\xE2\x97\x90 paused 3/12", false},
+      {ListStatus::Paused, 0, 12, "\xE2\x97\x90 paused", false},
+      {ListStatus::Planning, 0, 12, "\xE2\x97\x8B planned", false},
+      {ListStatus::Completed, 12, 12, "\xE2\x97\x8F completed", true},
+      {ListStatus::Dropped, 4, 12, "\xC2\xB7 dropped", true},
+  };
+  auto h = HistoryHarness::make();
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(500, 50, "Selected"), card_show(501, 51, "Listed")});
+  CellBuffer plain(100, 24);
+  draw(h->app, plain);
+  const Rect r = card_rect(h->app, 1, 100);
+  REQUIRE_FALSE(r.empty());
+  const int rank_y = r.y + r.h;
+  for (const Case& c : cases) {
+    CAPTURE(c.line);
+    Show row = history_show(501, "Listed", c.status, c.progress);
+    row.enrichment.total_episodes = c.total;
+    set_history(h->app, {row});
+    CellBuffer buf(100, 24);
+    draw(h->app, buf);
+    CHECK(cells_utf8(buf, r.x, rank_y + 2, r.w) == c.line);
+    CHECK(buf.at(r.x, rank_y + 2).fg == (c.receded ? theme::fg3 : theme::focus));
+    CHECK(buf.at(r.x + 2, rank_y + 2).fg == (c.receded ? theme::fg3 : theme::fg));
+    CHECK(buf.at(r.x, rank_y + 1).fg == (c.receded ? theme::fg3 : theme::fg));
+    // The rank row and the cover cell are untouched.
+    for (int y = r.y; y <= rank_y; ++y) {
+      for (int x = r.x - 1; x < r.x + r.w; ++x) CHECK(buf.at(x, y) == plain.at(x, y));
+    }
+  }
+
+  // A finished show recedes only while it is not the one selected.
+  Show done = history_show(500, "Selected", ListStatus::Completed, 12);
+  set_history(h->app, {done});
+  CellBuffer buf(100, 24);
+  draw(h->app, buf);
+  const Rect r0 = card_rect(h->app, 0, 100);
+  CHECK(buf.at(r0.x, r0.y + r0.h + 1).fg == theme::focus);
+  CHECK(cells_utf8(buf, r0.x, r0.y + r0.h + 2, r0.w) == "\xE2\x97\x8F completed");
+}
+
+TEST_CASE("Discover cards: a narrow card keeps the count, and a twin is found by its MAL id") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Discover;
+  h->app.win = WinSize{70, 24, 0, 0};
+  feed_discover(h->app, {card_show(500, 50, "First"), card_show(501, 51, "Second")});
+  const Rect r = card_rect(h->app, 1, 70);
+  REQUIRE_FALSE(r.empty());
+  REQUIRE(r.w == 14);
+  const int line_y = r.y + r.h + 2;
+
+  // The MyAnimeList import's synthetic row: another id, the same MAL id.
+  Show twin = history_show(-51, "Second", ListStatus::Watching, 5);
+  twin.enrichment.mal_id = 51;
+  set_history(h->app, {twin});
+  CellBuffer buf(70, 24);
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, r.x, line_y, r.w) == "\xE2\x96\xB8 5/12");
+  twin.enrichment.total_episodes = std::nullopt;
+  set_history(h->app, {twin});
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, r.x, line_y, r.w) == "\xE2\x96\xB8 ep 5");
+  // A full form that fits stays full.
+  twin.list_status = ListStatus::Paused;
+  twin.progress = 3;
+  twin.enrichment.total_episodes = 12;
+  set_history(h->app, {twin});
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, r.x, line_y, r.w) == "\xE2\x97\x90 paused 3/12");
+}
+
+// --- P on Discover: add, already listed, the synthetic twin ------------------
+
+TEST_CASE("P on Discover: a fresh add lands on the list and the card shows it") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(600, 60, "Fresh")});
+  tick(h->app, Event{press(U'P')});
+  auto g = h->store.get_show(600);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Planning);
+  CHECK(h->app.toasts.visible().back().text == "added to your list");
+  const Show* listed = h->app.history.find(h->app.discover.slot().entries[0].meta);
+  REQUIRE(listed != nullptr);
+  CHECK(list_state_text(*listed) == "planned");
+}
+
+TEST_CASE("P on Discover: a show already on the list is not written again") {
+  auto h = HistoryHarness::make();
+  h->add(601, "Listed", 12);
+  REQUIRE(h->store.restore_list_status(601, ListStatus::Watching, 5, 60).has_value());
+  h->reload();
+  h->app.auth.mal.access_token = "live-mal-token-value";  // undated: usable.
+  const auto before = h->store.get_show(601);
+  REQUIRE(before.has_value());
+  REQUIRE(before->has_value());
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(601, std::nullopt, "Listed")});
+
+  tick(h->app, Event{press(U'P')});
+  CHECK(h->app.toasts.visible().back().text == "already on your list \xC2\xB7 watching 5/12");
+  CHECK(h->app.toasts.visible().back().kind == ToastKind::Info);
+  const auto after = h->store.get_show(601);
+  REQUIRE(after->has_value());
+  CHECK(**after == **before);
+  CHECK(h->app.sync_flush_deadline == 0);
+}
+
+TEST_CASE("P on Discover: the synthetic twin takes the show's id, no second row") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(555), 50).has_value());
+  REQUIRE(h->store.restore_list_status(-555, ListStatus::Watching, 3, 60).has_value());
+  h->reload();
+  h->app.auth.mal.access_token = "live-mal-token-value";
+  h->app.view = View::Discover;
+  feed_discover(h->app, {CatalogRow{real_show(555, 9555)}});
+
+  tick(h->app, Event{press(U'P')});
+  CHECK_FALSE(h->store.get_show(-555)->has_value());
+  auto g = h->store.get_show(9555);
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Watching);
+  CHECK((*g)->progress == 3);
+  CHECK((*g)->library_added_at.has_value());
+  CHECK((*g)->enrichment.title_romaji == "Real Title");
+  auto all = h->store.list_history();
+  REQUIRE(all.has_value());
+  CHECK(all->size() == 1);
+  REQUIRE(h->app.history.rows.size() == 1);
+  CHECK(h->app.history.rows[0].enrichment.anilist_id == 9555);
+  CHECK(h->app.toasts.visible().back().text == "already on your list \xC2\xB7 watching 3/24");
+  CHECK(h->app.sync_flush_deadline != 0);
+}
+
+TEST_CASE("P on Discover: a twin busy playing stays as it is") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(557), 50).has_value());
+  h->reload();
+  h->app.play.active = true;
+  h->app.play.for_id = -557;
+  h->app.view = View::Discover;
+  feed_discover(h->app, {CatalogRow{real_show(557, 9557)}});
+
+  tick(h->app, Event{press(U'P')});
+  CHECK(h->store.get_show(-557)->has_value());
+  CHECK_FALSE(h->store.get_show(9557)->has_value());
+  CHECK(h->app.toasts.visible().back().text == "already on your list \xC2\xB7 planned");
+}
+
+TEST_CASE("opening a Discover card re-keys its synthetic twin before the grid engages") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(556), 50).has_value());
+  REQUIRE(h->store.restore_list_status(-556, ListStatus::Paused, 2, 60).has_value());
+  h->reload();
+  h->app.view = View::Discover;
+  feed_discover(h->app, {CatalogRow{real_show(556, 9556)}});
+
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  CHECK(h->app.view == View::Detail);
+  CHECK(h->app.detail_origin == View::Discover);
+  CHECK_FALSE(h->store.get_show(-556)->has_value());
+  auto g = h->store.get_show(9556);
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Paused);
+  CHECK((*g)->progress == 2);
+  CHECK(h->app.episode.for_id == 9556);
+  REQUIRE(h->app.history.rows.size() == 1);
+  CHECK(h->app.history.rows[0].enrichment.anilist_id == 9556);
+}
+
+// --- Sync: what MyAnimeList did not take, and the renewable sign-in ----------
+
+TEST_CASE("sync flushed: changes MyAnimeList did not take raise one warning") {
+  {
+    auto h = HistoryHarness::make();
+    SyncFlushed s;
+    s.outcome = SyncOutcome::Completed;
+    s.mal_unsent = 3;
+    tick(h->app, Event{s});
+    REQUIRE(h->app.toasts.size() == 1);
+    CHECK(h->app.toasts.visible().back().text == "3 changes not sent to MyAnimeList");
+    CHECK(h->app.toasts.visible().back().kind == ToastKind::Warning);
+  }
+  {
+    auto h = HistoryHarness::make();
+    SyncFlushed s;
+    s.outcome = SyncOutcome::Completed;
+    s.mal_unsent = 1;
+    tick(h->app, Event{s});
+    REQUIRE(h->app.toasts.size() == 1);
+    CHECK(h->app.toasts.visible().back().text == "1 change not sent to MyAnimeList");
+  }
+  {
+    // The refused sign-in says it all: no second warning beside it.
+    auto h = HistoryHarness::make();
+    SyncFlushed s;
+    s.outcome = SyncOutcome::Completed;
+    s.mal_unauthorized = true;
+    s.mal_unsent = 2;
+    tick(h->app, Event{s});
+    REQUIRE(h->app.toasts.size() == 1);
+    CHECK(h->app.toasts.visible().back().text ==
+          "MyAnimeList sign-in expired; reconnect under Settings");
+  }
+  {
+    auto h = HistoryHarness::make();
+    SyncFlushed s;
+    s.outcome = SyncOutcome::Completed;
+    s.mal_pushed = 2;
+    tick(h->app, Event{s});
+    REQUIRE(h->app.toasts.size() == 1);
+    CHECK(h->app.toasts.visible().back().text == "\xE2\x86\x91 2 to MyAnimeList");
+  }
+}
+
+TEST_CASE("sync gate: a MyAnimeList token past its date still arms the flush if renewable") {
+  auto arm = [](bool with_refresh) {
+    auto h = HistoryHarness::make();
+    h->add(1, "Show", 12);
+    h->reload();
+    h->app.auth.mal.access_token = "expired-access-token";
+    if (with_refresh) h->app.auth.mal.refresh_token = "refresh-token-value";
+    h->app.auth.mal.expires_at = test_now_secs() - 60;
+    REQUIRE(h->app.sync_flush_deadline == 0);
+    tick(h->app, Event{press(U'w')});
+    auto g = h->store.get_show(1);
+    REQUIRE(g->has_value());
+    CHECK((*g)->list_status == ListStatus::Watching);  // the edit lands either way.
+    return h->app.sync_flush_deadline;
+  };
+  CHECK(arm(true) == kSyncFlushTicks);
+  CHECK(arm(false) == 0);
+}
+
+TEST_CASE("a counted play reloads History, so the card it was played from shows it") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.ensure_show(610, "Played", std::nullopt, 12, std::nullopt).has_value());
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(610, std::nullopt, "Played")});
+  const Enrichment& card = h->app.discover.slot().entries[0].meta;
+  REQUIRE(h->app.history.find(card) == nullptr);
+  h->app.play.active = true;
+  h->app.play.for_id = 610;
+  h->app.play.episode = "1";
+  h->app.play.episode_index = 1;
+  h->app.play.duration = 1400.0;
+  tick(h->app, Event{PlayDone{1395.0, 610, "1"}});
+  const Show* listed = h->app.history.find(card);
+  REQUIRE(listed != nullptr);
+  CHECK(listed->last_watched_at.has_value());
+}
+
+// --- P on a show's page -------------------------------------------------------
+
+TEST_CASE("P on a show's page opened from Discover adds the show") {
+  auto h = HistoryHarness::make();
+  h->app.auth.mal.access_token = "live-mal-token-value";
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(620, 62, "Zoomed Fresh")});
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.view == View::Detail);
+  REQUIRE(h->app.detail_origin == View::Discover);
+  REQUIRE_FALSE(h->store.get_show(620)->has_value());
+
+  tick(h->app, Event{press(U'P')});
+  auto g = h->store.get_show(620);
+  REQUIRE(g->has_value());
+  CHECK((*g)->library_added_at.has_value());
+  CHECK((*g)->list_status == ListStatus::Planning);
+  CHECK(h->app.toasts.visible().back().text == "added to your list");
+  CHECK(h->app.sync_flush_deadline != 0);
+  CHECK(h->app.view == View::Detail);  // the page stays up.
+}
+
+TEST_CASE("P on the page of a show already listed says so and writes nothing") {
+  auto h = HistoryHarness::make();
+  h->add(621, "Listed", 12);
+  REQUIRE(h->store.restore_list_status(621, ListStatus::Watching, 4, 60).has_value());
+  h->reload();
+  h->app.auth.mal.access_token = "live-mal-token-value";
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(621, std::nullopt, "Listed")});
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.view == View::Detail);
+  const auto before = h->store.get_show(621);
+  REQUIRE(before->has_value());
+
+  tick(h->app, Event{press(U'P')});
+  CHECK(h->app.toasts.visible().back().text == "already on your list \xC2\xB7 watching 4/12");
+  const auto after = h->store.get_show(621);
+  REQUIRE(after->has_value());
+  CHECK(**after == **before);
+  CHECK(h->app.sync_flush_deadline == 0);
+}
+
+TEST_CASE("P on a page opened from History is not History's re-plan") {
+  auto h = HistoryHarness::make();
+  h->add(622, "Mine", 12);
+  REQUIRE(h->store.restore_list_status(622, ListStatus::Paused, 2, 60).has_value());
+  h->reload();
+  const auto before = h->store.get_show(622);
+  REQUIRE(before->has_value());
+
+  // The zoom over the History row: P only says where it stands.
+  tick(h->app, Event{press(U' ')});
+  REQUIRE(h->app.view == View::Detail);
+  REQUIRE(h->app.detail_origin == View::History);
+  tick(h->app, Event{press(U'P')});
+  CHECK(h->app.toasts.visible().back().text == "already on your list \xC2\xB7 paused 2/12");
+  CHECK(**h->store.get_show(622) == **before);
+
+  // History's own detail pane keeps P inert: the re-plan is the list's.
+  tick(h->app, Event{press(U' ')});  // back out of the zoom.
+  REQUIRE(h->app.view == View::History);
+  h->app.pane = Pane::Detail;
+  const std::size_t toasts = h->app.toasts.size();
+  tick(h->app, Event{press(U'P')});
+  CHECK(h->app.toasts.size() == toasts);
+  CHECK((*h->store.get_show(622))->list_status == ListStatus::Paused);
+}
+
+TEST_CASE("P does nothing while a character page is up") {
+  auto h = HistoryHarness::make();
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(623, 63, "Cast Page")});
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.view == View::Detail);
+  h->app.character.open = true;
+  h->app.character.id = 1;
+  h->app.character.show_id = 623;
+  h->app.character.name = "Someone";
+  const std::size_t toasts = h->app.toasts.size();
+  tick(h->app, Event{press(U'P')});
+  CHECK_FALSE(h->store.get_show(623)->has_value());
+  CHECK(h->app.toasts.size() == toasts);
+  CHECK(h->app.character.open);
+}
+
+// --- A show's page states where the show stands ---------------------------------
+
+TEST_CASE("a show's page opened from a catalog view carries the list state") {
+  auto h = HistoryHarness::make();
+  CatalogRow card = card_show(630, 63, "Paged");
+  card.meta.status = "RELEASING";
+  card.meta.year = 2026;
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card});
+  h->app.detail_origin = View::Discover;
+  h->app.view = View::Detail;
+  const int chips_y = kContentY0 + 2;
+  const int score_y = kContentY0 + 3;
+
+  CellBuffer plain(100, 24);
+  draw(h->app, plain);
+  CHECK(cells_utf8(plain, 2, chips_y, 96) == "RELEASING  2026");
+  CHECK(cells_utf8(plain, 2, score_y, 96).find("you:") == std::string::npos);
+
+  // Another show on the list changes nothing on this page.
+  set_history(h->app, {history_show(900, "Elsewhere", ListStatus::Watching, 3)});
+  CellBuffer other(100, 24);
+  draw(h->app, other);
+  for (int x = 0; x < 100; ++x) {
+    CHECK(other.at(x, chips_y) == plain.at(x, chips_y));
+    CHECK(other.at(x, score_y) == plain.at(x, score_y));
+  }
+
+  Show listed = history_show(630, "Paged", ListStatus::Watching, 5);
+  listed.user_score = 75;
+  set_history(h->app, {listed});
+  CellBuffer buf(100, 24);
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, 2, chips_y, 96) == "RELEASING  2026  \xC2\xB7 \xE2\x96\xB8 watching 5/12");
+  CHECK(buf.at(21, chips_y).glyph == U'▸');
+  CHECK(buf.at(21, chips_y).fg == theme::focus);
+  CHECK(buf.at(23, chips_y).fg == theme::fg);
+  CHECK(cells_utf8(buf, 2, score_y, 96).find("you: 7.5") != std::string::npos);
+
+  // The same from Browse.
+  h->app.catalog.push_back(card);
+  h->app.list_cursor = 0;
+  h->app.detail_origin = View::Browse;
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, 2, chips_y, 96) == "RELEASING  2026  \xC2\xB7 \xE2\x96\xB8 watching 5/12");
+  CHECK(cells_utf8(buf, 2, score_y, 96).find("you: 7.5") != std::string::npos);
+}
+
+TEST_CASE("a show's page opened from History has no list-state chip") {
+  auto h = HistoryHarness::make();
+  Show row = history_show(631, "Mine", ListStatus::Watching, 5);
+  row.enrichment.status = "RELEASING";
+  row.enrichment.year = 2026;
+  row.user_score = 75;
+  set_history(h->app, {row});
+  h->app.detail_origin = View::History;
+  h->app.view = View::Detail;
+  CellBuffer buf(100, 24);
+  draw(h->app, buf);
+  CHECK(cells_utf8(buf, 2, kContentY0 + 2, 96) == "RELEASING  2026");
+  CHECK(cells_utf8(buf, 2, kContentY0 + 3, 96).find("you: 7.5") != std::string::npos);
+}
+
+// --- Twins folded after an import ---------------------------------------------
+
+TEST_CASE("sync flushed: an import folds a show held under two ids into the real one") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(560), 50).has_value());
+  REQUIRE(h->store.restore_list_status(-560, ListStatus::Watching, 5, 60).has_value());
+  REQUIRE(h->store.add_to_library(real_show(560, 9560), 55).has_value());
+  REQUIRE(h->store.restore_list_status(9560, ListStatus::Watching, 2, 60).has_value());
+  h->reload();
+  REQUIRE(h->app.history.rows.size() == 2);
+  h->app.auth.mal.access_token = "live-mal-token-value";
+
+  SyncFlushed s;
+  s.outcome = SyncOutcome::Completed;
+  s.mal_imported = 1;
+  tick(h->app, Event{s});
+  CHECK_FALSE(h->store.get_show(-560)->has_value());
+  auto g = h->store.get_show(9560);
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Watching);
+  CHECK((*g)->progress == 5);  // the higher of the two.
+  CHECK((*g)->enrichment.mal_id == std::optional<std::int64_t>(560));
+  auto all = h->store.list_history();
+  REQUIRE(all.has_value());
+  CHECK(all->size() == 1);
+  REQUIRE(h->app.history.rows.size() == 1);
+  CHECK(h->app.history.rows[0].enrichment.anilist_id == 9560);
+  CHECK(h->app.sync_flush_deadline != 0);
+}
+
+TEST_CASE("sync flushed: a twin pair mid-play is left for later") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(synthetic_show(561), 50).has_value());
+  REQUIRE(h->store.add_to_library(real_show(561, 9561), 55).has_value());
+  h->reload();
+  h->app.auth.mal.access_token = "live-mal-token-value";
+  h->app.play.active = true;
+  h->app.play.for_id = -561;
+
+  SyncFlushed s;
+  s.outcome = SyncOutcome::Completed;
+  s.mal_imported = 1;
+  tick(h->app, Event{s});
+  CHECK(h->store.get_show(-561)->has_value());
+  CHECK(h->store.get_show(9561)->has_value());
+  CHECK(h->app.history.rows.size() == 2);
+  CHECK(h->app.sync_flush_deadline == 0);
+}
+
+TEST_CASE("sync flushed: an import with no twins changes nothing and arms nothing") {
+  auto h = HistoryHarness::make();
+  REQUIRE(h->store.add_to_library(real_show(562, 9562), 55).has_value());
+  REQUIRE(h->store.add_to_library(synthetic_show(563), 50).has_value());  // another show.
+  h->reload();
+  h->app.auth.mal.access_token = "live-mal-token-value";
+  const auto real_before = h->store.get_show(9562);
+  const auto syn_before = h->store.get_show(-563);
+  REQUIRE(real_before->has_value());
+  REQUIRE(syn_before->has_value());
+
+  SyncFlushed s;
+  s.outcome = SyncOutcome::Completed;
+  s.imported = 1;
+  tick(h->app, Event{s});
+  CHECK(**h->store.get_show(9562) == **real_before);
+  CHECK(**h->store.get_show(-563) == **syn_before);
+  CHECK(h->app.history.rows.size() == 2);
+  CHECK(h->app.sync_flush_deadline == 0);
+}
+
+// --- History's resume markers -------------------------------------------------
+
+TEST_CASE("History's resume markers: a partial watch has one, the other rows none") {
+  auto h = HistoryHarness::make();
+  h->add(1, "Partial", 12);
+  h->add(2, "Untouched", 12);
+  h->add(3, "Special", 12);
+  h->add(4, "Dubbed", 12);
+  REQUIRE(h->store.save_progress(1, Translation::Sub, "3", 300.0, 1400.0, "senshi", 70)
+              .has_value());
+  REQUIRE(h->store.save_progress(3, Translation::Sub, "SP1", 300.0, 1400.0, "senshi", 70)
+              .has_value());
+  REQUIRE(h->store.save_progress(4, Translation::Dub, "5", 300.0, 1400.0, "senshi", 70)
+              .has_value());
+  h->reload();
+  REQUIRE(h->app.history.rows.size() == 4);
+  REQUIRE(h->app.history.resume.size() == 4);
+  constexpr std::uint32_t kMissing = 999;
+  auto marker = [&](std::int64_t aid) -> std::optional<std::uint32_t> {
+    for (std::size_t i = 0; i < h->app.history.rows.size(); ++i) {
+      if (h->app.history.rows[i].enrichment.anilist_id == aid) return h->app.history.resume[i];
+    }
+    return kMissing;
+  };
+  CHECK(marker(1) == std::optional<std::uint32_t>(3));
+  CHECK(marker(2) == std::nullopt);
+  CHECK(marker(3) == std::nullopt);  // a label that is no number carries none.
+  CHECK(marker(4) == std::nullopt);  // the list reads the subbed track.
+}
+
+TEST_CASE("idle_help: History's list line names the order key") {
+  const std::string help = detail::idle_help(View::History, Pane::List);
+  CHECK(help.find("f status \xC2\xB7 o order \xC2\xB7 ") != std::string::npos);
 }
