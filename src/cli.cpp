@@ -339,9 +339,46 @@ std::string render_mal_pull(const MalPullCounts& m) {
   return out;
 }
 
+// The mirror's push lines, ahead of its pull's; silent unless the push ran.
+// At most `failed` failure notes belong under that count.
+std::string render_mal_push(const MalPushCounts& m) {
+  if (!m.ran) return {};
+  if (m.dirty == 0) return "  nothing to send to MyAnimeList.\n";
+  std::string out;
+  if (m.pushed > 0) {
+    out += "  pushed " + std::to_string(m.pushed) + " change(s) to MyAnimeList.\n";
+  }
+  if (m.settled > 0) {
+    out += "  (" + std::to_string(m.settled) +
+           " change(s) merged with what MyAnimeList already held; nothing to send.)\n";
+  }
+  if (m.failed > 0) {
+    out += "  " + std::to_string(m.failed) + " push(es) to MyAnimeList failed:\n";
+    const std::size_t shown = std::min<std::size_t>(m.failures.size(), m.failed);
+    for (std::size_t i = 0; i < shown; ++i) {
+      out += "      " + std::string(glyphs().dot) + " " + m.failures[i] + "\n";
+    }
+    if (m.failed > shown) {
+      out += "      " + ellipsis() + " and " + std::to_string(m.failed - shown) + " more\n";
+    }
+  }
+  if (m.skipped > 0) {
+    out += "  (" + std::to_string(m.skipped) +
+           " show(s) changed mid-sync; they go to MyAnimeList next run.)\n";
+  }
+  if (m.unauthorized) {
+    out += "  stopped: MyAnimeList rejected the sign-in mid-run; reconnect it under Settings. " +
+           std::to_string(m.unsent) + " change(s) still to send.\n";
+  } else if (m.rate_limited) {
+    out += "  stopped: hit MyAnimeList's rate limit; " + std::to_string(m.unsent) +
+           " change(s) wait for the next run.\n";
+  }
+  return out;
+}
+
 }  // namespace
 
-std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pushed,
+std::string render_sync_summary(const sync::SyncSummary& s, MalPushCounts mal_push,
                                 MalPullCounts mal_pull, std::uint32_t airing_refreshed) {
   using O = sync::SyncOutcome;
   std::string out;
@@ -380,8 +417,9 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
   if (!anilist_terminal.empty()) {
     // A MAL-only account still gets its own report; the AniList line is then
     // one fact among two rather than the whole verdict.
-    if (!mal_pull.ran) return "  " + anilist_terminal;
-    return "  AniList: " + anilist_terminal + render_mal_pull(mal_pull);
+    if (!mal_pull.ran && !mal_push.ran) return "  " + anilist_terminal;
+    return "  AniList: " + anilist_terminal + render_mal_push(mal_push) +
+           render_mal_pull(mal_pull);
   }
 
   if (s.pull_failed) {
@@ -438,12 +476,7 @@ std::string render_sync_summary(const sync::SyncSummary& s, std::uint32_t mal_pu
   } else if (s.outcome == O::RateLimited) {
     out += "  stopped: hit AniList's rate limit; run `shigoku sync` again shortly to finish.\n";
   }
-  // P31 §9.1 slice 4: the MAL mirror is silent unless it actually pushed
-  // something — its own failures/skips just leave rows dirty for next run,
-  // same as the TUI's on_sync_flushed toast logic.
-  if (mal_pushed > 0) {
-    out += "  pushed " + std::to_string(mal_pushed) + " change(s) to MyAnimeList.\n";
-  }
+  out += render_mal_push(mal_push);
   out += render_mal_pull(mal_pull);
   if (airing_refreshed > 0) {
     out += "  refreshed airing times for " + std::to_string(airing_refreshed) + " show(s).\n";

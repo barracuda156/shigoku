@@ -475,15 +475,212 @@ TEST_CASE("clean_run_says_up_to_date_on_both_sides") {
   CHECK_MESSAGE(contains(text, "nothing to push"), text);
 }
 
-// P31 §9.1 slice 4: mal_pushed defaults to 0 (silent, same as the TUI's
-// on_sync_flushed toast logic) and only renders a line when something moved.
-TEST_CASE("mal_pushed_is_silent_by_default_and_renders_only_when_nonzero") {
+// The mirror's push says nothing unless it ran; a run with nothing to send
+// says so.
+TEST_CASE("mal_push_is_silent_unless_it_ran_and_says_when_nothing_was_owed") {
   const std::string quiet = cli::render_sync_summary(summary(sync::SyncOutcome::Completed));
   CHECK_MESSAGE(!contains(quiet, "MyAnimeList"), quiet);
 
-  const std::string loud =
-      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), /*mal_pushed=*/3);
-  CHECK_MESSAGE(contains(loud, "pushed 3 change(s) to MyAnimeList"), loud);
+  cli::MalPushCounts idle;
+  idle.ran = true;
+  const std::string nothing =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), idle);
+  CHECK_MESSAGE(contains(nothing, "  nothing to send to MyAnimeList.\n"), nothing);
+
+  cli::MalPushCounts not_run;
+  not_run.dirty = 3;
+  not_run.pushed = 3;
+  CHECK(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), not_run) == quiet);
+
+  cli::MalPushCounts m;
+  m.ran = true;
+  m.dirty = 3;
+  m.pushed = 3;
+  const std::string loud = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), m);
+  CHECK_MESSAGE(contains(loud, "  pushed 3 change(s) to MyAnimeList.\n"), loud);
+  CHECK_MESSAGE(!contains(loud, "merged with what MyAnimeList"), loud);
+  CHECK_MESSAGE(!contains(loud, "failed"), loud);
+  CHECK_MESSAGE(!contains(loud, "stopped"), loud);
+}
+
+TEST_CASE("mal_push_lines_name_each_count") {
+  cli::MalPushCounts m;
+  m.ran = true;
+  m.dirty = 9;
+  m.pushed = 2;
+  m.settled = 3;
+  m.failed = 2;
+  m.skipped = 1;
+  m.unsent = 4;
+  m.failures = {"myanimelist.net/anime/501: save failed, http 403",
+                "myanimelist.net/anime/502: entry read failed, no answer"};
+  const std::string text = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), m);
+  CHECK_MESSAGE(contains(text, "  pushed 2 change(s) to MyAnimeList.\n"), text);
+  CHECK_MESSAGE(contains(text, "  (3 change(s) merged with what MyAnimeList already held; nothing "
+                               "to send.)\n"),
+                text);
+  CHECK_MESSAGE(contains(text, "  2 push(es) to MyAnimeList failed:\n"
+                               "      \xC2\xB7 myanimelist.net/anime/501: save failed, http 403\n"
+                               "      \xC2\xB7 myanimelist.net/anime/502: entry read failed, no "
+                               "answer\n"),
+                text);
+  CHECK_MESSAGE(!contains(text, "more\n"), text);
+  CHECK_MESSAGE(contains(text, "  (1 show(s) changed mid-sync; they go to MyAnimeList next "
+                               "run.)\n"),
+                text);
+  CHECK_MESSAGE(!contains(text, "stopped"), text);
+  CHECK_MESSAGE(!contains(text, "--debug"), text);
+  // Pushed, merged, failed, skipped: in that order.
+  CHECK(text.find("pushed 2") < text.find("(3 change(s) merged"));
+  CHECK(text.find("(3 change(s) merged") < text.find("2 push(es) to MyAnimeList failed"));
+  CHECK(text.find("2 push(es) to MyAnimeList failed") < text.find("(1 show(s) changed"));
+}
+
+TEST_CASE("mal_push_failure_list_counts_what_it_does_not_show") {
+  cli::MalPushCounts m;
+  m.ran = true;
+  m.dirty = 15;
+  m.failed = 15;
+  for (int i = 1; i <= 12; ++i) {
+    m.failures.push_back("myanimelist.net/anime/" + std::to_string(600 + i) + ": save failed, "
+                         "http 500");
+  }
+  const std::string text = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), m);
+  CHECK_MESSAGE(contains(text, "  15 push(es) to MyAnimeList failed:\n"), text);
+  CHECK_MESSAGE(count_of(text, "myanimelist.net/anime/") == 12, text);
+  CHECK_MESSAGE(contains(text, "      \xE2\x80\xA6 and 3 more\n"), text);
+
+  // A run a stop cut short: the failed row's note, then the stop line.
+  cli::MalPushCounts stop;
+  stop.ran = true;
+  stop.dirty = 3;
+  stop.failed = 1;
+  stop.unauthorized = true;
+  stop.unsent = 3;
+  stop.failures = {"myanimelist.net/anime/701: save failed, http 500"};
+  const std::string cut = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), stop);
+  CHECK_MESSAGE(contains(cut, "  1 push(es) to MyAnimeList failed:\n"
+                              "      \xC2\xB7 myanimelist.net/anime/701: save failed, http 500\n"),
+                cut);
+  CHECK_MESSAGE(!contains(cut, "more\n"), cut);
+  CHECK(cut.find("anime/701") < cut.find("stopped: MyAnimeList rejected the sign-in"));
+
+  // The count bounds the list, whatever the notes hold.
+  cli::MalPushCounts extra;
+  extra.ran = true;
+  extra.dirty = 2;
+  extra.failed = 1;
+  extra.failures = {"myanimelist.net/anime/703: save failed, http 500",
+                    "myanimelist.net/anime/704: save failed, http 500"};
+  const std::string bounded =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), extra);
+  CHECK_MESSAGE(contains(bounded, "anime/703"), bounded);
+  CHECK_MESSAGE(!contains(bounded, "anime/704"), bounded);
+}
+
+// A sign-in the MAL pull found refused: the push is never tried, so the
+// command line passes it as not run, and the expired line is said once.
+TEST_CASE("a_refused_mal_sign_in_is_reported_once") {
+  cli::MalPullCounts pull;
+  pull.ran = true;
+  pull.unauthorized = true;
+  for (auto outcome : {sync::SyncOutcome::Completed, sync::SyncOutcome::NoToken}) {
+    const std::string text = cli::render_sync_summary(summary(outcome), cli::MalPushCounts{}, pull);
+    CHECK_MESSAGE(count_of(text, "MyAnimeList sign-in has expired; reconnect it under Settings.") ==
+                      1,
+                  text);
+    CHECK_MESSAGE(!contains(text, "stopped:"), text);
+    CHECK_MESSAGE(!contains(text, "to MyAnimeList"), text);
+  }
+  const std::string mal_only =
+      cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), cli::MalPushCounts{}, pull);
+  CHECK(mal_only ==
+        "  AniList: not connected: run `shigoku login` first.\n"
+        "  MyAnimeList sign-in has expired; reconnect it under Settings.\n");
+}
+
+TEST_CASE("mal_push_stops_say_how_many_changes_still_wait") {
+  cli::MalPushCounts refused;
+  refused.ran = true;
+  refused.dirty = 5;
+  refused.pushed = 1;
+  refused.unauthorized = true;
+  refused.unsent = 4;
+  const std::string a = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), refused);
+  CHECK_MESSAGE(contains(a, "  pushed 1 change(s) to MyAnimeList.\n"), a);
+  CHECK_MESSAGE(contains(a, "  stopped: MyAnimeList rejected the sign-in mid-run; reconnect it "
+                            "under Settings. 4 change(s) still to send.\n"),
+                a);
+  CHECK_MESSAGE(!contains(a, "rate limit"), a);
+
+  cli::MalPushCounts throttled;
+  throttled.ran = true;
+  throttled.dirty = 2;
+  throttled.rate_limited = true;
+  throttled.unsent = 2;
+  const std::string b = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), throttled);
+  CHECK_MESSAGE(contains(b, "  stopped: hit MyAnimeList's rate limit; 2 change(s) wait for the "
+                            "next run.\n"),
+                b);
+  CHECK_MESSAGE(!contains(b, "pushed"), b);
+  CHECK_MESSAGE(!contains(b, "rejected the sign-in"), b);
+}
+
+TEST_CASE("mal_push_lines_come_before_the_mal_pull_lines") {
+  cli::MalPushCounts push;
+  push.ran = true;
+  push.dirty = 1;
+  push.pushed = 1;
+  cli::MalPullCounts pull;
+  pull.ran = true;
+  pull.pulled = 2;
+  const std::string text =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), push, pull);
+  CHECK_MESSAGE(contains(text, "pushed 1 change(s) to MyAnimeList"), text);
+  CHECK_MESSAGE(contains(text, "pulled 2 update(s) from MyAnimeList"), text);
+  CHECK(text.find("pushed 1 change(s) to MyAnimeList") <
+        text.find("pulled 2 update(s) from MyAnimeList"));
+  CHECK(text.find("nothing to push") < text.find("pushed 1 change(s) to MyAnimeList"));
+}
+
+// A MyAnimeList-only account (AniList not connected) hears about its push too.
+TEST_CASE("a_mal_only_account_reads_its_push_beside_its_pull") {
+  cli::MalPushCounts push;
+  push.ran = true;
+  push.dirty = 4;
+  push.pushed = 2;
+  push.settled = 1;
+  push.failed = 1;
+  push.failures = {"myanimelist.net/anime/801: save failed, http 403"};
+  cli::MalPullCounts pull;
+  pull.ran = true;
+  pull.imported = 5;
+  const std::string text =
+      cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), push, pull);
+  CHECK_MESSAGE(text.rfind("  AniList: not connected", 0) == 0, text);
+  CHECK_MESSAGE(contains(text, "  pushed 2 change(s) to MyAnimeList.\n"), text);
+  CHECK_MESSAGE(contains(text, "(1 change(s) merged with what MyAnimeList"), text);
+  CHECK_MESSAGE(contains(text, "  1 push(es) to MyAnimeList failed:\n"), text);
+  CHECK_MESSAGE(contains(text, "anime/801: save failed, http 403"), text);
+  CHECK_MESSAGE(contains(text, "imported 5 show(s) from MyAnimeList"), text);
+  CHECK(text.find("pushed 2 change(s)") < text.find("imported 5 show(s)"));
+  // Nothing of AniList's completed-run report rides along.
+  CHECK_MESSAGE(!contains(text, "to AniList"), text);
+
+  // The push alone is enough to switch the verdict to the two-fact form.
+  cli::MalPushCounts alone;
+  alone.ran = true;
+  alone.dirty = 1;
+  alone.pushed = 1;
+  const std::string push_only =
+      cli::render_sync_summary(summary(sync::SyncOutcome::Expired), alone);
+  CHECK_MESSAGE(push_only.rfind("  AniList: your AniList token has expired", 0) == 0, push_only);
+  CHECK_MESSAGE(contains(push_only, "pushed 1 change(s) to MyAnimeList"), push_only);
+
+  // Neither half ran: the one-line verdict, unchanged.
+  CHECK(cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), cli::MalPushCounts{},
+                                 cli::MalPullCounts{}) == "  not connected: run `shigoku login` "
+                                                          "first.\n");
 }
 
 TEST_CASE("rows_feed_the_picker_and_the_renderers_number_them") {
@@ -528,33 +725,33 @@ TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilis
   m.ran = true;
   m.pulled = 2;
   m.imported = 41;
-  const std::string both = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, m);
+  const std::string both = cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},m);
   CHECK_MESSAGE(contains(both, "pulled 2 update(s) from MyAnimeList"), both);
   CHECK_MESSAGE(contains(both, "imported 41 show(s) from MyAnimeList"), both);
   // A MAL-only account: the AniList verdict becomes one line among two.
-  const std::string mal_only = cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), 0, m);
+  const std::string mal_only = cli::render_sync_summary(summary(sync::SyncOutcome::NoToken), {},m);
   CHECK_MESSAGE(contains(mal_only, "AniList: not connected"), mal_only);
   CHECK_MESSAGE(contains(mal_only, "imported 41"), mal_only);
   cli::MalPullCounts quiet;
   quiet.ran = true;
-  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, quiet),
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},quiet),
                  "MyAnimeList list already up to date"));
   cli::MalPullCounts refused;
   refused.ran = true;
   refused.unauthorized = true;
-  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, refused),
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},refused),
                  "MyAnimeList sign-in has expired; reconnect it under Settings"));
   cli::MalPullCounts missed;
   missed.ran = true;
   missed.failed = true;
-  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, missed),
+  CHECK(contains(cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},missed),
                  "couldn't fetch your MyAnimeList list"));
   // A renewed sign-in says so ahead of what the pull then did.
   cli::MalPullCounts renewed;
   renewed.ran = true;
   renewed.renewed = true;
   const std::string rolled =
-      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, renewed);
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},renewed);
   CHECK_MESSAGE(contains(rolled, "renewed the MyAnimeList sign-in."), rolled);
   CHECK_MESSAGE(contains(rolled, "MyAnimeList list already up to date"), rolled);
   CHECK(rolled.find("renewed") < rolled.find("MyAnimeList list already up to date"));
@@ -564,7 +761,7 @@ TEST_CASE("mal_pull_lines_follow_the_anilist_report_and_outlive_a_missing_anilis
   unsaved.renew_unsaved = true;
   unsaved.pulled = 1;
   const std::string kept =
-      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, unsaved);
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},unsaved);
   CHECK_MESSAGE(contains(kept, "renewed the MyAnimeList sign-in, but couldn't save it"), kept);
   CHECK_MESSAGE(contains(kept, "pulled 1 update(s) from MyAnimeList"), kept);
   // No MAL account: not a word about it, and the one-line verdict stays one line.
@@ -577,7 +774,7 @@ TEST_CASE("airing_refresh_count_renders_only_when_nonzero") {
   const std::string quiet = cli::render_sync_summary(summary(sync::SyncOutcome::Completed));
   CHECK(!contains(quiet, "airing"));
   const std::string loud =
-      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), 0, {}, 12);
+      cli::render_sync_summary(summary(sync::SyncOutcome::Completed), {},{}, 12);
   CHECK_MESSAGE(contains(loud, "refreshed airing times for 12 show(s)"), loud);
 }
 

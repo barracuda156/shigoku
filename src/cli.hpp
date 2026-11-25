@@ -174,11 +174,30 @@ extern const char* const kUsage;
                                                 std::string_view auth_path, bool paste);
 
 // `shigoku sync` human summary (06 §5.2 CLI row). Every terminal outcome is a
-// single line; a completed run reads the counts. `mal_pushed` (P31 §9.1
-// slice 4) is a plain count, not a sync::SyncSummary field — the MAL mirror
-// is a separate push with its own outcome (mal_mirror.hpp), silent on
-// anything but a completed push (same rationale as the TUI's on_sync_flushed
-// toast); only that one count rides into this render.
+// single line; a completed run reads the counts. The MAL mirror is
+// a separate client relationship with its own outcomes (mal_mirror.hpp);
+// its two halves ride in flattened, and are reported whatever the AniList half
+// did — a MyAnimeList-only account reads its push and its pull here too.
+
+// The MAL mirror's push, flattened for the render. `ran` = a MAL account
+// was connected and the push could read the library. A run with `dirty` 0
+// says there was nothing to send; otherwise each non-zero count gets its own
+// line, a row that failed is listed with its reason, and a run MAL stopped
+// says how many still wait.
+struct MalPushCounts {
+  bool ran = false;
+  std::uint32_t dirty = 0;    // rows that differed from what MAL was last known to hold.
+  std::uint32_t pushed = 0;
+  std::uint32_t settled = 0;  // merged with MAL's own entry; nothing was left to send.
+  std::uint32_t failed = 0;   // a MAL call for the row failed.
+  std::uint32_t skipped = 0;  // edited locally mid-run; goes next time.
+  bool unauthorized = false;  // MAL refused the token mid-push.
+  bool rate_limited = false;  // MAL throttled the run.
+  std::uint32_t unsent = 0;   // rows still owed to MAL when the run ended.
+  // One line per row that failed, with its reason; printed under the count.
+  std::vector<std::string> failures;
+};
+
 // The MAL mirror's pull, flattened for the render (mal_mirror.hpp stays out
 // of this header's graph, like sync's own counts ride SyncSummary). `ran` =
 // a MAL account was connected so the pull was attempted at all.
@@ -193,7 +212,7 @@ struct MalPullCounts {
 };
 
 [[nodiscard]] std::string render_sync_summary(const sync::SyncSummary& s,
-                                               std::uint32_t mal_pushed = 0,
+                                               MalPushCounts mal_push = {},
                                                MalPullCounts mal_pull = {},
                                                std::uint32_t airing_refreshed = 0);
 

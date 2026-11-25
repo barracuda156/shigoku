@@ -365,6 +365,10 @@ struct SyncFlushed {
   // The Calendar's bulk airing refresh that rides every run: rows stamped
   // or cleared (the History/Schedule copies reload when > 0).
   std::uint32_t airing_refreshed = 0;
+  // Changes the mirror could not get to MyAnimeList this run: a call for the
+  // row failed, or MAL cut the run short (a refused token, a throttle). 0
+  // when everything went, and when all that waits is a row edited mid-run.
+  std::uint32_t mal_unsent = 0;
   friend bool operator==(const SyncFlushed&, const SyncFlushed&) = default;
 };
 

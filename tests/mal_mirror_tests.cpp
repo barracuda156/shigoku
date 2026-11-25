@@ -185,13 +185,78 @@ void dirty_lib_no_mal(Store& store, std::int64_t anilist_id) {
 ProviderError http_401() { return ProviderError::http(401); }
 ProviderError network_error() { return ProviderError::network(); }
 
+constexpr std::int64_t kNow = 1000;
+
+// MAL's live entry as the guard reads it; `score` on MAL's 0..=10.
+GuardAnswer live(ListStatus status, std::uint32_t progress, std::uint32_t score) {
+  return std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>>(
+      std::make_tuple(status, progress, score));
+}
+
+GuardAnswer no_entry() {
+  return std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>>{};
+}
+
+using PushCall =
+    std::tuple<std::int64_t, ListStatus, std::uint32_t, std::optional<std::uint32_t>>;
+
+// A library row the mirror once settled at (snap_status, snap_progress,
+// snap_score on MAL's scale; nullopt = withheld), edited locally since to
+// (status, progress, raw_score on the store's 0..=100).
+void mirrored_row(Store& store, std::int64_t anilist_id, std::int64_t mal_id,
+                  ListStatus snap_status, std::uint32_t snap_progress,
+                  std::optional<std::uint32_t> snap_score, ListStatus status,
+                  std::uint32_t progress, std::optional<std::uint32_t> raw_score) {
+  dirty_lib_mal(store, anilist_id, mal_id);
+  REQUIRE(store.mark_mal_synced(anilist_id, snap_status, snap_progress, snap_score).has_value());
+  REQUIRE(store.restore_list_status(anilist_id, status, progress, 100).has_value());
+  REQUIRE(store.set_user_score(anilist_id, raw_score).has_value());
+}
+
+// A never-mirrored library row at (status, progress, raw_score).
+void fresh_row(Store& store, std::int64_t anilist_id, std::int64_t mal_id, ListStatus status,
+               std::uint32_t progress, std::optional<std::uint32_t> raw_score) {
+  dirty_lib_mal(store, anilist_id, mal_id);
+  REQUIRE(store.restore_list_status(anilist_id, status, progress, 100).has_value());
+  REQUIRE(store.set_user_score(anilist_id, raw_score).has_value());
+}
+
+Show show_of(Store& store, std::int64_t anilist_id) {
+  auto g = store.get_show(anilist_id);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  return **g;
+}
+
+// The row's place in the mirror's work list, nullopt when it owes MAL nothing.
+std::optional<MalMirrorRow> owed_row(Store& store, std::int64_t anilist_id) {
+  auto rows = store.list_dirty_for_mal_mirror();
+  REQUIRE(rows.has_value());
+  for (const MalMirrorRow& r : *rows) {
+    if (r.anilist_id == anilist_id) return r;
+  }
+  return std::nullopt;
+}
+
+// The mirror snapshot a clean row carries, read back by nudging the local
+// progress one up so the row lists with it.
+MalMirrorRow snapshot_of(Store& store, std::int64_t anilist_id) {
+  REQUIRE_FALSE(owed_row(store, anilist_id).has_value());
+  const Show s = show_of(store, anilist_id);
+  REQUIRE(store.restore_list_status(anilist_id, s.list_status, s.progress + 1, 100).has_value());
+  auto row = owed_row(store, anilist_id);
+  REQUIRE(row.has_value());
+  REQUIRE(store.restore_list_status(anilist_id, s.list_status, s.progress, 100).has_value());
+  return *row;
+}
+
 }  // namespace
 
 TEST_CASE("disabled_is_a_noop") {
   FakeMal client({});
   auto store = Store::open_memory();
   REQUIRE(store.has_value());
-  auto out = push_mirror(client, connected_mal(), *store, false);
+  auto out = push_mirror(client, connected_mal(), *store, false, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Disabled);
   CHECK(client.guard_calls.empty());
@@ -203,7 +268,7 @@ TEST_CASE("no_bearer_short_circuits_before_any_call") {
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 1, 501);
   FakeMal client({});
-  auto out = push_mirror(client, MalAuth{}, *store, true);
+  auto out = push_mirror(client, MalAuth{}, *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Disabled);
   CHECK(client.guard_calls.empty());
@@ -215,7 +280,7 @@ TEST_CASE("null_mal_id_rows_never_enter_the_dirty_set") {
   dirty_lib_no_mal(*store, 2);
   dirty_lib_mal(*store, 3, 503);
   FakeMal client({Unit{}});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Completed);
   CHECK(out->dirty == 1);
@@ -364,7 +429,7 @@ TEST_CASE("push_advances_the_mal_snapshot_and_retires_the_row") {
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 10, 610);
   FakeMal client({Unit{}});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Completed);
   CHECK(out->pushed == 1);
@@ -386,7 +451,7 @@ TEST_CASE("push_401_stops_the_run_and_leaves_rows_dirty") {
   dirty_lib_mal(*store, 11, 611);
   dirty_lib_mal(*store, 12, 612);
   FakeMal client({err(http_401()), Unit{}});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Unauthorized);
   CHECK(out->pushed == 0);
@@ -402,7 +467,7 @@ TEST_CASE("push_429_stops_the_run_and_leaves_the_row_dirty") {
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 13, 613);
   FakeMal client({err(ProviderError::rate_limited())});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::RateLimited);
   CHECK(out->pushed == 0);
@@ -417,7 +482,7 @@ TEST_CASE("guard_401_stops_the_run_before_any_save") {
   dirty_lib_mal(*store, 14, 614);
   FakeMal client({});
   client.with_guards({err(http_401())});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::Unauthorized);
   CHECK(client.push_calls.empty());
@@ -429,7 +494,7 @@ TEST_CASE("guard_429_stops_the_run_before_any_save") {
   dirty_lib_mal(*store, 15, 615);
   FakeMal client({});
   client.with_guards({err(ProviderError::rate_limited())});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->outcome == MirrorOutcome::RateLimited);
   CHECK(client.push_calls.empty());
@@ -441,35 +506,230 @@ TEST_CASE("unverifiable_guard_is_not_pushed_blind") {
   dirty_lib_mal(*store, 16, 616);
   FakeMal client({Unit{}});
   client.with_guards({err(network_error())});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->push_failed == 1);
   CHECK(out->pushed == 0);
+  CHECK(out->unsent() == 1);
+  CHECK(out->failures ==
+        std::vector<std::string>{"myanimelist.net/anime/616: entry read failed, no answer"});
   CHECK(client.push_calls.empty());
   auto still_dirty = store->list_dirty_for_mal_mirror();
   REQUIRE(still_dirty.has_value());
   CHECK(still_dirty->size() == 1);
 }
 
-// A row never mirrored before (synced == nullopt) is never held back even if
-// MAL happens to already carry a live entry: there is no prior belief to have
-// been invalidated.
-TEST_CASE("first_ever_push_is_never_guard_skipped") {
+TEST_CASE("a_failed_row_is_noted_and_the_run_goes_on") {
   auto store = Store::open_memory();
   REQUIRE(store.has_value());
-  dirty_lib_mal(*store, 17, 617);
-  FakeMal client({Unit{}});
-  client.with_guards({std::make_tuple(ListStatus::Completed, std::uint32_t{24}, std::uint32_t{0})});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  dirty_lib_mal(*store, 41, 641);
+  dirty_lib_mal(*store, 42, 642);
+  dirty_lib_mal(*store, 43, 643);
+  // 641's entry read is refused, 642's save fails, 643 goes.
+  FakeMal client({err(ProviderError::from_status(500)), Unit{}});
+  client.with_guards({err(ProviderError::from_status(403)), no_entry(), no_entry()});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(out->dirty == 3);
+  CHECK(out->push_failed == 2);
   CHECK(out->pushed == 1);
-  CHECK(out->push_skipped == 0);
+  CHECK(out->unsent() == 2);
+  CHECK(client.guard_calls == std::vector<std::int64_t>{641, 642, 643});
+  REQUIRE(client.push_calls.size() == 2);
+  CHECK(std::get<0>(client.push_calls[1]) == 643);
+  CHECK(out->failures == std::vector<std::string>{
+                             "myanimelist.net/anime/641: entry read failed, http 403",
+                             "myanimelist.net/anime/642: save failed, http 500"});
+  CHECK(owed_row(*store, 41).has_value());
+  CHECK(owed_row(*store, 42).has_value());
+  CHECK_FALSE(owed_row(*store, 43).has_value());
 }
 
-// The mirror's own ROD-498-equivalent guard: MAL's live value has moved past
-// what the mirror last believed it pushed, so the stale local write is held
-// back rather than overwriting whatever changed it on MAL's side.
-TEST_CASE("a_mal_side_edit_since_the_last_push_is_not_overwritten") {
+TEST_CASE("failure_notes_stop_at_the_cap_while_the_count_goes_on") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  const std::size_t rows = kFailureNotes + 3;
+  std::vector<SaveAnswer> saves;
+  for (std::size_t i = 0; i < rows; ++i) {
+    dirty_lib_mal(*store, 100 + static_cast<std::int64_t>(i), 700 + static_cast<std::int64_t>(i));
+    saves.push_back(err(ProviderError::from_status(500)));
+  }
+  FakeMal client(saves);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->push_failed == rows);
+  CHECK(out->failures.size() == kFailureNotes);
+  CHECK(out->failures.front() == "myanimelist.net/anime/700: save failed, http 500");
+  CHECK(out->unsent() == rows);
+}
+
+TEST_CASE("a_stop_mid_run_counts_the_rows_it_left_behind") {
+  {
+    auto store = Store::open_memory();
+    REQUIRE(store.has_value());
+    dirty_lib_mal(*store, 44, 644);
+    dirty_lib_mal(*store, 45, 645);
+    dirty_lib_mal(*store, 46, 646);
+    FakeMal client({Unit{}});
+    client.with_guards({no_entry(), err(http_401())});
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(out->pushed == 1);
+    CHECK(out->push_failed == 0);
+    CHECK(out->unsent() == 2);
+    CHECK(out->failures.empty());  // the stop is the outcome, not a failed row.
+    CHECK(client.guard_calls == std::vector<std::int64_t>{644, 645});
+    CHECK(client.push_calls.size() == 1);
+    CHECK(owed_row(*store, 45).has_value());
+    CHECK(owed_row(*store, 46).has_value());
+  }
+  {
+    auto store = Store::open_memory();
+    REQUIRE(store.has_value());
+    dirty_lib_mal(*store, 47, 647);
+    dirty_lib_mal(*store, 48, 648);
+    FakeMal client({err(ProviderError::rate_limited())});
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::RateLimited);
+    CHECK(out->pushed == 0);
+    CHECK(out->push_failed == 0);
+    CHECK(out->unsent() == 2);
+    CHECK(out->failures.empty());
+    CHECK(client.guard_calls == std::vector<std::int64_t>{647});
+  }
+  {
+    // A row that failed before the stop keeps its note; the stop row adds none.
+    auto store = Store::open_memory();
+    REQUIRE(store.has_value());
+    dirty_lib_mal(*store, 91, 691);
+    dirty_lib_mal(*store, 92, 692);
+    dirty_lib_mal(*store, 93, 693);
+    FakeMal client({});
+    client.with_guards({err(ProviderError::from_status(500)), err(http_401())});
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Unauthorized);
+    CHECK(out->push_failed == 1);
+    CHECK(out->unsent() == 3);
+    CHECK(out->failures ==
+          std::vector<std::string>{"myanimelist.net/anime/691: entry read failed, http 500"});
+    CHECK(client.push_calls.empty());
+  }
+}
+
+// MAL's grid: a local 75 went to MAL as 8, so the snapshot's 8 is what the
+// local score already says. A score changed on MAL's side is taken, not
+// overwritten by the off-grid local value.
+TEST_CASE("a_score_changed_on_mal_wins_over_an_off_grid_local_score") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  mirrored_row(*store, 35, 635, ListStatus::Watching, 3, 8, ListStatus::Watching, 4, 75);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 3, 6)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{635, ListStatus::Watching, 4, 6});
+  CHECK(show_of(*store, 35).user_score == std::optional<std::uint32_t>(60));
+  CHECK_FALSE(owed_row(*store, 35).has_value());
+}
+
+TEST_CASE("an_off_grid_local_score_mal_still_holds_keeps_its_value_and_a_re_score_wins") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  // Re-scored here from 75 to 90 since MAL took the 8.
+  mirrored_row(*store, 36, 636, ListStatus::Watching, 3, 8, ListStatus::Watching, 3, 90);
+  // Still 75 here, MAL still 8; only the progress moved, on both sides.
+  mirrored_row(*store, 37, 637, ListStatus::Watching, 3, 8, ListStatus::Watching, 4, 75);
+  FakeMal client({Unit{}, Unit{}});
+  client.with_guards({live(ListStatus::Watching, 5, 8), live(ListStatus::Watching, 5, 8)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 2);
+  CHECK(out->pushed == 1);
+  CHECK(out->settled == 1);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{636, ListStatus::Watching, 5, 9});
+  CHECK(show_of(*store, 36).user_score == std::optional<std::uint32_t>(90));
+  const Show kept = show_of(*store, 37);
+  CHECK(kept.progress == 5);
+  CHECK(kept.user_score == std::optional<std::uint32_t>(75));
+  CHECK_FALSE(owed_row(*store, 36).has_value());
+  CHECK_FALSE(owed_row(*store, 37).has_value());
+}
+
+// A row never mirrored before meets MAL's entry as first contact: the merge
+// takes what MAL holds for every field the local row never moved.
+TEST_CASE("a_never_mirrored_row_merges_with_mals_entry_instead_of_resetting_it") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  dirty_lib_mal(*store, 17, 617);  // Planning/0, unscored.
+  FakeMal client({Unit{}});
+  // Pushing first would have reset this entry to plan_to_watch 0 and no score.
+  client.with_guards({live(ListStatus::Completed, 12, 9)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(out->dirty == 1);
+  CHECK(out->merged == 1);
+  CHECK(out->settled == 1);
+  CHECK(out->pushed == 0);
+  CHECK(out->push_skipped == 0);
+  CHECK(out->unsent() == 0);
+  CHECK(client.push_calls.empty());
+
+  const Show s = show_of(*store, 17);
+  CHECK(s.list_status == ListStatus::Completed);
+  CHECK(s.progress == 12);
+  CHECK(s.user_score == std::optional<std::uint32_t>(90));
+  CHECK_FALSE(owed_row(*store, 17).has_value());
+}
+
+TEST_CASE("a_never_mirrored_row_ahead_of_mal_sends_its_own_progress") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  fresh_row(*store, 25, 625, ListStatus::Watching, 5, std::nullopt);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 3, 0)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  CHECK(out->settled == 0);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{625, ListStatus::Watching, 5, std::nullopt});
+  CHECK(show_of(*store, 25).progress == 5);
+  CHECK_FALSE(owed_row(*store, 25).has_value());
+}
+
+TEST_CASE("a_never_mirrored_row_mal_already_agrees_with_settles_without_a_call") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  fresh_row(*store, 26, 626, ListStatus::Watching, 5, std::nullopt);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 5, 0)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->settled == 1);
+  CHECK(out->pushed == 0);
+  CHECK(client.push_calls.empty());
+  CHECK_FALSE(owed_row(*store, 26).has_value());
+  // The snapshot now holds MAL's entry, its unscored 0 as a belief.
+  const MalMirrorRow snap = snapshot_of(*store, 26);
+  CHECK(snap.synced == std::make_pair(ListStatus::Watching, std::uint32_t{5}));
+  CHECK(snap.synced_score == std::optional<std::uint32_t>(0));
+}
+
+// MAL's live entry moved past what the mirror last pushed while the local row
+// moved too: the two are merged first, a status both sides changed keeps the
+// local one, and the merge is what goes.
+TEST_CASE("a_mal_side_edit_since_the_last_push_is_merged_before_the_push") {
   auto store = Store::open_memory();
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 18, 618);
@@ -477,27 +737,111 @@ TEST_CASE("a_mal_side_edit_since_the_last_push_is_not_overwritten") {
   // First run: mirror it once so a snapshot exists.
   {
     FakeMal client({Unit{}});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
   }
 
-  // The user now edits progress locally...
+  // The user now edits the status locally...
   REQUIRE(store->set_list_status(18, ListStatus::Watching, 100).has_value());
-  // ...but MAL's live entry disagrees with the mirror's last-accepted
-  // snapshot (Planning/0) — someone changed it out from under the mirror.
+  // ...and MAL's live entry has moved off the snapshot (Planning/0) too.
   FakeMal client({Unit{}});
-  client.with_guards({std::make_tuple(ListStatus::Dropped, std::uint32_t{2}, std::uint32_t{0})});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  client.with_guards({live(ListStatus::Dropped, 2, 0)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  CHECK(out->push_skipped == 0);
+  CHECK(out->settled == 0);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{618, ListStatus::Watching, 2, std::nullopt});
+
+  const Show s = show_of(*store, 18);
+  CHECK(s.list_status == ListStatus::Watching);  // local status kept...
+  CHECK(s.progress == 2);                         // ...MAL's progress taken.
+  CHECK_FALSE(owed_row(*store, 18).has_value());
+}
+
+TEST_CASE("progress_moved_on_both_sides_sends_the_higher_and_rebaselines") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  mirrored_row(*store, 30, 630, ListStatus::Watching, 6, std::nullopt, ListStatus::Watching, 8,
+               std::nullopt);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 7, 0)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->outcome == MirrorOutcome::Completed);
+  CHECK(out->dirty == 1);
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  CHECK(out->settled == 0);
+  CHECK(out->unsent() == 0);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{630, ListStatus::Watching, 8, std::nullopt});
+  CHECK(show_of(*store, 30).progress == 8);
+  const MalMirrorRow snap = snapshot_of(*store, 30);
+  CHECK(snap.synced == std::make_pair(ListStatus::Watching, std::uint32_t{8}));
+  CHECK_FALSE(snap.synced_score.has_value());  // the push withheld the score.
+}
+
+TEST_CASE("a_merge_that_leaves_nothing_to_send_settles_on_mals_entry") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  // Paused here, and on MAL too, where the progress and a score moved on.
+  mirrored_row(*store, 31, 631, ListStatus::Watching, 4, std::nullopt, ListStatus::Paused, 4,
+               std::nullopt);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Paused, 6, 7)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->settled == 1);
   CHECK(out->pushed == 0);
-  CHECK(out->push_skipped == 1);
+  CHECK(out->unsent() == 0);
   CHECK(client.push_calls.empty());
 
-  auto still_dirty = store->list_dirty_for_mal_mirror();
-  REQUIRE(still_dirty.has_value());
-  REQUIRE(still_dirty->size() == 1);
-  CHECK((*still_dirty)[0].anilist_id == 18);
+  const Show s = show_of(*store, 31);
+  CHECK(s.list_status == ListStatus::Paused);
+  CHECK(s.progress == 6);
+  CHECK(s.user_score == std::optional<std::uint32_t>(70));
+  CHECK_FALSE(owed_row(*store, 31).has_value());
+}
+
+// A merged row whose save then fails keeps the merge locally and a snapshot
+// of MAL's entry, so the next run sends it straight off.
+TEST_CASE("a_merged_row_whose_save_fails_goes_unmerged_next_run") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  mirrored_row(*store, 32, 632, ListStatus::Watching, 6, std::nullopt, ListStatus::Watching, 8,
+               std::nullopt);
+  {
+    FakeMal client({err(ProviderError::from_status(500))});
+    client.with_guards({live(ListStatus::Watching, 7, 0)});
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+    REQUIRE(out.has_value());
+    CHECK(out->outcome == MirrorOutcome::Completed);
+    CHECK(out->merged == 1);
+    CHECK(out->push_failed == 1);
+    CHECK(out->pushed == 0);
+    CHECK(out->unsent() == 1);
+    CHECK(out->failures ==
+          std::vector<std::string>{"myanimelist.net/anime/632: save failed, http 500"});
+  }
+  const auto owed = owed_row(*store, 32);
+  REQUIRE(owed.has_value());
+  CHECK(owed->progress == 8);
+  CHECK(owed->synced == std::make_pair(ListStatus::Watching, std::uint32_t{7}));
+
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 7, 0)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 0);
+  CHECK(out->pushed == 1);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{632, ListStatus::Watching, 8, std::nullopt});
+  CHECK_FALSE(owed_row(*store, 32).has_value());
 }
 
 // A MAL-deleted entry (my_list_status simply absent) never reappears to clear
@@ -510,18 +854,23 @@ TEST_CASE("an_absent_mal_entry_does_not_block_the_push") {
   dirty_lib_mal(*store, 19, 619);
   {
     FakeMal client({Unit{}});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
   }
 
   REQUIRE(store->set_list_status(19, ListStatus::Dropped, 0).has_value());
   FakeMal client({Unit{}});
-  client.with_guards({std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>>{}});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  client.with_guards({no_entry()});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->pushed == 1);
+  CHECK(out->merged == 0);
+  CHECK(out->settled == 0);
   CHECK(out->push_skipped == 0);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{619, ListStatus::Dropped, 0, std::nullopt});
+  CHECK_FALSE(owed_row(*store, 19).has_value());
 }
 
 // user_score is the store's raw 0..=100; the mirror converts to MAL's native
@@ -532,7 +881,7 @@ TEST_CASE("push_converts_raw_score_to_mals_0_to_10_scale") {
   dirty_lib_mal(*store, 21, 621);
   REQUIRE(store->set_user_score(21, 75).has_value());  // round(75/10) = 8.
   FakeMal client({Unit{}});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
   CHECK(out->pushed == 1);
   REQUIRE(client.push_calls.size() == 1);
@@ -540,9 +889,10 @@ TEST_CASE("push_converts_raw_score_to_mals_0_to_10_scale") {
 }
 
 // The score's OWN guard: a status/progress-agreeing row whose MAL-live score
-// has moved past the mirror's last-accepted score snapshot is still held
-// back, even though the (status, progress) pair alone would have passed.
-TEST_CASE("a_mal_side_score_edit_since_the_last_push_is_not_overwritten") {
+// has moved past the mirror's last-accepted score snapshot is merged, even
+// though the (status, progress) pair alone would have passed; a score both
+// sides changed keeps the local one.
+TEST_CASE("a_mal_side_score_edit_since_the_last_push_is_merged_before_the_push") {
   auto store = Store::open_memory();
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 22, 622);
@@ -551,7 +901,7 @@ TEST_CASE("a_mal_side_score_edit_since_the_last_push_is_not_overwritten") {
   // First run: mirror it once so both snapshots exist.
   {
     FakeMal client({Unit{}});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
   }
@@ -562,12 +912,34 @@ TEST_CASE("a_mal_side_score_edit_since_the_last_push_is_not_overwritten") {
   // snapshot (5): status/progress still agree (Planning/0), so only the
   // score-moved branch is exercised.
   FakeMal client({Unit{}});
-  client.with_guards({std::make_tuple(ListStatus::Planning, std::uint32_t{0}, std::uint32_t{3})});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  client.with_guards({live(ListStatus::Planning, 0, 3)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
-  CHECK(out->pushed == 0);
-  CHECK(out->push_skipped == 1);
-  CHECK(client.push_calls.empty());
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  CHECK(out->push_skipped == 0);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{622, ListStatus::Planning, 0, 8});
+  CHECK(show_of(*store, 22).user_score == std::optional<std::uint32_t>(80));
+  CHECK(snapshot_of(*store, 22).synced_score == std::optional<std::uint32_t>(8));
+}
+
+// The score arm on its own: MAL's score moving off the snapshot's merges the
+// row although MAL's pair still matches it, and a local score that never
+// moved takes MAL's.
+TEST_CASE("a_mal_side_score_edit_alone_is_adopted_on_the_next_local_change") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  mirrored_row(*store, 27, 627, ListStatus::Watching, 3, 5, ListStatus::Watching, 4, 50);
+  FakeMal client({Unit{}});
+  client.with_guards({live(ListStatus::Watching, 3, 9)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 1);
+  CHECK(out->pushed == 1);
+  REQUIRE(client.push_calls.size() == 1);
+  CHECK(client.push_calls[0] == PushCall{627, ListStatus::Watching, 4, 9});
+  CHECK(show_of(*store, 27).user_score == std::optional<std::uint32_t>(90));
 }
 
 // The wipe regression (P34 review): a locally-unscored row must never send
@@ -580,29 +952,59 @@ TEST_CASE("an_unscored_push_withholds_the_score_and_never_wedges_on_mals_own") {
   REQUIRE(store.has_value());
   dirty_lib_mal(*store, 23, 623);
 
-  // MAL-side already holds score 8 (set on the site); first push, no
-  // snapshot -> guard waived, and the PUT must carry NO score field.
+  // No entry on MAL yet: the first push goes as is, with NO score field.
   {
     FakeMal client({Unit{}});
-    client.with_guards({std::make_tuple(ListStatus::Planning, std::uint32_t{0}, std::uint32_t{8})});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    client.with_guards({no_entry()});
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
+    CHECK(out->merged == 0);
     REQUIRE(client.push_calls.size() == 1);
     CHECK(std::get<3>(client.push_calls[0]) == std::nullopt);
   }
 
-  // A later local progress edit pushes again: the guard's score arm must
-  // keep waiving MAL's 8 (snapshot NULL = no belief), not read it as moved.
+  // The user rates it 8 on the site, then edits locally. The pair still
+  // matches the snapshot and the snapshot holds no score belief, so the
+  // score alone triggers no merge, and the push still withholds it.
   REQUIRE(store->set_list_status(23, ListStatus::Watching, 200).has_value());
   FakeMal client({Unit{}});
-  client.with_guards({std::make_tuple(ListStatus::Planning, std::uint32_t{0}, std::uint32_t{8})});
-  auto out = push_mirror(client, connected_mal(), *store, true);
+  client.with_guards({live(ListStatus::Planning, 0, 8)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
   REQUIRE(out.has_value());
+  CHECK(out->merged == 0);
   CHECK(out->pushed == 1);
   CHECK(out->push_skipped == 0);
   REQUIRE(client.push_calls.size() == 1);
-  CHECK(std::get<3>(client.push_calls[0]) == std::nullopt);
+  CHECK(client.push_calls[0] == PushCall{623, ListStatus::Watching, 0, std::nullopt});
+  CHECK_FALSE(show_of(*store, 23).user_score.has_value());
+  CHECK_FALSE(owed_row(*store, 23).has_value());
+}
+
+// A merge never turns a locally-unscored row into a score=0 send.
+TEST_CASE("a_merged_unscored_row_still_withholds_the_score") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  // MAL unscored as well: nothing to adopt, the score stays withheld.
+  mirrored_row(*store, 33, 633, ListStatus::Watching, 3, std::nullopt, ListStatus::Watching, 5,
+               std::nullopt);
+  // The local score was cleared since the mirror sent a 6 that MAL still holds.
+  mirrored_row(*store, 34, 634, ListStatus::Watching, 3, 6, ListStatus::Watching, 5,
+               std::nullopt);
+  FakeMal client({Unit{}, Unit{}});
+  client.with_guards({live(ListStatus::Watching, 4, 0), live(ListStatus::Watching, 4, 6)});
+  auto out = push_mirror(client, connected_mal(), *store, true, kNow);
+  REQUIRE(out.has_value());
+  CHECK(out->merged == 2);
+  CHECK(out->pushed == 2);
+  REQUIRE(client.guard_calls == std::vector<std::int64_t>{633, 634});
+  REQUIRE(client.push_calls.size() == 2);
+  CHECK(client.push_calls[0] == PushCall{633, ListStatus::Watching, 5, std::nullopt});
+  CHECK(client.push_calls[1] == PushCall{634, ListStatus::Watching, 5, std::nullopt});
+  CHECK(show_of(*store, 33).user_score.value_or(0) == 0);
+  CHECK(show_of(*store, 34).user_score.value_or(0) == 0);
+  CHECK_FALSE(owed_row(*store, 33).has_value());
+  CHECK_FALSE(owed_row(*store, 34).has_value());
 }
 
 // Clearing a local score settles the row without erasing MAL's copy: the
@@ -615,7 +1017,7 @@ TEST_CASE("clearing_a_local_score_settles_without_erasing_mals") {
   REQUIRE(store->set_user_score(24, 80).has_value());
   {
     FakeMal client({Unit{}});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
     CHECK(std::get<3>(client.push_calls[0]) == 8);
@@ -625,7 +1027,7 @@ TEST_CASE("clearing_a_local_score_settles_without_erasing_mals") {
   {
     FakeMal client({Unit{}});
     client.with_guards({std::make_tuple(ListStatus::Planning, std::uint32_t{0}, std::uint32_t{8})});
-    auto out = push_mirror(client, connected_mal(), *store, true);
+    auto out = push_mirror(client, connected_mal(), *store, true, kNow);
     REQUIRE(out.has_value());
     CHECK(out->pushed == 1);
     CHECK(std::get<3>(client.push_calls[0]) == std::nullopt);

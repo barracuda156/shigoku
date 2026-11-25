@@ -41,7 +41,8 @@ struct CycleResult {
   // file: the next run will find the old refresh_token, which MAL has by
   // then retired.
   bool mal_token_unsaved = false;
-  std::uint32_t mal_pushed = 0;
+  // nullopt: the mirror's push could not read the local library.
+  std::optional<mal_mirror::MirrorSummary> mal_push;
   std::uint32_t airing_refreshed = 0;
 };
 
@@ -71,8 +72,12 @@ inline CycleResult run_cycle(const AniListSync& ani, const mal_mirror::MalMirror
   }
   auto ran = run_sync(ani, auth, store, opt.now, opt.enabled, opt.pull_only, sleeper);
   if (ran.has_value()) out.anilist = std::move(*ran);
-  auto mirrored = mal_mirror::push_mirror(mal, auth.mal, store, mal_on);
-  if (mirrored.has_value()) out.mal_pushed = mirrored->pushed;
+  // A sign-in the pull found refused has nothing to push with.
+  const bool mal_refused = out.mal_pull.has_value() &&
+                           out.mal_pull->outcome == mal_mirror::MirrorOutcome::Unauthorized;
+  auto mirrored =
+      mal_mirror::push_mirror(mal, auth.mal, store, mal_on && !mal_refused, opt.now);
+  if (mirrored.has_value()) out.mal_push = std::move(*mirrored);
   auto refreshed = refresh_airing(airing, store, opt.now);
   if (refreshed.has_value()) out.airing_refreshed = *refreshed;
   return out;

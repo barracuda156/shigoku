@@ -1,11 +1,37 @@
 #include "mal_mirror.hpp"
 
 #include <algorithm>
+#include <string>
+
+#include "debug_log.hpp"
 
 namespace shigoku::mal_mirror {
 
+namespace {
+
+std::string row_tag(const MalMirrorRow& row) {
+  return "mal push: mal_id " + std::to_string(row.mal_id) + " (" +
+         std::string(to_string(row.list_status)) + " " + std::to_string(row.progress) + ")";
+}
+
+// Logs why a row did not go and keeps the line for the summary.
+void note_failure(MirrorSummary& summary, const MalMirrorRow& row, const std::string& what) {
+  debug_log(row_tag(row) + ": " + what);
+  if (summary.failures.size() < kFailureNotes) {
+    summary.failures.push_back("myanimelist.net/anime/" + std::to_string(row.mal_id) + ": " + what);
+  }
+}
+
+std::string error_tag(const ProviderError& e) {
+  if (e.kind == ProviderError::Kind::RateLimited) return "rate limited";
+  if (e.status != 0) return "http " + std::to_string(e.status);
+  return e.kind == ProviderError::Kind::Decode ? "unreadable answer" : "no answer";
+}
+
+}  // namespace
+
 Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, const MalAuth& auth,
-                                               Store& store, bool enabled) {
+                                               Store& store, bool enabled, std::int64_t now) {
   if (!enabled) return MirrorSummary::terminal(MirrorOutcome::Disabled);
 
   const auto token = auth.bearer();
@@ -17,42 +43,59 @@ Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, con
   MirrorSummary summary;
   summary.dirty = static_cast<std::uint32_t>(dirty->size());
 
-  for (const MalMirrorRow& row : *dirty) {
+  const auto is_401 = [](const ProviderError& e) {
+    return e.kind == ProviderError::Kind::Http && e.status == 401;
+  };
+
+  for (MalMirrorRow row : *dirty) {
     auto guard = client.fetch_entry(*token, row.mal_id);
-    if (guard.has_value()) {
-      // No entry on MAL: nothing of theirs to overwrite, and MAL mirrors get
-      // no pull that could ever clear this row's dirty flag from our side, so
-      // holding it back here would strand it dirty forever (mirrors sync.cpp's
-      // own "no entry on the server" branch, header comment). A first-ever
-      // push (row.synced/synced_score == nullopt) is never held back either —
-      // there is no prior belief to have been invalidated. Status/progress
-      // and score are checked against their OWN snapshots independently (the
-      // two fields don't share a guard any more than they share a dirty bit).
-      if (guard->has_value()) {
-        const auto& [live_status, live_progress, live_score] = **guard;
-        const bool pair_moved =
-            row.synced.has_value() &&
-            std::make_pair(live_status, live_progress) != *row.synced;
-        const bool score_moved = row.synced_score.has_value() && live_score != *row.synced_score;
-        if (pair_moved || score_moved) {
-          // MAL's live value has moved since our last accepted push: someone
-          // (or MAL itself) changed it out from under the mirror. Skip rather
-          // than overwrite (ROD-498-equivalent guard); stays dirty, retried
-          // next run.
+    if (!guard.has_value()) {
+      const std::string why = "entry read failed, " + error_tag(guard.error());
+      if (is_401(guard.error())) {
+        debug_log(row_tag(row) + ": " + why);
+        summary.outcome = MirrorOutcome::Unauthorized;
+        return summary;
+      }
+      if (guard.error().kind == ProviderError::Kind::RateLimited) {
+        debug_log(row_tag(row) + ": " + why);
+        summary.outcome = MirrorOutcome::RateLimited;
+        return summary;
+      }
+      // Unverified is not a licence to overwrite.
+      note_failure(summary, row, why);
+      summary.push_failed += 1;
+      continue;
+    }
+
+    // MAL holds an entry the snapshot does not account for: it moved on
+    // MAL's side, or this row was never mirrored. Merge first; what the merge
+    // leaves differing is what gets sent. Status/progress and score answer to
+    // their own snapshots; a score the mirror never sent (no snapshot) has
+    // nothing to have moved from.
+    if (guard->has_value()) {
+      const auto& [live_status, live_progress, live_score] = **guard;
+      const bool pair_differs =
+          !row.synced.has_value() || std::make_pair(live_status, live_progress) != *row.synced;
+      const bool score_moved = row.synced_score.has_value() && live_score != *row.synced_score;
+      if (pair_differs || score_moved) {
+        auto rebased =
+            store.rebase_mal_row(row.anilist_id, live_status, live_progress, live_score, now);
+        if (!rebased.has_value()) return err(rebased.error());
+        summary.merged += 1;
+        if (rebased->contended) {
+          debug_log(row_tag(row) + ": edited during the merge, left for the next run");
           summary.push_skipped += 1;
           continue;
         }
+        if (!rebased->owed.has_value()) {
+          debug_log(row_tag(row) + ": merged with MAL's " +
+                    std::string(to_string(live_status)) + " " + std::to_string(live_progress) +
+                    ", nothing left to send");
+          summary.settled += 1;
+          continue;
+        }
+        row = *rebased->owed;
       }
-    } else if (guard.error().kind == ProviderError::Kind::Http && guard.error().status == 401) {
-      summary.outcome = MirrorOutcome::Unauthorized;
-      return summary;
-    } else if (guard.error().kind == ProviderError::Kind::RateLimited) {
-      summary.outcome = MirrorOutcome::RateLimited;
-      return summary;
-    } else {
-      // Unverified is not a licence to overwrite.
-      summary.push_failed += 1;
-      continue;
     }
 
     // A locally-unscored row (converted score 0 = unset) WITHHOLDS the score
@@ -70,14 +113,18 @@ Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client, con
       summary.pushed += 1;
       continue;
     }
-    if (saved.error().kind == ProviderError::Kind::Http && saved.error().status == 401) {
+    const std::string why = "save failed, " + error_tag(saved.error());
+    if (is_401(saved.error())) {
+      debug_log(row_tag(row) + ": " + why);
       summary.outcome = MirrorOutcome::Unauthorized;
       return summary;
     }
     if (saved.error().kind == ProviderError::Kind::RateLimited) {
+      debug_log(row_tag(row) + ": " + why);
       summary.outcome = MirrorOutcome::RateLimited;
       return summary;
     }
+    note_failure(summary, row, why);
     summary.push_failed += 1;
   }
   return summary;

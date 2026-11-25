@@ -153,12 +153,12 @@ namespace {
 // sync::SyncSummary -> the event-safe SyncFlushed (event.hpp stays off
 // sync.hpp's link graph; see event.hpp's SyncFlushed comment). Distinct enums
 // with identical enumerator names, bridged by an explicit switch — same shape
-// as to_connect_done. `mal_pushed` rides along flattened the same way (P31
-// §9.1 slice 4) — the MAL mirror's own outcome is deliberately not surfaced
-// here (A1: it gets no drain rights and no toast of its own; a push_failed/
-// push_skipped row simply stays dirty for next run, silently, same as the
-// AniList mirror's own quieter outcomes).
-SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed,
+// as to_connect_done. The MAL mirror's push rides along flattened to two
+// counts: what went, and what a failed call or a cut-short run left owing.
+// A row merely edited during its merge is not counted as left owing; it goes
+// with the next run.
+SyncFlushed to_sync_flushed(const sync::SyncSummary& s,
+                            const std::optional<mal_mirror::MirrorSummary>& mal_push,
                             const mal_mirror::MirrorPullSummary& mal_pull,
                             std::uint32_t airing_refreshed, bool mal_token_unsaved) {
   using K = sync::SyncOutcome;
@@ -176,7 +176,12 @@ SyncFlushed to_sync_flushed(const sync::SyncSummary& s, std::uint32_t mal_pushed
     case K::Failed:            outcome = SyncOutcome::Failed; break;
     default:                   outcome = SyncOutcome::Failed;  // unreachable (closed enum).
   }
-  SyncFlushed out{outcome, s.pulled.imported, s.pulled.reconciled, s.pushed, mal_pushed};
+  SyncFlushed out{outcome, s.pulled.imported, s.pulled.reconciled, s.pushed};
+  if (mal_push.has_value()) {
+    out.mal_pushed = mal_push->pushed;
+    const std::uint32_t unsent = mal_push->unsent();
+    out.mal_unsent = unsent > mal_push->push_skipped ? unsent - mal_push->push_skipped : 0;
+  }
   using M = mal_mirror::MirrorOutcome;
   if (mal_pull.outcome == M::Completed) {
     out.mal_pull_failed = mal_pull.pull_failed;
@@ -228,7 +233,7 @@ void spawn_sync(EventQueue& queue, const http::Client& http, std::string db_path
     }
     queue.try_post(Event{to_sync_flushed(
         ran.anilist.value_or(sync::SyncSummary::terminal(sync::SyncOutcome::Failed)),
-        ran.mal_pushed,
+        ran.mal_push,
         ran.mal_pull.value_or(
             mal_mirror::MirrorPullSummary::terminal(mal_mirror::MirrorOutcome::Disabled)),
         ran.airing_refreshed, ran.mal_token_unsaved)});
@@ -267,7 +272,8 @@ void spawn_quit_flush_worker(const http::Client& http, std::string db_path, Auth
       // rights (A1) — this is the whole reason the plan puts the mirror
       // behind the AniList flush's cadence rather than a worker of its own.
       const mal_mirror::HttpMalMirrorClient mal_client(http);
-      (void)mal_mirror::push_mirror(mal_client, auth.mal, *store, auth.mal.bearer().has_value());
+      (void)mal_mirror::push_mirror(mal_client, auth.mal, *store, auth.mal.bearer().has_value(),
+                                    now);
     }
     done->store(true, std::memory_order_release);
   });

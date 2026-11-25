@@ -324,8 +324,24 @@ int run_sync_cli() {
     }
   }
 
+  cli::MalPushCounts mal_push;
+  using M = mal_mirror::MirrorOutcome;
+  if (mal_on && ran.mal_push.has_value() && ran.mal_push->outcome != M::Disabled) {
+    const mal_mirror::MirrorSummary& pushed = *ran.mal_push;
+    mal_push.ran = true;
+    mal_push.dirty = pushed.dirty;
+    mal_push.pushed = pushed.pushed;
+    mal_push.settled = pushed.settled;
+    mal_push.failed = pushed.push_failed;
+    mal_push.skipped = pushed.push_skipped;
+    mal_push.unauthorized = pushed.outcome == M::Unauthorized;
+    mal_push.rate_limited = pushed.outcome == M::RateLimited;
+    mal_push.unsent = pushed.unsent();
+    mal_push.failures = pushed.failures;
+  }
+
   if (ran.anilist.has_value()) {
-    std::printf("%s", cli::render_sync_summary(*ran.anilist, ran.mal_pushed, mal_pull,
+    std::printf("%s", cli::render_sync_summary(*ran.anilist, mal_push, mal_pull,
                                                ran.airing_refreshed)
                           .c_str());
   } else {

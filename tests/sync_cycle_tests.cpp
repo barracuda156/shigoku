@@ -52,16 +52,20 @@ class LogAni final : public sync::AniListSync {
   Log& log_;
 };
 
-// Every MAL call is logged with the token it was made under.
+// Every MAL call is logged with the token it was made under. By default the
+// list is empty and no show has an entry on MAL.
 class LogMal final : public mal_mirror::MalMirrorClient {
  public:
   explicit LogMal(Log& log) : log_(log) {}
+
+  std::optional<ProviderError> list_error;
+  std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>> live;
 
   [[nodiscard]] Result<std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>>,
                       ProviderError>
   fetch_entry(std::string_view token, std::int64_t) const override {
     log_.push_back("mal entry " + std::string(token));
-    return std::optional<std::tuple<ListStatus, std::uint32_t, std::uint32_t>>{};
+    return live;
   }
   [[nodiscard]] Result<Unit, ProviderError> save_entry(
       std::string_view token, std::int64_t, ListStatus, std::uint32_t,
@@ -72,6 +76,7 @@ class LogMal final : public mal_mirror::MalMirrorClient {
   [[nodiscard]] Result<std::vector<mal_catalog::UserListEntry>, ProviderError> fetch_list(
       std::string_view token) const override {
     log_.push_back("mal list " + std::string(token));
+    if (list_error.has_value()) return err(*list_error);
     return std::vector<mal_catalog::UserListEntry>{};
   }
 
@@ -168,7 +173,9 @@ TEST_CASE("the run goes mirror pull, AniList, mirror push, airing") {
   CHECK(ran.anilist->outcome == sync::SyncOutcome::Completed);
   REQUIRE(ran.mal_pull.has_value());
   CHECK(ran.mal_pull->outcome == mal_mirror::MirrorOutcome::Completed);
-  CHECK(ran.mal_pushed == 1);
+  REQUIRE(ran.mal_push.has_value());
+  CHECK(ran.mal_push->outcome == mal_mirror::MirrorOutcome::Completed);
+  CHECK(ran.mal_push->pushed == 1);
   CHECK_FALSE(ran.mal_token_unsaved);
 
   // The mirror's list fetch leads; AniList's whole run sits between it and
@@ -246,10 +253,78 @@ TEST_CASE("a signed-out mirror makes no call and the AniList run still goes") {
 
   REQUIRE(ran.mal_pull.has_value());
   CHECK(ran.mal_pull->outcome == mal_mirror::MirrorOutcome::Disabled);
-  CHECK(ran.mal_pushed == 0);
+  REQUIRE(ran.mal_push.has_value());
+  CHECK(ran.mal_push->outcome == mal_mirror::MirrorOutcome::Disabled);
+  CHECK(ran.mal_push->pushed == 0);
   CHECK(first_with(log, "mal ") == -1);
   REQUIRE(ran.anilist.has_value());
   CHECK(ran.anilist->outcome == sync::SyncOutcome::Completed);
   CHECK(log.front() == "anilist list");
   CHECK(log.back() == "airing");
+}
+
+TEST_CASE("a sign-in the MAL pull found refused makes no push call") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  add_show(*store);  // dirty for the mirror.
+  Log log;
+  const LogAni ani(log);
+  LogMal mal(log);
+  mal.list_error = ProviderError::http(401);
+  mal.live = std::make_tuple(ListStatus::Completed, std::uint32_t{12}, std::uint32_t{9});
+  Auth auth = signed_in_both();
+
+  const sync::CycleResult ran =
+      sync::run_cycle(ani, mal, {}, logging_airing(log), *store, auth, options(), no_sleep);
+
+  REQUIRE(ran.mal_pull.has_value());
+  CHECK(ran.mal_pull->outcome == mal_mirror::MirrorOutcome::Unauthorized);
+  REQUIRE(ran.mal_push.has_value());
+  CHECK(ran.mal_push->outcome == mal_mirror::MirrorOutcome::Disabled);
+  CHECK(ran.mal_push->dirty == 0);
+  CHECK(first_with(log, "mal list") == 0);
+  CHECK(first_with(log, "mal entry") == -1);
+  CHECK(first_with(log, "mal save") == -1);
+  // The rest of the run still goes, and the row still owes MAL.
+  REQUIRE(ran.anilist.has_value());
+  CHECK(ran.anilist->outcome == sync::SyncOutcome::Completed);
+  CHECK(log.back() == "airing");
+  CHECK(store->list_dirty_for_mal_mirror()->size() == 1);
+}
+
+// With no list pull to re-baseline it, a never-mirrored row meets MAL's
+// entry in the push itself: it takes MAL's values instead of resetting them.
+TEST_CASE("a missed MAL pull still leaves the push merging, not overwriting") {
+  auto store = Store::open_memory();
+  REQUIRE(store.has_value());
+  add_show(*store);  // Planning/0, never mirrored.
+  Log log;
+  const LogAni ani(log);
+  LogMal mal(log);
+  mal.list_error = ProviderError::network();
+  mal.live = std::make_tuple(ListStatus::Completed, std::uint32_t{12}, std::uint32_t{9});
+  Auth auth = signed_in_both();
+
+  const sync::CycleResult ran =
+      sync::run_cycle(ani, mal, {}, logging_airing(log), *store, auth, options(), no_sleep);
+
+  REQUIRE(ran.mal_pull.has_value());
+  CHECK(ran.mal_pull->pull_failed);
+  REQUIRE(ran.mal_push.has_value());
+  CHECK(ran.mal_push->outcome == mal_mirror::MirrorOutcome::Completed);
+  CHECK(ran.mal_push->dirty == 1);
+  CHECK(ran.mal_push->merged == 1);
+  CHECK(ran.mal_push->settled == 1);
+  CHECK(ran.mal_push->pushed == 0);
+  CHECK(ran.mal_push->unsent() == 0);
+  CHECK(first_with(log, "mal entry") > 0);
+  CHECK(first_with(log, "mal save") == -1);
+
+  auto g = store->get_show(21);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  CHECK((*g)->list_status == ListStatus::Completed);
+  CHECK((*g)->progress == 12);
+  CHECK((*g)->user_score == std::optional<std::uint32_t>(90));
+  CHECK(store->list_dirty_for_mal_mirror()->empty());
 }

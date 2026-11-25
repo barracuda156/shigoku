@@ -9,22 +9,21 @@
 // law stays AniList's; the mirror is separate, simpler machinery behind its
 // own client trait"). Differences from sync.cpp's push_dirty that fall out
 // of that ruling:
-//   - No pull, ever: MAL is push-only (the plan's own words), so there is no
-//     contended-set gate and no reconcile.
+//   - The push takes no contended set from a pull: the pull below is its
+//     own call, and the push stands on its per-row guard alone.
 //   - No fixed inter-call spacing/backoff schedule: sync.hpp's 2s/60s
 //     schedule is an AniList-specific rate-limit accommodation (06 §5.3)
 //     that the plan does not carry over here. A 429 still stops the run
 //     (rather than spin), leaving the rest of the work list dirty for next
 //     time — the same "retry next run" fallback A1 gives sync's own
 //     RateLimited outcome, just without an in-run retry.
-//   - The per-row guard reads MAL's live entry first (mirrors sync's ROD-498
-//     guard) so a value changed on MAL's side since the last mirror push is
-//     never blindly overwritten; a MAL-deleted entry (my_list_status simply
-//     absent, i.e. mal::get_list_entry returns nullopt) is NOT held back —
-//     same rationale as sync's "no entry on the server: nothing of theirs to
-//     destroy" branch, and MAL mirrors get no analogous "pull" that could
-//     ever clear the local dirty flag on our side, so holding back here
-//     would strand the row dirty forever.
+//   - The per-row guard reads MAL's live entry first. When it is not what the
+//     mirror's snapshot says MAL holds — the entry moved on MAL's side, or the
+//     row was never mirrored — the row is merged against that entry
+//     (Store::rebase_mal_row, the pull's own three-way law) and only what
+//     still differs afterwards is sent. Nothing is overwritten blind, and no
+//     row waits on a list pull to become pushable again. A row with no entry
+//     on MAL is simply sent.
 //
 // No drain rights (A1 stands): the caller (app.cpp) runs this behind the
 // SAME AniList sync flush / quitFlush cadence, never its own worker or its
@@ -35,9 +34,11 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "auth.hpp"
 #include "domain.hpp"
@@ -130,6 +131,8 @@ struct Refresh {
 };
 using Refresher = std::function<Refresh(const MalAuth& current, std::int64_t now)>;
 
+inline constexpr std::size_t kFailureNotes = 12;
+
 // Terminal reason for a mirror run.
 enum class MirrorOutcome {
   Completed,
@@ -142,11 +145,25 @@ struct MirrorSummary {
   MirrorOutcome outcome = MirrorOutcome::Completed;
   std::uint32_t dirty = 0;
   std::uint32_t pushed = 0;
+  // A MAL call for the row failed (other than 401/429, which end the run):
+  // the row stays dirty.
   std::uint32_t push_failed = 0;
-  // Rows held back because MAL's live entry disagrees with what the mirror
-  // believes it last pushed (ROD-498-equivalent guard) — left dirty rather
-  // than overwritten.
+  // Rows merged against MAL's live entry before the decision to send; each
+  // then ends pushed (the local side still differed), settled (it did not)
+  // or skipped.
+  std::uint32_t merged = 0;
+  std::uint32_t settled = 0;
+  // Rows edited locally while being merged: nothing written, left dirty.
   std::uint32_t push_skipped = 0;
+
+  // Rows this run leaves owing to MAL: every dirty row it neither sent nor
+  // settled, those a 401/429 cut the run short of included.
+  [[nodiscard]] std::uint32_t unsent() const { return dirty - pushed - settled; }
+  // Why a row counted in push_failed did not go, one line each
+  // ("myanimelist.net/anime/<id>: save failed, http 403"), the first
+  // kFailureNotes of them: the command line prints these, since nothing else
+  // surfaces a failing row's reason.
+  std::vector<std::string> failures;
 
   static MirrorSummary terminal(MirrorOutcome outcome) {
     MirrorSummary s;
@@ -156,12 +173,14 @@ struct MirrorSummary {
 };
 
 // Push-only mirror run: dirty-row walk (store's NULL-mal_id skip already
-// applied), guard-then-save per row, snapshot advance on success. `enabled`
-// is the caller's gate (mal.bearer() presence is folded into `Disabled`
-// below, so the caller need only pass whether the mirror is switched on).
+// applied), guard (merging when MAL's entry is not the snapshot's), save,
+// snapshot advance on success. `enabled` is the caller's gate (mal.bearer()
+// presence is folded into `Disabled` below, so the caller need only pass
+// whether the mirror is switched on). `now` stamps a progress rise a merge
+// adopts from MAL.
 [[nodiscard]] Result<MirrorSummary, StoreError> push_mirror(const MalMirrorClient& client,
                                                              const MalAuth& auth, Store& store,
-                                                             bool enabled);
+                                                             bool enabled, std::int64_t now);
 
 // The pull direction: the account's whole MAL list reconciled into the
 // library against the mirror's OWN snapshot columns (never AniList's), the
