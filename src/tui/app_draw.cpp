@@ -480,12 +480,21 @@ void draw_bottom_bar(const App& app, CellBuffer& buf) {
     help = "jk move \xC2\xB7 enter open \xC2\xB7 tab grid \xC2\xB7 c hide \xC2\xB7 space/esc back";
   } else if (dead_end) {
     help = "no source has this show \xC2\xB7 v try a source by hand \xC2\xB7 "
-           "P save for later \xC2\xB7 space/esc back";
+           "P plan for later \xC2\xB7 space/esc back";
   } else if (cast_shown) {
     help = "hjkl grid \xC2\xB7 enter play \xC2\xB7 tab cast list \xC2\xB7 c hide \xC2\xB7 "
            "~ similar \xC2\xB7 d download \xC2\xB7 space/esc back";
   } else {
     help = detail::idle_help(app.view, app.pane);
+  }
+  // A catalog show's page offers P while the show is on no list.
+  if (detail_surface && detail::selected_show(app) == nullptr) {
+    const Enrichment* e = detail::selected_enrichment(app);
+    constexpr std::string_view kPlay = "enter play \xC2\xB7 ";
+    const std::size_t at = help.find(kPlay);
+    if (e != nullptr && at != std::string::npos && app.history.find(*e) == nullptr) {
+      help.insert(at + kPlay.size(), "P plan \xC2\xB7 ");
+    }
   }
   buf.put_str(x, y, help, theme::fg3, theme::bg);
 }
@@ -560,15 +569,14 @@ std::string idle_help(View v, Pane p) {
       // the episode grid on the detail surfaces — j/k hop rows, h/l step.
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
-      return "hjkl · / find anime · space zoom · ~ similar · P save · q quit";
+      return "hjkl · / find anime · space zoom · ~ similar · P plan · q quit";
     case View::History:
       if (p == Pane::Detail)
         return "hjkl grid · esc back · enter play · v provider · space zoom · q quit";
       return "jk move · / filter · f status · o order · l/enter detail · p/x/c/w/P status · s score · X delete · r/u reset/undo · q quit";
     case View::Discover:
-      // "P save" (KEYS_AUDIT F8): add-to-watchlist worked here all along but
-      // was advertised only on Browse's line.
-      return "hjkl · enter open · space zoom · ~ similar · f filter · P save · q quit";
+      // P is named here as on Browse's line.
+      return "hjkl · enter open · space zoom · ~ similar · f filter · P plan · q quit";
     case View::Settings:
       return "jk move · hl cycle · space toggle · enter edit · q save+quit";
     case View::Schedule:

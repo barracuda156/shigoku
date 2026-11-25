@@ -2018,7 +2018,7 @@ void on_key(App& app, const KeyEvent& k) {
       arm_sync(app);
       load_history(app);
     }
-    app.toasts.push(ToastKind::Success, "added to your list", app.tick_count);
+    app.toasts.push(ToastKind::Success, "added to your list \xC2\xB7 planned", app.tick_count);
   };
 
   // Enter the detail pane for the selected row: fires the episode fetch if

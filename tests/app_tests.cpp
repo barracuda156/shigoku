@@ -149,7 +149,7 @@ TEST_CASE("idle_help: Detail zoom copy matches DESIGN §7.5") {
   CHECK(detail::idle_help(View::Browse, Pane::Detail).find("hjkl grid") !=
         std::string::npos);
   // F8: Discover's add-to-watchlist is advertised like Browse's.
-  CHECK(detail::idle_help(View::Discover, Pane::List).find("P save") !=
+  CHECK(detail::idle_help(View::Discover, Pane::List).find("P plan") !=
         std::string::npos);
 }
 
@@ -4697,7 +4697,7 @@ TEST_CASE("P on Discover: a fresh add lands on the list and the card shows it") 
   REQUIRE(g.has_value());
   REQUIRE(g->has_value());
   CHECK((*g)->list_status == ListStatus::Planning);
-  CHECK(h->app.toasts.visible().back().text == "added to your list");
+  CHECK(h->app.toasts.visible().back().text == "added to your list \xC2\xB7 planned");
   const Show* listed = h->app.history.find(h->app.discover.slot().entries[0].meta);
   REQUIRE(listed != nullptr);
   CHECK(list_state_text(*listed) == "planned");
@@ -4885,9 +4885,34 @@ TEST_CASE("P on a show's page opened from Discover adds the show") {
   REQUIRE(g->has_value());
   CHECK((*g)->library_added_at.has_value());
   CHECK((*g)->list_status == ListStatus::Planning);
-  CHECK(h->app.toasts.visible().back().text == "added to your list");
+  CHECK(h->app.toasts.visible().back().text == "added to your list \xC2\xB7 planned");
   CHECK(h->app.sync_flush_deadline != 0);
   CHECK(h->app.view == View::Detail);  // the page stays up.
+}
+
+TEST_CASE("a show's page offers P plan only while the show is on no list") {
+  auto h = HistoryHarness::make();
+  h->app.win = WinSize{120, 30, 0, 0};
+  h->app.view = View::Discover;
+  feed_discover(h->app, {card_show(623, 63, "Unlisted")});
+  tick(h->app, Event{special_key(KeyEvent::Special::Enter)});
+  REQUIRE(h->app.view == View::Detail);
+  auto offers_plan = [&] {
+    CellBuffer buf;
+    draw(h->app, buf);
+    for (int y = 0; y < buf.height(); ++y) {
+      std::string row;
+      for (int x = 0; x < buf.width(); ++x) row += static_cast<char>(buf.at(x, y).glyph & 0x7F);
+      if (row.find("enter play") != std::string::npos) {
+        return row.find("P plan") != std::string::npos;
+      }
+    }
+    return false;
+  };
+  CHECK(offers_plan());
+  tick(h->app, Event{press(U'P')});
+  REQUIRE(h->app.history.find(card_show(623, 63, "Unlisted").meta) != nullptr);
+  CHECK_FALSE(offers_plan());
 }
 
 TEST_CASE("P on the page of a show already listed says so and writes nothing") {
