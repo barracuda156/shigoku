@@ -827,6 +827,22 @@ TEST_CASE("episodes_behind: aired minus progress, floored, zero when unknown") {
   CHECK(episodes_behind(s, now) == 0u);
 }
 
+TEST_CASE("last_activity_at: the later of a play here and a tracker edit") {
+  Show s;
+  CHECK_FALSE(s.last_activity_at().has_value());
+  s.last_watched_at = 500;
+  CHECK(s.last_activity_at() == std::optional<std::int64_t>(500));
+  s.last_watched_at = std::nullopt;
+  s.list_updated_at = 700;
+  CHECK(s.last_activity_at() == std::optional<std::int64_t>(700));
+  s.last_watched_at = 900;
+  CHECK(s.last_activity_at() == std::optional<std::int64_t>(900));
+  s.last_watched_at = 600;
+  CHECK(s.last_activity_at() == std::optional<std::int64_t>(700));
+  s.last_watched_at = 700;
+  CHECK(s.last_activity_at() == std::optional<std::int64_t>(700));
+}
+
 TEST_CASE("after_play: completed sticks") {
   CHECK(after_play_status(ListStatus::Completed, 1, 12u, false) == ListStatus::Completed);
   CHECK(after_play_status(ListStatus::Completed, 0, std::nullopt, true) ==

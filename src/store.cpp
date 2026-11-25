@@ -238,6 +238,13 @@ ALTER TABLE show ADD COLUMN notice_last_episode INTEGER;
 ALTER TABLE show ADD COLUMN notice_pending INTEGER NOT NULL DEFAULT 0;
 )SQL";
 
+// When the show's list entry last changed: stamped by a list edit here, and
+// by a pull for an edit made on the tracker's side. Additive, NULL until
+// either happens.
+constexpr const char* kMigrationV7 = R"SQL(
+ALTER TABLE show ADD COLUMN list_updated_at INTEGER;
+)SQL";
+
 using sqlite_util::Stmt;
 using sqlite_util::driver_msg;
 
@@ -341,6 +348,14 @@ Result<Unit, StoreError> migrate(sqlite3* db) {
       return err(ddl.error());
     }
     at = 6;
+  }
+  if (at < 7) {
+    auto ddl = exec(db, kMigrationV7);
+    if (!ddl.has_value()) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      return err(ddl.error());
+    }
+    at = 7;
   }
 
   // A strippable assert here would BE the half-applied-schema bug (02 §5); this
@@ -497,7 +512,7 @@ constexpr const char* kShowStateCols =
     "enrichment_fetched_at, enrichment_fieldset_version, list_status, "
     "user_rating, notes, play_count, progress, library_added_at, last_watched_at, "
     "synced_status, synced_progress, user_score, synced_score, "
-    "notice_last_episode, notice_pending";
+    "notice_last_episode, notice_pending, list_updated_at";
 
 // Empty binds NULL so the merge keeps prior values: a source that stopped
 // sending lists must not wipe them (ROD-261 rule; JSON encoding, 02 L5). The
@@ -592,7 +607,7 @@ Enrichment enrichment_from_row(const Stmt& s) {
   return e;
 }
 
-// The full library row: kEnrichCols (0..25) then kShowStateCols (26..40).
+// The full library row: kEnrichCols (0..25) then kShowStateCols (26..41).
 Show show_from_row(const Stmt& s) {
   Show show;
   show.enrichment = enrichment_from_row(s);
@@ -613,6 +628,7 @@ Show show_from_row(const Stmt& s) {
   show.synced_score = s.col_opt_uint(38);
   show.notice_last_episode = s.col_opt_uint(39);
   show.notice_pending = s.col_int64(40) != 0;
+  show.list_updated_at = s.col_opt_int64(41);
   return show;
 }
 
@@ -871,6 +887,26 @@ Result<std::optional<Resume>, StoreError> Store::get_resume(std::int64_t anilist
   return std::optional<Resume>(r);
 }
 
+Result<std::vector<std::int64_t>, StoreError> Store::shows_with_resume(
+    Translation translation) const {
+  // latest_resume's own predicate, over every show at once.
+  Stmt s(conn_,
+         "SELECT DISTINCT ep.anilist_id FROM episode_progress ep "
+         "JOIN show s ON s.anilist_id = ep.anilist_id "
+         "WHERE ep.translation = ?1 AND ep.fully_watched = 0 AND ep.position_secs > 0 "
+         "  AND ep.updated_at > COALESCE(s.progress_stamped_at, 0)");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+  s.bind_text(1, to_string(translation));
+  std::vector<std::int64_t> out;
+  for (;;) {
+    const int rc = s.step();
+    if (rc == SQLITE_DONE) break;
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(conn_)));
+    out.push_back(s.col_int64(0));
+  }
+  return out;
+}
+
 Result<std::optional<std::pair<std::string, Resume>>, StoreError> Store::latest_resume(
     std::int64_t anilist_id, Translation translation) const {
   // Only a partial written AFTER the frontier stamp resumes: one at or before
@@ -1024,7 +1060,17 @@ Result<std::optional<CatalogHit>, StoreError> Store::get_catalog(std::int64_t an
 }
 
 Result<Unit, StoreError> Store::add_to_library(const Enrichment& e, std::int64_t now) {
-  return add_to_library_on(conn_, e, now);
+  if (auto added = add_to_library_on(conn_, e, now); !added.has_value()) return added;
+  // A show put on the list here and now is the list's latest edit. One that
+  // was already on it (its stamp, or an older membership) keeps its own.
+  Stmt s(conn_, "UPDATE show SET list_updated_at = ?2 "
+                "WHERE anilist_id = ?1 AND library_added_at = ?2 "
+                "  AND list_updated_at IS NULL");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+  s.bind_int64(1, e.anilist_id);
+  s.bind_int64(2, now);
+  if (s.step() != SQLITE_DONE) return err(StoreError::sqlite(driver_msg(conn_)));
+  return Unit{};
 }
 
 Result<bool, StoreError> Store::patch_show_enrichment(const Enrichment& e, bool stamp_fresh,
@@ -1532,10 +1578,32 @@ std::string merge_show_sql(bool adopt_user_state, bool both_in_library) {
   assign("notice_last_episode", "COALESCE(MAX(notice_last_episode, " + old_notice +
                                     "), notice_last_episode, " + old_notice + ")");
   assign("notice_pending", "MAX(notice_pending, " + old_value("notice_pending") + ")");
+  const std::string old_stamp = old_value("list_updated_at");
+  assign("list_updated_at", "COALESCE(MAX(list_updated_at, " + old_stamp +
+                                   "), list_updated_at, " + old_stamp + ")");
   return "UPDATE show SET " + set + " WHERE anilist_id = ?2";
 }
 
 }  // namespace
+
+Result<std::vector<std::pair<std::int64_t, std::int64_t>>, StoreError> Store::list_twin_rows()
+    const {
+  Stmt s(conn_,
+         "SELECT syn.anilist_id, MIN(real.anilist_id) FROM show AS syn "
+         "JOIN show AS real ON real.mal_id = syn.mal_id AND real.anilist_id > 0 "
+         "WHERE syn.anilist_id < 0 AND syn.mal_id IS NOT NULL "
+         "  AND (syn.library_added_at IS NOT NULL OR real.library_added_at IS NOT NULL) "
+         "GROUP BY syn.anilist_id ORDER BY syn.anilist_id DESC");
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+  std::vector<std::pair<std::int64_t, std::int64_t>> out;
+  for (;;) {
+    const int rc = s.step();
+    if (rc == SQLITE_DONE) break;
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(conn_)));
+    out.emplace_back(s.col_int64(0), s.col_int64(1));
+  }
+  return out;
+}
 
 Result<RekeyOutcome, StoreError> Store::rekey_show(std::int64_t old_id, std::int64_t new_id) {
   if (old_id == new_id) return RekeyOutcome::Nothing;
@@ -1632,7 +1700,8 @@ Result<Unit, StoreError> write_list_status(sqlite3* db, std::int64_t anilist_id,
          "  progress = ?2, "
          "  progress_stamped_at = CASE WHEN progress <> ?2 THEN ?3 "
          "                             ELSE progress_stamped_at END, "
-         "  library_added_at = COALESCE(library_added_at, ?3) "
+         "  library_added_at = COALESCE(library_added_at, ?3), "
+         "  list_updated_at = MAX(IFNULL(list_updated_at, 0), ?3) "
          "WHERE anilist_id = ?4");
   if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
   s.bind_text(1, to_string(status));
@@ -1835,11 +1904,37 @@ constexpr std::size_t kImportCap = 500;
 // thousands, and the fetch itself stops at kUserListPages pages anyway.
 constexpr std::size_t kMalImportCap = 5000;
 
+// Raw 0..=100 (the store's canonical AniList POINT_100 scale) -> MAL's own
+// native 0..=10 int scale. Round-half-up, same rounding idiom as domain.cpp's
+// to_anilist_score/parse_user_score; not a ScoreFormat case since MAL has
+// exactly one scale, never an account-chosen one.
+std::uint32_t to_mal_score(std::uint32_t raw) {
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(std::lround(raw / 10.0)), 10);
+}
+
+// The MAL mirror's merge runs on MAL's own grid: a local score off it (75,
+// held as 8 on MAL) must not read as an edit against the snapshot's 80, or
+// it would win over a score changed on MAL's side. The raw local value comes
+// back wherever the local side stood.
+store_detail::Reconciled reconcile_on_mal_grid(const std::optional<ListEntry>& base,
+                                               const ListEntry& local,
+                                               const ListEntry& remote) {
+  ListEntry on_grid = local;
+  on_grid.score = to_mal_score(local.score) * 10;
+  store_detail::Reconciled r = store_detail::reconcile(base, on_grid, remote);
+  if (r.score == on_grid.score) r.score = local.score;
+  return r;
+}
+
 struct ReconcileCandidate {
   std::int64_t id = 0;
   ListEntry local;
   std::optional<ListEntry> base;
   std::optional<std::int64_t> mal_id;
+  std::int64_t stamped = 0;  // list_updated_at, 0 when NULL.
+  // False when the snapshot holds no score (the mirror withheld it from its
+  // push): `base` then reads 0 there, which says nothing about the tracker.
+  bool base_score_known = true;
 };
 
 }  // namespace
@@ -1860,10 +1955,12 @@ Result<SyncPlan, StoreError> Store::reconcile_plan_for(SyncTracker tracker,
   // matched by mal_id below (its bridged anilist_id may differ from the id
   // the library holds the same show under).
   Stmt s(db, mal ? "SELECT anilist_id, list_status, progress, user_score, "
-                   "       mal_synced_status, mal_synced_progress, mal_synced_score, mal_id "
+                   "       mal_synced_status, mal_synced_progress, mal_synced_score, mal_id, "
+                   "       list_updated_at "
                    "FROM show WHERE library_added_at IS NOT NULL"
                  : "SELECT anilist_id, list_status, progress, user_score, "
-                   "       synced_status, synced_progress, synced_score, mal_id "
+                   "       synced_status, synced_progress, synced_score, mal_id, "
+                   "       list_updated_at "
                    "FROM show WHERE library_added_at IS NOT NULL");
   if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
   std::vector<ReconcileCandidate> candidates;
@@ -1886,6 +1983,8 @@ Result<SyncPlan, StoreError> Store::reconcile_plan_for(SyncTracker tracker,
                          mal ? snap_score * 10 : snap_score};
     }
     c.mal_id = s.col_opt_int64(7);
+    c.stamped = s.col_opt_int64(8).value_or(0);
+    c.base_score_known = !mal || s.col_opt_uint(6).has_value();
     if (mal && c.mal_id.has_value() && !by_mal.contains(*c.mal_id)) by_mal.emplace(*c.mal_id, c.id);
     candidates.push_back(std::move(c));
   }
@@ -1939,9 +2038,20 @@ Result<SyncPlan, StoreError> Store::reconcile_plan_for(SyncTracker tracker,
       }
     }
     const auto [rstatus, rprogress, rscore, rupdated] = it->second;
-    (void)rupdated;
+    const ListEntry remote_entry{rstatus, rprogress, rscore};
+    // The tracker's edit time counts when the edit was not this app's own
+    // push (the entry is not what the snapshot holds), or as the first stamp
+    // a row gets. A push of the whole library would otherwise date every row
+    // to the same minute.
+    const bool edited_elsewhere =
+        !c.base.has_value() || c.base->status != rstatus || c.base->progress != rprogress ||
+        (c.base_score_known && c.base->score != rscore);
+    if (rupdated > c.stamped && (c.stamped == 0 || edited_elsewhere)) {
+      out.stamps.emplace_back(c.id, rupdated);
+    }
     const store_detail::Reconciled r =
-        store_detail::reconcile(c.base, c.local, ListEntry{rstatus, rprogress, rscore});
+        mal ? reconcile_on_mal_grid(c.base, c.local, remote_entry)
+            : store_detail::reconcile(c.base, c.local, remote_entry);
     const ListEntry merged{r.status, r.progress, r.score};
     const ListEntry snapshot{r.snapshot_status, r.snapshot_progress, r.snapshot_score};
     // Skip entirely when neither the local triple nor the snapshot moves.
@@ -1959,11 +2069,11 @@ Result<SyncPlan, StoreError> Store::reconcile_plan_for(SyncTracker tracker,
   for (auto& [id, rv] : remote_map) {
     if (matched.contains(id)) continue;
     const auto [status, progress, score, updated] = rv;
-    (void)updated;
     auto seed_it = seeds.find(id);
     const bool wanted = mal || status == ListStatus::Watching;
     if (seed_it != seeds.end() && wanted && seed_has_title(seed_it->second)) {
       out.imports.push_back(SyncImportRow{seed_it->second, status, progress, score});
+      if (updated > 0) out.stamps.emplace_back(id, updated);
     } else {
       out.unmatched.push_back(id);
     }
@@ -2124,6 +2234,28 @@ Result<PullOutcome, StoreError> Store::apply_reconcile_for(SyncTracker tracker, 
     s.bind_int64(2, mal_id);
     if (s.step() != SQLITE_DONE) return err(StoreError::sqlite(driver_msg(db)));
   }
+
+  // One transaction for the lot: the first pull after the column appears
+  // stamps the whole library. A failure here costs these stamps (a row the
+  // merge above re-baselined is not planned again), never the merge.
+  if (!sp.stamps.empty() && begin_immediate(db).has_value()) {
+    bool ok = true;
+    for (const auto& [anilist_id, updated_at] : sp.stamps) {
+      Stmt s(db, "UPDATE show SET list_updated_at = ?2 "
+                 "WHERE anilist_id = ?1 AND library_added_at IS NOT NULL "
+                 "  AND IFNULL(list_updated_at, 0) < ?2");
+      ok = s.prepared();
+      if (ok) {
+        s.bind_int64(1, anilist_id);
+        s.bind_int64(2, updated_at);
+        ok = s.step() == SQLITE_DONE;
+      }
+      if (!ok) break;
+    }
+    if (!ok || !exec(db, "COMMIT").has_value()) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+    }
+  }
   return out;
 }
 
@@ -2203,46 +2335,41 @@ Result<PullOutcome, StoreError> Store::reconcile_pull(const std::vector<RemoteEn
                                                        std::int64_t now) {
   auto plan = reconcile_plan(remote);
   if (!plan.has_value()) return err(plan.error());
-  return apply_reconcile(plan->plan, plan->imports, std::move(plan->unmatched), now);
+  return apply_reconcile_for(SyncTracker::AniList, *plan, now);
 }
 
 // --- MAL mirror (P31 §9.1 slice 4; score P34 slice 2) -----------------------
 
 namespace {
 
-// Raw 0..=100 (the store's canonical AniList POINT_100 scale) -> MAL's own
-// native 0..=10 int scale. Round-half-up, same rounding idiom as domain.cpp's
-// to_anilist_score/parse_user_score; not a ScoreFormat case since MAL has
-// exactly one scale, never an account-chosen one.
-std::uint32_t to_mal_score(std::uint32_t raw) {
-  return std::min<std::uint32_t>(static_cast<std::uint32_t>(std::lround(raw / 10.0)), 10);
-}
-
-}  // namespace
-
-Result<std::vector<MalMirrorRow>, StoreError> Store::list_dirty_for_mal_mirror() const {
-  // mal_id IS NOT NULL is the NULL-mal_id skip (PORT_PARITY.md P31): rows AniList
-  // never linked to a MAL entry have nothing to push and must never surface
-  // here. Gated on its OWN snapshot pair/score (mal_synced_status/progress/
-  // score), not synced_status/progress/score — the AniList-sync dirty gate
-  // must not decide this mirror's work list.
-  Stmt s(conn_,
-         "SELECT anilist_id, mal_id, list_status, progress, user_score, "
-         "       mal_synced_status, mal_synced_progress, mal_synced_score FROM show "
-         "WHERE library_added_at IS NOT NULL AND mal_id IS NOT NULL "
-         "  AND (mal_synced_status IS NULL "
-         "       OR mal_synced_status <> list_status "
-         "       OR mal_synced_progress IS NULL "
-         "       OR mal_synced_progress <> progress "
-         "       OR IFNULL(mal_synced_score, 0) <> "
-         "          CAST(ROUND(IFNULL(user_score, 0) / 10.0) AS INTEGER)) "
-         "ORDER BY last_watched_at DESC NULLS LAST, library_added_at DESC, anilist_id");
-  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+// The mirror's work list, or with `only` the one row of it for that show.
+// mal_id IS NOT NULL is the NULL-mal_id skip (PORT_PARITY.md P31): rows AniList
+// never linked to a MAL entry have nothing to push and must never surface
+// here. Gated on its OWN snapshot pair/score (mal_synced_status/progress/
+// score), not synced_status/progress/score — the AniList-sync dirty gate
+// must not decide this mirror's work list.
+Result<std::vector<MalMirrorRow>, StoreError> mal_dirty_rows(sqlite3* db,
+                                                             std::optional<std::int64_t> only) {
+  std::string sql =
+      "SELECT anilist_id, mal_id, list_status, progress, user_score, "
+      "       mal_synced_status, mal_synced_progress, mal_synced_score FROM show "
+      "WHERE library_added_at IS NOT NULL AND mal_id IS NOT NULL "
+      "  AND (mal_synced_status IS NULL "
+      "       OR mal_synced_status <> list_status "
+      "       OR mal_synced_progress IS NULL "
+      "       OR mal_synced_progress <> progress "
+      "       OR IFNULL(mal_synced_score, 0) <> "
+      "          CAST(ROUND(IFNULL(user_score, 0) / 10.0) AS INTEGER)) ";
+  if (only.has_value()) sql += "AND anilist_id = ?1 ";
+  sql += "ORDER BY last_watched_at DESC NULLS LAST, library_added_at DESC, anilist_id";
+  Stmt s(db, sql.c_str());
+  if (!s.prepared()) return err(StoreError::sqlite(driver_msg(db)));
+  if (only.has_value()) s.bind_int64(1, *only);
   std::vector<MalMirrorRow> out;
   for (;;) {
     const int rc = s.step();
     if (rc == SQLITE_DONE) break;
-    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(conn_)));
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(db)));
     MalMirrorRow row;
     row.anilist_id = s.col_int64(0);
     row.mal_id = s.col_int64(1);
@@ -2257,6 +2384,58 @@ Result<std::vector<MalMirrorRow>, StoreError> Store::list_dirty_for_mal_mirror()
     row.synced_score = s.col_opt_uint(7);
     out.push_back(std::move(row));
   }
+  return out;
+}
+
+}  // namespace
+
+Result<std::vector<MalMirrorRow>, StoreError> Store::list_dirty_for_mal_mirror() const {
+  return mal_dirty_rows(conn_, std::nullopt);
+}
+
+Result<MalRebase, StoreError> Store::rebase_mal_row(std::int64_t anilist_id,
+                                                    ListStatus live_status,
+                                                    std::uint32_t live_progress,
+                                                    std::uint32_t live_score, std::int64_t now) {
+  ListEntry local;
+  std::optional<ListEntry> base;
+  {
+    Stmt s(conn_,
+           "SELECT list_status, progress, user_score, "
+           "       mal_synced_status, mal_synced_progress, mal_synced_score "
+           "FROM show WHERE anilist_id = ?1 AND library_added_at IS NOT NULL");
+    if (!s.prepared()) return err(StoreError::sqlite(driver_msg(conn_)));
+    s.bind_int64(1, anilist_id);
+    const int rc = s.step();
+    if (rc == SQLITE_DONE) return MalRebase{};
+    if (rc != SQLITE_ROW) return err(StoreError::sqlite(driver_msg(conn_)));
+    local = {parse_list_status(s.col_text(0)), static_cast<std::uint32_t>(s.col_int64(1)),
+             s.col_opt_uint(2).value_or(0)};
+    const auto snap_status = s.col_opt_text(3);
+    const auto snap_progress = s.col_opt_uint(4);
+    if (snap_status.has_value() && snap_progress.has_value()) {
+      base = ListEntry{parse_list_status(*snap_status), *snap_progress,
+                       s.col_opt_uint(5).value_or(0) * 10};
+    }
+  }
+
+  const ListEntry remote{live_status, live_progress, std::min<std::uint32_t>(live_score, 10) * 10};
+  const store_detail::Reconciled r = reconcile_on_mal_grid(base, local, remote);
+  SyncPlan plan;
+  plan.plan.push_back(SyncPlanRow{anilist_id, local, ListEntry{r.status, r.progress, r.score},
+                                  ListEntry{r.snapshot_status, r.snapshot_progress,
+                                            r.snapshot_score},
+                                  r.conflict});
+  auto applied = apply_reconcile_for(SyncTracker::Mal, plan, now);
+  if (!applied.has_value()) return err(applied.error());
+  MalRebase out;
+  if (!applied->contended.empty()) {
+    out.contended = true;
+    return out;
+  }
+  auto owed = mal_dirty_rows(conn_, anilist_id);
+  if (!owed.has_value()) return err(owed.error());
+  if (!owed->empty()) out.owed = std::move(owed->front());
   return out;
 }
 

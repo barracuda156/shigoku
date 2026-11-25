@@ -96,7 +96,7 @@ struct StoreError {
 // marker — shigoku-only (no sabigoku Schedule view exists), no cross-store
 // compat claim past v2. Bumping this is a migration event, never a silent
 // DDL add (02 §5).
-inline constexpr std::uint32_t kSchemaVersion = 6;
+inline constexpr std::uint32_t kSchemaVersion = 7;
 
 // The 03 §6.3.1 resume offset default: back up this many seconds from the saved
 // position so playback re-establishes context (config-overridable in P18).
@@ -279,6 +279,10 @@ struct SyncPlan {
   // MAL pull only: library rows matched by mal_id whose mal_id column was
   // NULL — (anilist_id, mal_id) pairs the apply fills in.
   std::vector<std::pair<std::int64_t, std::int64_t>> mal_backfill;
+  // (anilist_id, updated_at): the tracker's edit time for rows whose stored
+  // list_updated_at is older or missing, imports included. The apply
+  // raises the column, never lowers it.
+  std::vector<std::pair<std::int64_t, std::int64_t>> stamps;
 };
 
 // Which tracker a pull reconcile is for: it selects the snapshot column
@@ -325,6 +329,16 @@ struct MalMirrorRow {
   std::optional<std::uint32_t> synced_score;
 
   friend bool operator==(const MalMirrorRow&, const MalMirrorRow&) = default;
+};
+
+// What Store::rebase_mal_row left of one row.
+struct MalRebase {
+  // The row was edited locally between the read and the write: nothing was
+  // written, and it stays dirty for the next run.
+  bool contended = false;
+  // The row as it now stands, when it still differs from what MAL holds;
+  // nullopt when the merge left nothing to send.
+  std::optional<MalMirrorRow> owed;
 };
 
 // What rekey_show did with the show row under the old id.
@@ -522,7 +536,7 @@ class Store {
   //     library_added_at the earlier, and play counts add up;
   //   - mal_id fills a NULL; the MAL mirror snapshot comes from the old row
   //     when the new one was never mirrored; the schedule notice keeps the
-  //     higher mark and either pending flag;
+  //     higher mark and either pending flag; the list-edit stamp the later;
   //   - per-episode progress: on the same (translation, episode) the more
   //     recently updated row wins;
   //   - bindings, cache, pin, absences, route: the new row's own win; the old
@@ -530,6 +544,13 @@ class Store {
   //     for the same provider is dropped.
   [[nodiscard]] Result<RekeyOutcome, StoreError> rekey_show(std::int64_t old_id,
                                                             std::int64_t new_id);
+
+  // Shows held under two keys: a row under a synthetic id whose MAL id
+  // a real-id row carries too, with at least one of the two on the list.
+  // (synthetic id, real id) pairs, each one a rekey_show waiting to happen —
+  // left alone, both rows mirror the one MAL entry and push over each other.
+  [[nodiscard]] Result<std::vector<std::pair<std::int64_t, std::int64_t>>, StoreError>
+  list_twin_rows() const;
 
   // --- Manual status (History P16, ROD-139/189/193) -------------------------
 
@@ -618,6 +639,11 @@ class Store {
   // v0 returns the freshest usable partial by updated_at.
   [[nodiscard]] Result<std::optional<std::pair<std::string, Resume>>, StoreError>
   latest_resume(std::int64_t anilist_id, Translation translation) const;
+
+  // The shows latest_resume has an answer for under `translation`, so a
+  // caller walking the whole library asks only those.
+  [[nodiscard]] Result<std::vector<std::int64_t>, StoreError> shows_with_resume(
+      Translation translation) const;
 
   // Recompute contract (store.rs recompute_progress, 02 §4b): 1-based ordinal of
   // the last fully_watched row among present rows in episode_label_cmp order —
@@ -713,6 +739,17 @@ class Store {
   [[nodiscard]] Result<Unit, StoreError> mark_mal_synced(
       std::int64_t anilist_id, ListStatus status, std::uint32_t progress,
       std::optional<std::uint32_t> score);
+
+  // The pull's merge for ONE library row, against the MAL entry the push has
+  // just read for it: the same three-way law reconcile_mal_pull applies
+  // (base = the mirror's snapshot, none on first contact), the same guarded
+  // write, the snapshot re-baselined to the live entry. `live_score` is MAL's
+  // 0..=10. This is what keeps a row pushable when no list pull re-baselined
+  // it — the pull missed, or matched the entry to another row. A show that is
+  // not in the library is an empty result.
+  [[nodiscard]] Result<MalRebase, StoreError> rebase_mal_row(
+      std::int64_t anilist_id, ListStatus live_status, std::uint32_t live_progress,
+      std::uint32_t live_score, std::int64_t now);
 
  private:
   explicit Store(sqlite3* conn) : conn_(conn) {}

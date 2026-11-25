@@ -456,6 +456,18 @@ struct Show {
   // opened, from any origin view — the marker is a "you have an unseen
   // update" flag, not itself the dedup guard; notice_last_episode is).
   bool notice_pending = false;
+  // When the show's list entry last changed (epoch secs): a status set or
+  // an add here, or an edit made elsewhere that a tracker's pull reported.
+  // Not moved by this app's own pushes. nullopt = nothing on record.
+  std::optional<std::int64_t> list_updated_at;
+
+  // The show's latest activity: a play here or a list edit, whichever is
+  // later. nullopt when neither ever happened.
+  [[nodiscard]] std::optional<std::int64_t> last_activity_at() const {
+    if (!last_watched_at.has_value()) return list_updated_at;
+    if (!list_updated_at.has_value()) return last_watched_at;
+    return *last_watched_at > *list_updated_at ? last_watched_at : list_updated_at;
+  }
 
   friend bool operator==(const Show&, const Show&) = default;
 };

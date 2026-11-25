@@ -1973,15 +1973,16 @@ TEST_CASE("v1_database_upgrades_by_adding_p14_tables") {
     REQUIRE(s->bind_provider(sample(9), "senshi", "x9", 600).has_value());
     REQUIRE(s->meta_set("upgraded", "yes").has_value());
   }
-  // Verify user_version is now 6 (v1 upgrades all the way through v6 in one
-  // open), the seven P14 tables landed, and the v3/v4/v5/v6 columns exist.
+  // Verify user_version is now the current one (v1 upgrades all the way up in
+  // one open), the seven P14 tables landed, and the v3..v7 columns exist.
   {
     sqlite3* raw = nullptr;
     REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
     sqlite3_stmt* st = nullptr;
     REQUIRE(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &st, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_step(st) == SQLITE_ROW);
-    CHECK(sqlite3_column_int64(st, 0) == 6);
+    CHECK(sqlite3_column_int64(st, 0) == kSchemaVersion);
+    CHECK(kSchemaVersion == 7);
     sqlite3_finalize(st);
     for (const char* table : {"provider_binding", "episode_cache", "provider_pin",
                               "provider_absence", "provider_route", "catalog_cache", "app_meta"}) {
@@ -2003,6 +2004,9 @@ TEST_CASE("v1_database_upgrades_by_adding_p14_tables") {
     sqlite3_finalize(st);
     REQUIRE(sqlite3_prepare_v2(raw, "SELECT notice_last_episode, notice_pending FROM show",
                                -1, &st, nullptr) == SQLITE_OK);
+    sqlite3_finalize(st);
+    REQUIRE(sqlite3_prepare_v2(raw, "SELECT list_updated_at FROM show", -1, &st, nullptr) ==
+            SQLITE_OK);
     sqlite3_finalize(st);
     sqlite3_close(raw);
   }
@@ -2041,7 +2045,8 @@ TEST_CASE("v3_database_upgrades_by_adding_user_score_column") {
                               "ALTER TABLE show DROP COLUMN synced_score;"
                               "ALTER TABLE show DROP COLUMN mal_synced_score;"
                               "ALTER TABLE show DROP COLUMN notice_last_episode;"
-                              "ALTER TABLE show DROP COLUMN notice_pending;",
+                              "ALTER TABLE show DROP COLUMN notice_pending;"
+                              "ALTER TABLE show DROP COLUMN list_updated_at;",
                          nullptr, nullptr, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_exec(raw, "PRAGMA user_version = 3", nullptr, nullptr, nullptr) == SQLITE_OK);
     sqlite3_close(raw);
@@ -2065,14 +2070,14 @@ TEST_CASE("v3_database_upgrades_by_adding_user_score_column") {
     // A write through the new writer round-trips.
     REQUIRE(s->set_user_score(9, 75).has_value());
   }
-  // Verify user_version is now 6, and the write survives reopen.
+  // Verify user_version is now the current one, and the write survives reopen.
   {
     sqlite3* raw = nullptr;
     REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
     sqlite3_stmt* st = nullptr;
     REQUIRE(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &st, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_step(st) == SQLITE_ROW);
-    CHECK(sqlite3_column_int64(st, 0) == 6);
+    CHECK(sqlite3_column_int64(st, 0) == kSchemaVersion);
     sqlite3_finalize(st);
     sqlite3_close(raw);
   }
@@ -2105,7 +2110,8 @@ TEST_CASE("v4_database_upgrades_by_adding_mal_synced_score_column") {
     REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
     REQUIRE(sqlite3_exec(raw, "ALTER TABLE show DROP COLUMN mal_synced_score;"
                               "ALTER TABLE show DROP COLUMN notice_last_episode;"
-                              "ALTER TABLE show DROP COLUMN notice_pending;",
+                              "ALTER TABLE show DROP COLUMN notice_pending;"
+                              "ALTER TABLE show DROP COLUMN list_updated_at;",
                          nullptr, nullptr, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_exec(raw, "PRAGMA user_version = 4", nullptr, nullptr, nullptr) == SQLITE_OK);
     sqlite3_close(raw);
@@ -2134,7 +2140,7 @@ TEST_CASE("v4_database_upgrades_by_adding_mal_synced_score_column") {
     sqlite3_stmt* st = nullptr;
     REQUIRE(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &st, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_step(st) == SQLITE_ROW);
-    CHECK(sqlite3_column_int64(st, 0) == 6);
+    CHECK(sqlite3_column_int64(st, 0) == kSchemaVersion);
     sqlite3_finalize(st);
     sqlite3_close(raw);
   }
@@ -2162,8 +2168,8 @@ TEST_CASE("v2_database_upgrades_by_adding_mal_mirror_columns") {
   {
     sqlite3* raw = nullptr;
     REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
-    // A fresh Store::open mints the CURRENT (v6) shape, so rolling back to a
-    // "pre-P31-slice-4" v2 fixture must also drop the v3-v6 columns (P31/P34/
+    // A fresh Store::open mints the CURRENT (v7) shape, so rolling back to
+    // a "pre-P31-slice-4" v2 fixture must also drop the v3-v7 columns (P31/P34/
     // P37) or the rungs this same reopen replays would ADD COLUMN onto an
     // already-present column and fail.
     REQUIRE(sqlite3_exec(raw, "ALTER TABLE show DROP COLUMN mal_synced_status;"
@@ -2172,7 +2178,8 @@ TEST_CASE("v2_database_upgrades_by_adding_mal_mirror_columns") {
                               "ALTER TABLE show DROP COLUMN synced_score;"
                               "ALTER TABLE show DROP COLUMN mal_synced_score;"
                               "ALTER TABLE show DROP COLUMN notice_last_episode;"
-                              "ALTER TABLE show DROP COLUMN notice_pending;",
+                              "ALTER TABLE show DROP COLUMN notice_pending;"
+                              "ALTER TABLE show DROP COLUMN list_updated_at;",
                          nullptr, nullptr, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_exec(raw, "PRAGMA user_version = 2", nullptr, nullptr, nullptr) == SQLITE_OK);
     sqlite3_close(raw);
@@ -2196,15 +2203,15 @@ TEST_CASE("v2_database_upgrades_by_adding_mal_mirror_columns") {
     CHECK_FALSE((*dirty)[0].synced_score.has_value());
     REQUIRE(s->mark_mal_synced(9, ListStatus::Watching, 3, 0).has_value());
   }
-  // Verify user_version is now 6, data (incl. the mark_mal_synced write)
-  // survives reopen.
+  // Verify user_version is now the current one, data (incl. the
+  // mark_mal_synced write) survives reopen.
   {
     sqlite3* raw = nullptr;
     REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
     sqlite3_stmt* st = nullptr;
     REQUIRE(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &st, nullptr) == SQLITE_OK);
     REQUIRE(sqlite3_step(st) == SQLITE_ROW);
-    CHECK(sqlite3_column_int64(st, 0) == 6);
+    CHECK(sqlite3_column_int64(st, 0) == kSchemaVersion);
     sqlite3_finalize(st);
     sqlite3_close(raw);
   }
@@ -2419,4 +2426,587 @@ TEST_CASE("rekey_show_without_a_show_row_moves_only_the_browse_cache") {
   REQUIRE(same.has_value());
   CHECK(*same == RekeyOutcome::Nothing);
   CHECK(s.get_catalog(9558)->has_value());
+}
+
+// --- list_updated_at: the trackers' own edit time -------------------------
+
+namespace {
+
+std::optional<std::int64_t> tracker_stamp(Store& s, std::int64_t id) {
+  auto g = s.get_show(id);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  return (*g)->list_updated_at;
+}
+
+// Stamps a row the way a pull's apply does, with no other write in the plan.
+void stamp_tracker(Store& s, std::int64_t id, std::int64_t at) {
+  SyncPlan p;
+  p.stamps.emplace_back(id, at);
+  REQUIRE(s.apply_reconcile_for(SyncTracker::AniList, p, 0).has_value());
+}
+
+// A library row with no stamp at all, minted the way a pull imports an entry
+// its tracker sent no edit time for.
+void unstamped_lib_row(Store& s, const Enrichment& e, SyncTracker tracker) {
+  SyncPlan p;
+  p.imports.push_back(SyncImportRow{e, ListStatus::Watching, 1, 0});
+  auto out = s.apply_reconcile_for(tracker, p, 100);
+  REQUIRE(out.has_value());
+  REQUIRE(out->imported == 1);
+  REQUIRE_FALSE(tracker_stamp(s, e.anilist_id).has_value());
+}
+
+}  // namespace
+
+TEST_CASE("v6_database_upgrades_by_adding_list_updated_at") {
+  const std::string path = tmp_db("v6-upgrade.db");
+  {
+    auto s = Store::open(path);
+    REQUIRE(s.has_value());
+    REQUIRE(s->add_to_library(sample(9), 500).has_value());
+    REQUIRE(s->restore_list_status(9, ListStatus::Watching, 3, 500).has_value());
+    REQUIRE(s->set_schedule_notice(9, 2).has_value());
+  }
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(raw, "ALTER TABLE show DROP COLUMN list_updated_at;", nullptr,
+                         nullptr, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(raw, "PRAGMA user_version = 6", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  {
+    auto s = Store::open(path);
+    REQUIRE(s.has_value());
+    auto show = s->get_show(9);
+    REQUIRE(show.has_value());
+    REQUIRE(show->has_value());
+    CHECK((*show)->list_status == ListStatus::Watching);
+    CHECK((*show)->progress == 3);
+    CHECK((*show)->notice_last_episode == std::optional<std::uint32_t>(2));
+    CHECK_FALSE((*show)->list_updated_at.has_value());  // NULL until a pull says.
+    auto out = s->reconcile_pull({remote_seed(9, ListStatus::Watching, 3, "Show 9", 4000)}, 600);
+    REQUIRE(out.has_value());
+  }
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+    sqlite3_stmt* st = nullptr;
+    REQUIRE(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &st, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_step(st) == SQLITE_ROW);
+    CHECK(sqlite3_column_int64(st, 0) == kSchemaVersion);
+    sqlite3_finalize(st);
+    sqlite3_close(raw);
+  }
+  {
+    auto s = Store::open(path);
+    REQUIRE(s.has_value());
+    CHECK(tracker_stamp(*s, 9) == std::optional<std::int64_t>(4000));
+  }
+  for (const char* suffix : {"", "-wal", "-shm"}) {
+    std::remove((path + suffix).c_str());
+  }
+}
+
+TEST_CASE("a_pulled_edit_time_counts_only_for_an_edit_made_elsewhere") {
+  Store store = open_mem();
+  // Imported with no edit time: on the list, AniList snapshot (W,3), no stamp.
+  {
+    auto out = store.reconcile_pull({remote_seed(50, ListStatus::Watching, 3, "Show 50", 0)}, 40);
+    REQUIRE(out.has_value());
+    REQUIRE(out->imported == 1);
+    CHECK_FALSE(tracker_stamp(store, 50).has_value());
+  }
+
+  // First stamp: taken even though the entry is just what the snapshot holds.
+  auto plan = store.reconcile_plan({remote_seed(50, ListStatus::Watching, 3, "Show 50", 1000)});
+  REQUIRE(plan.has_value());
+  CHECK(plan->plan.empty());  // nothing to merge...
+  CHECK(plan->stamps == std::vector<std::pair<std::int64_t, std::int64_t>>{{50, 1000}});
+  auto out = store.reconcile_pull({remote_seed(50, ListStatus::Watching, 3, "Show 50", 1000)}, 60);
+  REQUIRE(out.has_value());
+  CHECK(out->reconciled == 0);
+  CHECK(tracker_stamp(store, 50) == std::optional<std::int64_t>(1000));  // ...the stamp lands.
+
+  // This app's own push shape: the entry is the snapshot, only its time moved.
+  auto own = store.reconcile_plan({remote_seed(50, ListStatus::Watching, 3, "Show 50", 2000)});
+  REQUIRE(own.has_value());
+  CHECK(own->stamps.empty());
+  REQUIRE(store.reconcile_pull({remote_seed(50, ListStatus::Watching, 3, "Show 50", 2000)}, 70)
+              .has_value());
+  CHECK(tracker_stamp(store, 50) == std::optional<std::int64_t>(1000));
+
+  // Edited elsewhere, later: raised with the merge.
+  auto moved =
+      store.reconcile_pull({remote_seed(50, ListStatus::Watching, 5, "Show 50", 3000)}, 80);
+  REQUIRE(moved.has_value());
+  CHECK(moved->reconciled == 1);
+  CHECK(sync_state(store, 50).second == 5);
+  CHECK(tracker_stamp(store, 50) == std::optional<std::int64_t>(3000));
+
+  // Edited elsewhere but earlier, or with no time: never lowered, never cleared.
+  REQUIRE(store.reconcile_pull({remote_seed(50, ListStatus::Paused, 5, "Show 50", 2500)}, 90)
+              .has_value());
+  CHECK(sync_state(store, 50).first == ListStatus::Paused);
+  CHECK(tracker_stamp(store, 50) == std::optional<std::int64_t>(3000));
+  REQUIRE(store.reconcile_pull({remote_seed(50, ListStatus::Watching, 6, "Show 50", 0)}, 95)
+              .has_value());
+  CHECK(sync_state(store, 50).second == 6);
+  CHECK(tracker_stamp(store, 50) == std::optional<std::int64_t>(3000));
+}
+
+// No snapshot yet (AniList never synced): the tracker's entry counts as an
+// edit made elsewhere, taken when it is later than the row's own stamp.
+TEST_CASE("a_first_contact_counts_as_an_edit_made_elsewhere") {
+  Store store = open_mem();
+  lib_row(store, 51, ListStatus::Watching, 3);  // list edits at 10.
+  lib_row(store, 57, ListStatus::Watching, 3);
+  CHECK(tracker_stamp(store, 51) == std::optional<std::int64_t>(10));
+  REQUIRE(store
+              .reconcile_pull({remote_seed(51, ListStatus::Watching, 3, "Show 51", 9),
+                               remote_seed(57, ListStatus::Watching, 3, "Show 57", 1000)},
+                              60)
+              .has_value());
+  CHECK(tracker_stamp(store, 51) == std::optional<std::int64_t>(10));
+  CHECK(tracker_stamp(store, 57) == std::optional<std::int64_t>(1000));
+}
+
+TEST_CASE("a_mal_pull_stamps_the_library_row_it_matched_by_mal_id") {
+  Store store = open_mem();
+  lib_row(store, 52, ListStatus::Watching, 3);  // sample(52) carries mal_id 152; stamp 10.
+  REQUIRE(store.mark_mal_synced(52, ListStatus::Watching, 3, 0).has_value());
+
+  // MAL's entry is the mirror's snapshot: its later time is the mirror's own.
+  auto same = remote_seed(-152, ListStatus::Watching, 3, "Show 52", 3000);
+  same.import_seed->mal_id = 152;
+  auto out = store.reconcile_mal_pull({same}, 60);
+  REQUIRE(out.has_value());
+  CHECK(out->reconciled == 0);
+  CHECK(out->imported == 0);
+  CHECK(tracker_stamp(store, 52) == std::optional<std::int64_t>(10));
+
+  // Moved on MAL: stamped onto the row that holds the mal_id.
+  auto edited = remote_seed(-152, ListStatus::Watching, 5, "Show 52", 3200);
+  edited.import_seed->mal_id = 152;
+  auto out2 = store.reconcile_mal_pull({edited}, 70);
+  REQUIRE(out2.has_value());
+  CHECK(out2->reconciled == 1);
+  CHECK(sync_state(store, 52).second == 5);
+  CHECK(tracker_stamp(store, 52) == std::optional<std::int64_t>(3200));
+  CHECK_FALSE(store.get_show(-152)->has_value());
+
+  // The column is shared by both trackers: the later of the two holds.
+  REQUIRE(store.reconcile_pull({remote_seed(52, ListStatus::Watching, 5, "Show 52", 2500)}, 80)
+              .has_value());
+  CHECK(tracker_stamp(store, 52) == std::optional<std::int64_t>(3200));
+  REQUIRE(store.reconcile_pull({remote_seed(52, ListStatus::Watching, 6, "Show 52", 3500)}, 90)
+              .has_value());
+  CHECK(tracker_stamp(store, 52) == std::optional<std::int64_t>(3500));
+}
+
+TEST_CASE("a_stamps_pass_never_marks_a_row_off_the_list") {
+  Store store = open_mem();
+  identity_row(store, 53);
+  stamp_tracker(store, 53, 777);
+  CHECK_FALSE(tracker_stamp(store, 53).has_value());
+}
+
+TEST_CASE("local_list_edits_stamp_the_row_with_their_own_clock") {
+  Store store = open_mem();
+  REQUIRE(store.add_to_library(sample(54), 100).has_value());
+  CHECK(tracker_stamp(store, 54) == std::optional<std::int64_t>(100));
+  // Adding it again is not a new edit.
+  REQUIRE(store.add_to_library(sample(54), 200).has_value());
+  CHECK(tracker_stamp(store, 54) == std::optional<std::int64_t>(100));
+  REQUIRE(store.set_list_status(54, ListStatus::Watching, 300).has_value());
+  CHECK(tracker_stamp(store, 54) == std::optional<std::int64_t>(300));
+  // An older clock never lowers it; a newer one raises it.
+  REQUIRE(store.restore_list_status(54, ListStatus::Watching, 2, 250).has_value());
+  CHECK(tracker_stamp(store, 54) == std::optional<std::int64_t>(300));
+  REQUIRE(store.restore_list_status(54, ListStatus::Paused, 2, 400).has_value());
+  CHECK(tracker_stamp(store, 54) == std::optional<std::int64_t>(400));
+
+  // An identity row put on the list by the add is stamped by it.
+  identity_row(store, 55);
+  CHECK_FALSE(tracker_stamp(store, 55).has_value());
+  REQUIRE(store.add_to_library(sample(55), 500).has_value());
+  CHECK(tracker_stamp(store, 55) == std::optional<std::int64_t>(500));
+
+  // A row that already carries a stamp keeps it through an add.
+  auto imported =
+      store.reconcile_pull({remote_seed(56, ListStatus::Watching, 2, "Show 56", 450)}, 600);
+  REQUIRE(imported.has_value());
+  REQUIRE(imported->imported == 1);
+  CHECK(tracker_stamp(store, 56) == std::optional<std::int64_t>(450));
+  REQUIRE(store.add_to_library(sample(56), 600).has_value());
+  CHECK(tracker_stamp(store, 56) == std::optional<std::int64_t>(450));
+}
+
+TEST_CASE("an_imported_row_carries_the_trackers_stamp") {
+  Store store = open_mem();
+  // The import clock (9000) is later than the trackers' edit times: the row
+  // ends with the tracker's.
+  auto mal = remote_seed(-901, ListStatus::Completed, 12, "MAL A", 5000, 90);
+  mal.import_seed->mal_id = 901;
+  auto unstamped = remote_seed(-902, ListStatus::Planning, 0, "MAL B", 0, 0);
+  unstamped.import_seed->mal_id = 902;
+  auto out = store.reconcile_mal_pull({mal, unstamped}, 9000);
+  REQUIRE(out.has_value());
+  CHECK(out->imported == 2);
+  CHECK(tracker_stamp(store, -901) == std::optional<std::int64_t>(5000));
+  CHECK_FALSE(tracker_stamp(store, -902).has_value());  // no time sent: none taken from the clock.
+
+  auto ani =
+      store.reconcile_pull({remote_seed(710, ListStatus::Watching, 4, "New Show", 6000)}, 9500);
+  REQUIRE(ani.has_value());
+  CHECK(ani->imported == 1);
+  CHECK(tracker_stamp(store, 710) == std::optional<std::int64_t>(6000));
+
+  // The library list reads it back like get_show does.
+  auto history = store.list_history();
+  REQUIRE(history.has_value());
+  bool seen = false;
+  for (const Show& s : *history) {
+    if (s.enrichment.anilist_id == 710) {
+      seen = true;
+      CHECK(s.list_updated_at == std::optional<std::int64_t>(6000));
+      CHECK(s.last_activity_at() == std::optional<std::int64_t>(6000));
+    }
+  }
+  CHECK(seen);
+}
+
+TEST_CASE("rekey_show_carries_the_tracker_stamp_and_a_merge_keeps_the_later") {
+  auto s = open_mem();
+  // A move takes the stamp with the row.
+  REQUIRE(s.add_to_library(show_meta(-560, 560, "Moved"), 100).has_value());
+  stamp_tracker(s, -560, 4000);
+  auto moved = s.rekey_show(-560, 9560);
+  REQUIRE(moved.has_value());
+  CHECK(*moved == RekeyOutcome::Moved);
+  CHECK(tracker_stamp(s, 9560) == std::optional<std::int64_t>(4000));
+
+  // Both in the library: the later stamp of the two, whichever row holds it.
+  struct Pair {
+    std::int64_t real;
+    std::optional<std::int64_t> real_at;
+    std::optional<std::int64_t> syn_at;
+    std::optional<std::int64_t> expect;
+  };
+  const Pair cases[] = {
+      {9561, 3000, 5000, 5000},
+      {9562, 6000, 2000, 6000},
+      {9563, std::nullopt, 2500, 2500},
+      {9564, 2600, std::nullopt, 2600},
+      {9565, std::nullopt, std::nullopt, std::nullopt},
+  };
+  for (const Pair& c : cases) {
+    const std::int64_t syn = -(c.real - 9000);
+    unstamped_lib_row(s, show_meta(c.real, -syn, "Real"), SyncTracker::AniList);
+    unstamped_lib_row(s, show_meta(syn, -syn, "Synthetic"), SyncTracker::Mal);
+    if (c.real_at.has_value()) stamp_tracker(s, c.real, *c.real_at);
+    if (c.syn_at.has_value()) stamp_tracker(s, syn, *c.syn_at);
+    auto merged = s.rekey_show(syn, c.real);
+    REQUIRE(merged.has_value());
+    CHECK(*merged == RekeyOutcome::Merged);
+    CHECK_MESSAGE(tracker_stamp(s, c.real) == c.expect, "real id ", c.real);
+  }
+}
+
+// --- rebase_mal_row: the pull's merge for one row, from the push -------------
+
+namespace {
+
+// A library row the mirror once settled at (snap_status, snap_progress,
+// snap_score on MAL's 0..=10; nullopt = withheld), edited locally since.
+void mirrored_lib_row(Store& s, std::int64_t id, ListStatus snap_status,
+                      std::uint32_t snap_progress, std::optional<std::uint32_t> snap_score,
+                      ListStatus status, std::uint32_t progress,
+                      std::optional<std::uint32_t> raw_score) {
+  lib_row(s, id, status, progress);
+  REQUIRE(s.mark_mal_synced(id, snap_status, snap_progress, snap_score).has_value());
+  REQUIRE(s.set_user_score(id, raw_score).has_value());
+}
+
+Show show_row(Store& s, std::int64_t id) {
+  auto g = s.get_show(id);
+  REQUIRE(g.has_value());
+  REQUIRE(g->has_value());
+  return **g;
+}
+
+}  // namespace
+
+TEST_CASE("rebase_mal_row_merges_both_moved_and_rebaselines_on_the_live_entry") {
+  Store store = open_mem();
+  mirrored_lib_row(store, 60, ListStatus::Watching, 6, std::nullopt, ListStatus::Watching, 8,
+                   std::nullopt);
+  auto r = store.rebase_mal_row(60, ListStatus::Watching, 7, 0, 500);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->contended);
+  REQUIRE(r->owed.has_value());
+  CHECK(r->owed->anilist_id == 60);
+  CHECK(r->owed->mal_id == 160);
+  CHECK(r->owed->list_status == ListStatus::Watching);
+  CHECK(r->owed->progress == 8);
+  CHECK(r->owed->score == 0);
+  CHECK(r->owed->synced == std::make_pair(ListStatus::Watching, std::uint32_t{7}));
+  CHECK(r->owed->synced_score == std::optional<std::uint32_t>(0));
+  CHECK(sync_state(store, 60) == std::make_pair(ListStatus::Watching, std::uint32_t{8}));
+}
+
+TEST_CASE("rebase_mal_row_with_nothing_left_differing_owes_nothing") {
+  Store store = open_mem();
+  mirrored_lib_row(store, 61, ListStatus::Watching, 4, std::nullopt, ListStatus::Paused, 4,
+                   std::nullopt);
+  auto r = store.rebase_mal_row(61, ListStatus::Paused, 6, 7, 500);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->contended);
+  CHECK_FALSE(r->owed.has_value());
+  const Show s = show_row(store, 61);
+  CHECK(s.list_status == ListStatus::Paused);
+  CHECK(s.progress == 6);
+  CHECK(s.user_score == std::optional<std::uint32_t>(70));
+  CHECK_FALSE(mirror_row(store, 61).has_value());
+}
+
+TEST_CASE("rebase_mal_row_status_conflict_keeps_the_local_status") {
+  Store store = open_mem();
+  mirrored_lib_row(store, 62, ListStatus::Planning, 0, std::nullopt, ListStatus::Watching, 0,
+                   std::nullopt);
+  auto r = store.rebase_mal_row(62, ListStatus::Dropped, 2, 0, 500);
+  REQUIRE(r.has_value());
+  REQUIRE(r->owed.has_value());
+  CHECK(r->owed->list_status == ListStatus::Watching);
+  CHECK(r->owed->progress == 2);
+  CHECK(r->owed->synced == std::make_pair(ListStatus::Dropped, std::uint32_t{2}));
+}
+
+TEST_CASE("rebase_mal_row_on_first_contact_takes_what_the_local_row_never_moved") {
+  Store store = open_mem();
+  // Planning/0 locally, never mirrored: MAL's entry is taken whole.
+  REQUIRE(store.add_to_library(sample(63), 10).has_value());
+  auto adopted = store.rebase_mal_row(63, ListStatus::Completed, 12, 9, 500);
+  REQUIRE(adopted.has_value());
+  CHECK_FALSE(adopted->owed.has_value());
+  const Show s = show_row(store, 63);
+  CHECK(s.list_status == ListStatus::Completed);
+  CHECK(s.progress == 12);
+  CHECK(s.user_score == std::optional<std::uint32_t>(90));
+  CHECK_FALSE(mirror_row(store, 63).has_value());
+
+  // Ahead of MAL: the local progress is what is owed, over a snapshot of MAL's.
+  lib_row(store, 64, ListStatus::Watching, 5);
+  auto ahead = store.rebase_mal_row(64, ListStatus::Watching, 3, 0, 500);
+  REQUIRE(ahead.has_value());
+  REQUIRE(ahead->owed.has_value());
+  CHECK(ahead->owed->progress == 5);
+  CHECK(ahead->owed->synced == std::make_pair(ListStatus::Watching, std::uint32_t{3}));
+
+  // Equal to MAL: nothing owed, and the snapshot now holds MAL's entry.
+  lib_row(store, 65, ListStatus::Watching, 5);
+  auto equal = store.rebase_mal_row(65, ListStatus::Watching, 5, 0, 500);
+  REQUIRE(equal.has_value());
+  CHECK_FALSE(equal->owed.has_value());
+  CHECK_FALSE(mirror_row(store, 65).has_value());
+  REQUIRE(store.restore_list_status(65, ListStatus::Watching, 6, 600).has_value());
+  const auto snap = mirror_row(store, 65);
+  REQUIRE(snap.has_value());
+  CHECK(snap->synced == std::make_pair(ListStatus::Watching, std::uint32_t{5}));
+  CHECK(snap->synced_score == std::optional<std::uint32_t>(0));
+}
+
+TEST_CASE("rebase_mal_row_outside_the_library_is_an_empty_result") {
+  Store store = open_mem();
+  identity_row(store, 66);
+  auto r = store.rebase_mal_row(66, ListStatus::Completed, 12, 9, 500);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->contended);
+  CHECK_FALSE(r->owed.has_value());
+  const Show s = show_row(store, 66);
+  CHECK_FALSE(s.library_added_at.has_value());
+  CHECK(s.list_status == ListStatus::Planning);
+  CHECK(s.progress == 0);
+  CHECK_FALSE(s.user_score.has_value());
+
+  auto unknown = store.rebase_mal_row(67, ListStatus::Watching, 1, 0, 500);
+  REQUIRE(unknown.has_value());
+  CHECK_FALSE(unknown->contended);
+  CHECK_FALSE(unknown->owed.has_value());
+  CHECK_FALSE(store.get_show(67)->has_value());
+}
+
+TEST_CASE("rebase_mal_row_reads_mals_score_on_its_own_scale") {
+  Store store = open_mem();
+  // Snapshot 5 (MAL) against a local 50 (raw): the local score never moved,
+  // so MAL's 8 is taken as 80.
+  mirrored_lib_row(store, 68, ListStatus::Watching, 3, 5, ListStatus::Watching, 3, 50);
+  auto r = store.rebase_mal_row(68, ListStatus::Watching, 3, 8, 500);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->owed.has_value());
+  CHECK(show_row(store, 68).user_score == std::optional<std::uint32_t>(80));
+  REQUIRE(store.restore_list_status(68, ListStatus::Watching, 4, 600).has_value());
+  auto snap = mirror_row(store, 68);
+  REQUIRE(snap.has_value());
+  CHECK(snap->synced_score == std::optional<std::uint32_t>(8));
+  CHECK(snap->score == 8);
+  REQUIRE(store.restore_list_status(68, ListStatus::Watching, 3, 600).has_value());
+
+  // Past MAL's top it clamps to 10, i.e. 100 raw.
+  auto top = store.rebase_mal_row(68, ListStatus::Watching, 3, 12, 500);
+  REQUIRE(top.has_value());
+  CHECK_FALSE(top->owed.has_value());
+  CHECK(show_row(store, 68).user_score == std::optional<std::uint32_t>(100));
+}
+
+TEST_CASE("rebase_mal_row_stamps_progress_only_on_a_rise") {
+  Store store = open_mem();
+  for (std::int64_t id : {70, 71}) {
+    lib_row(store, id, ListStatus::Watching, 3);  // stamps the frontier at 10.
+    REQUIRE(store.mark_mal_synced(id, ListStatus::Watching, 3, std::nullopt).has_value());
+    REQUIRE(store.save_progress(id, Translation::Sub, "4", 40.0, 100.0, std::nullopt, 500)
+                .has_value());
+    REQUIRE(store.latest_resume(id, Translation::Sub)->has_value());
+  }
+  // MAL ahead: the adopted rise moves the frontier past the partial at 500.
+  REQUIRE(store.rebase_mal_row(70, ListStatus::Watching, 5, 0, 600).has_value());
+  CHECK(sync_state(store, 70).second == 5);
+  CHECK_FALSE(store.latest_resume(70, Translation::Sub)->has_value());
+  // MAL behind: the adopted fall leaves the frontier, and the partial, alone.
+  REQUIRE(store.rebase_mal_row(71, ListStatus::Watching, 2, 0, 600).has_value());
+  CHECK(sync_state(store, 71).second == 2);
+  CHECK(store.latest_resume(71, Translation::Sub)->has_value());
+}
+
+// --- MAL merges on MAL's own score grid --------------------------------------
+
+namespace {
+
+// A row scored `raw` here that the mirror last settled at (Watching, 3, mal).
+void scored_mirror_row(Store& s, std::int64_t id, std::uint32_t raw, std::uint32_t mal) {
+  lib_row(s, id, ListStatus::Watching, 3);
+  REQUIRE(s.set_user_score(id, raw).has_value());
+  REQUIRE(s.mark_mal_synced(id, ListStatus::Watching, 3, mal).has_value());
+}
+
+// The MAL list's entry for sample(id), keyed by its mal_id.
+RemoteEntry mal_entry(std::int64_t id, std::uint32_t progress, std::uint32_t raw_score) {
+  RemoteEntry r = remote_seed(-(100 + id), ListStatus::Watching, progress, "Show", 0, raw_score);
+  r.import_seed->mal_id = 100 + id;
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("a_score_changed_on_mal_wins_over_an_off_grid_local_score") {
+  Store store = open_mem();
+  // 75 here went to MAL as 8; MAL's own score is now 6.
+  scored_mirror_row(store, 80, 75, 8);
+  scored_mirror_row(store, 81, 75, 8);
+  CHECK_FALSE(mirror_row(store, 80).has_value());
+
+  auto out = store.reconcile_mal_pull({mal_entry(80, 3, 60)}, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->reconciled == 1);
+  CHECK(out->conflicts == 0);
+  CHECK(show_row(store, 80).user_score == std::optional<std::uint32_t>(60));
+  CHECK_FALSE(mirror_row(store, 80).has_value());  // nothing goes back over MAL's 6.
+
+  auto r = store.rebase_mal_row(81, ListStatus::Watching, 3, 6, 50);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->contended);
+  CHECK_FALSE(r->owed.has_value());
+  CHECK(show_row(store, 81).user_score == std::optional<std::uint32_t>(60));
+}
+
+TEST_CASE("an_off_grid_local_score_mal_still_holds_keeps_its_raw_value") {
+  Store store = open_mem();
+  scored_mirror_row(store, 82, 75, 8);
+  scored_mirror_row(store, 83, 75, 8);
+
+  auto plan = store.reconcile_plan_for(SyncTracker::Mal, {mal_entry(82, 3, 80)});
+  REQUIRE(plan.has_value());
+  CHECK(plan->plan.empty());  // no write at all, the raw 75 included.
+  auto out = store.reconcile_mal_pull({mal_entry(82, 3, 80)}, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->reconciled == 0);
+  CHECK(show_row(store, 82).user_score == std::optional<std::uint32_t>(75));
+  CHECK_FALSE(mirror_row(store, 82).has_value());
+
+  auto r = store.rebase_mal_row(83, ListStatus::Watching, 3, 8, 50);
+  REQUIRE(r.has_value());
+  CHECK_FALSE(r->owed.has_value());
+  CHECK(show_row(store, 83).user_score == std::optional<std::uint32_t>(75));
+}
+
+TEST_CASE("a_local_re_score_still_wins_over_mals_unchanged_score") {
+  Store store = open_mem();
+  scored_mirror_row(store, 84, 75, 8);
+  scored_mirror_row(store, 85, 75, 8);
+  REQUIRE(store.set_user_score(84, 90).has_value());
+  REQUIRE(store.set_user_score(85, 90).has_value());
+
+  auto out = store.reconcile_mal_pull({mal_entry(84, 3, 80)}, 50);
+  REQUIRE(out.has_value());
+  CHECK(out->conflicts == 0);
+  CHECK(show_row(store, 84).user_score == std::optional<std::uint32_t>(90));
+  auto owed = mirror_row(store, 84);
+  REQUIRE(owed.has_value());
+  CHECK(owed->score == 9);
+
+  // MAL's progress moved too: the merge takes it and still owes the 9.
+  auto r = store.rebase_mal_row(85, ListStatus::Watching, 5, 8, 50);
+  REQUIRE(r.has_value());
+  REQUIRE(r->owed.has_value());
+  CHECK(r->owed->score == 9);
+  CHECK(r->owed->progress == 5);
+  CHECK(show_row(store, 85).user_score == std::optional<std::uint32_t>(90));
+}
+
+// --- list_twin_rows: one show held under a synthetic and a real id -----------
+
+TEST_CASE("list_twin_rows_pairs_a_synthetic_row_with_its_real_counterpart") {
+  Store store = open_mem();
+  // Both on the list.
+  REQUIRE(store.add_to_library(show_meta(-570, 570, "Syn"), 100).has_value());
+  REQUIRE(store.add_to_library(show_meta(9570, 570, "Real"), 100).has_value());
+  // Only the synthetic one on the list.
+  REQUIRE(store.add_to_library(show_meta(-571, 571, "Syn"), 100).has_value());
+  REQUIRE(store.ensure_show(9571, "Real", 571, std::nullopt, std::nullopt).has_value());
+  // Only the real one on the list.
+  REQUIRE(store.ensure_show(-572, "Syn", 572, std::nullopt, std::nullopt).has_value());
+  REQUIRE(store.add_to_library(show_meta(9572, 572, "Real"), 100).has_value());
+  // Neither on the list: not a twin anyone mirrors.
+  REQUIRE(store.ensure_show(-573, "Syn", 573, std::nullopt, std::nullopt).has_value());
+  REQUIRE(store.ensure_show(9573, "Real", 573, std::nullopt, std::nullopt).has_value());
+  // A synthetic row with no real counterpart.
+  REQUIRE(store.add_to_library(show_meta(-574, 574, "Alone"), 100).has_value());
+  // No MAL id on either side.
+  Enrichment syn_bare = show_meta(-575, 575, "Syn");
+  syn_bare.mal_id = std::nullopt;
+  Enrichment real_bare = show_meta(9575, 575, "Real");
+  real_bare.mal_id = std::nullopt;
+  REQUIRE(store.add_to_library(syn_bare, 100).has_value());
+  REQUIRE(store.add_to_library(real_bare, 100).has_value());
+  // Two real rows on one MAL id: the lower real id, once.
+  REQUIRE(store.add_to_library(show_meta(-576, 576, "Syn"), 100).has_value());
+  REQUIRE(store.add_to_library(show_meta(9577, 576, "Real B"), 100).has_value());
+  REQUIRE(store.add_to_library(show_meta(9576, 576, "Real A"), 100).has_value());
+
+  auto twins = store.list_twin_rows();
+  REQUIRE(twins.has_value());
+  const std::vector<std::pair<std::int64_t, std::int64_t>> expect{
+      {-570, 9570}, {-571, 9571}, {-572, 9572}, {-576, 9576}};
+  CHECK(*twins == expect);
+
+  // Folding each pair leaves none.
+  for (const auto& [syn, real] : *twins) {
+    auto r = store.rekey_show(syn, real);
+    REQUIRE(r.has_value());
+    CHECK(*r == RekeyOutcome::Merged);
+  }
+  auto after = store.list_twin_rows();
+  REQUIRE(after.has_value());
+  CHECK(after->empty());
 }
