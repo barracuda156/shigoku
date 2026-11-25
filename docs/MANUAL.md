@@ -88,6 +88,7 @@ Your watchlist, grouped by status.
 | `g`/`G` | Jump to the first/last entry |
 | `/` | Filter the list in place by title — local and instant, no network |
 | `f` / `F` | Narrow the list — Watching → Planning → Paused → Completed → Dropped → *behind* (Watching shows with aired episodes you haven't watched) → all — and back to all. The group header says when a filter is on |
+| `o` | Switch the order inside each group: latest activity first, or by title |
 | `l`, `Enter`, double-click | Open the detail preview pane on a wide terminal, or the full page directly on a narrow one |
 | `Space` | Open the full page directly, from any width |
 | `w` / `p` / `c` / `x` / `P` | Set status: Watching / Paused / Completed / Dropped / Planning |
@@ -105,6 +106,13 @@ that comes from). Your score is stored as a plain 0–10 number and converted
 automatically to whatever scale your AniList account actually uses
 (100-point, 10-point, 5-star, etc.) whenever it syncs — you never need to
 think about the conversion yourself.
+
+Inside each group the shows you touched last come first: a play, a show
+added or its status changed here, or an edit made elsewhere that your
+tracker reports (progress marked on the MyAnimeList site, a score changed)
+— whichever is latest. Shows with nothing on record follow, by title. `o`
+switches to plain title order and back; the first group header says
+`by title` while that is on, and the choice is kept between runs.
 
 A Watching show with episodes out that you haven't watched yet carries an
 amber `+2 aired` tag, and its progress bar shades those episodes (`▓`) a
@@ -131,10 +139,19 @@ MAL: no client id") rather than guessing at your connection.
 | `f` | Open the filter overlay (below) |
 | `Enter`, double-click | Open the show's full page |
 | `Space` | Same, from anywhere in the grid |
-| `P` | Add the highlighted show to your watchlist |
+| `P` | Add the highlighted show to your watchlist (as Planning); on a show that is already there, says where it stands instead |
 | `~` | Shows like the highlighted one (a new Similar feed) |
 | `/` | Jump to Browse with a text search open — Discover itself has no free-text search |
 | `q` | Quit |
+
+A card for a show that is already on your list says so on its last line,
+in place of the format: `▸ watching 5/12`, `○ planned`, `◐ paused 3/12`,
+`● completed`, `· dropped` — the same marks History's groups carry.
+Completed and dropped shows are dimmed, so what you haven't seen stands
+out. This holds in every feed, Similar included, and for shows that came
+from your MyAnimeList list. With a tracker connected, a show added with `P`
+goes to it at the next sync, a few seconds later. `P` works the same on the
+show's own page, so you can read the synopsis first.
 
 ### Similar titles (`~`)
 
@@ -244,6 +261,7 @@ title, status/score chips, a synopsis, and the episode grid.
 | `d` | Download the highlighted episode: opens the picker with what its stream offers — see [Downloads](#downloads) |
 | `c` | Toggle the **Characters & Recommendations** section |
 | `~` | Open the full list of similar shows in Discover |
+| `P` | Add the show to your watchlist (as Planning); if it is already there, says where it stands |
 | `Tab` (section open) | Move focus between the section and the episode grid |
 | `j`/`k`, `g`/`G` (section focused) | Move / jump through the characters, then the recommendations |
 | `Enter` (a character focused) | Open that character's page — see [Character pages](#character-pages) |
@@ -251,6 +269,10 @@ title, status/score chips, a synopsis, and the episode grid.
 | Click / double-click (in the section) | Focus that row / open it |
 | `Space`, `Esc` | Close the page, back to wherever you opened it from |
 | `q` | Quit |
+
+A page opened from Browse or Discover says on its status line whether the
+show is on your list and where it stands (`▸ watching 5/12`), with your own
+score beside the public one when you gave one.
 
 Unwatched episodes are brighter, watched ones dim, and the one currently
 playing carries a small spinner. An episode that is being downloaded, or
@@ -513,6 +535,13 @@ ask you to connect again under Settings.
 An edit made on the MAL site after your last push wins over shigoku's
 older copy; an edit made here since then wins over MAL's (it pushes up on
 the next sync), the same rule AniList sync uses.
+
+When an update can't be delivered — MyAnimeList refuses it, or can't be
+reached — the interface says how many changes were not sent, and they go
+again at the next sync. `shigoku sync` reports the MyAnimeList side line by
+line: what was sent, what was merged with a newer entry on the site, and for
+each update that failed the show's MyAnimeList address and the reason (or
+`nothing to send to MyAnimeList` when the two already agree).
 
 ### Catalog sources
 
@@ -835,6 +864,7 @@ A flat reference of everything above, grouped by context, for grepping.
 |---|---|
 | `/` | Filter the list (local) |
 | `f` / `F` | Status filter (the last stop is *behind*): next / clear |
+| `o` | Order inside groups: latest activity / title |
 | `j`/`k`, `g`/`G` | Move / jump the list |
 | `l`, `Enter`, double-click | Open detail preview (wide) or full page (narrow) |
 | `Space` | Open full page (any width) |
@@ -914,6 +944,7 @@ A flat reference of everything above, grouped by context, for grepping.
 | `Enter`/double-click | Play |
 | `v` | Cycle streaming source |
 | `d` | Download: open the picker |
+| `P` | Add to watchlist (Browse's preview pane and the full page) |
 | `c` | Toggle Characters & Recommendations — **full page only** |
 | `Tab` | Swap focus between that section and the grid — **full page only** |
 | `Enter` (on a character) | Open the character's page — **full page only** |
