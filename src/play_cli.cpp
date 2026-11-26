@@ -115,7 +115,11 @@ Result<std::vector<std::string>, ProviderError> load_episodes(Store* store, cons
   std::printf("\n  fetching episodes for \"%s\"%s\n", show.title.c_str(),
               g(cli::glyphs().ellipsis));
   flush_stdout();
-  auto episodes = provider.episodes(show.provider_id, translation, show.total_episodes);
+  std::optional<std::uint32_t> count_hint = show.total_episodes;
+  if (!(count_hint.has_value() && *count_hint > 0) && show.entry.has_value()) {
+    count_hint = episode_count_hint(*show.entry, now);
+  }
+  auto episodes = provider.episodes(show.provider_id, translation, count_hint);
   if (!episodes.has_value()) return err(episodes.error());
   if (store != nullptr && show.anilist_id.has_value()) {
     // Airing status unknown on the query path; the cache lands with default

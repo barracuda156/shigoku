@@ -248,7 +248,8 @@ bool EpisodeSession::fire_fetch(std::string provider, std::string provider_id, b
   mint_pending_ = mint;
   loading_ = true;
   // count_hint: listing-less providers mint a 1..N grid off the metadata total.
-  std::optional<std::uint32_t> count_hint = canonical_->total_episodes;
+  std::optional<std::uint32_t> count_hint =
+      episode_count_hint(*canonical_, deps.unix_now);
   spawn_episodes_fetch(*deps.queue, *deps.registry, std::move(provider),
                        std::move(provider_id), deps.translation, count_hint,
                        canonical_->anilist_id, token);

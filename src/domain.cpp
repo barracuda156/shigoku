@@ -411,6 +411,13 @@ std::optional<std::uint32_t> aired_episodes(const Enrichment& e, std::int64_t no
   return aired;
 }
 
+std::optional<std::uint32_t> episode_count_hint(const Enrichment& e, std::int64_t now_secs) {
+  if (e.total_episodes.has_value() && *e.total_episodes > 0) return e.total_episodes;
+  const std::optional<std::uint32_t> aired = aired_episodes(e, now_secs);
+  if (!aired.has_value() || *aired == 0) return std::nullopt;
+  return aired;
+}
+
 std::uint32_t episodes_behind(const Show& s, std::int64_t now_secs) {
   const std::optional<std::uint32_t> aired = aired_episodes(s.enrichment, now_secs);
   if (!aired.has_value() || *aired <= s.progress) return 0;

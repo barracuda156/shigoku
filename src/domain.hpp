@@ -717,6 +717,13 @@ struct ScheduleNotice {
 [[nodiscard]] std::optional<std::uint32_t> aired_episodes(const Enrichment& e,
                                                           std::int64_t now_secs);
 
+// How many episodes a source with no listing of its own should offer: the
+// show's total when one is known (positive), else what has aired so far
+// (aired_episodes) for a show still airing with no total announced.
+// nullopt = nothing to go on.
+[[nodiscard]] std::optional<std::uint32_t> episode_count_hint(const Enrichment& e,
+                                                              std::int64_t now_secs);
+
 // Episodes aired but not yet watched: aired_episodes minus progress, floored
 // at zero, and zero when the estimate is unknown. History tags a Watching row
 // with it and shades those cells of its bar; the `behind` filter keeps the

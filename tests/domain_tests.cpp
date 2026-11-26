@@ -809,6 +809,27 @@ TEST_CASE("aired_episodes: the stamp, a passed stamp, a settled total, unknown")
   CHECK_FALSE(aired_episodes(row("RELEASING", 12u, now - 1, 0u), now).has_value());
 }
 
+TEST_CASE("episode_count_hint: the total, else what has aired, else nothing") {
+  const std::int64_t now = 1700000000;
+  auto row = [](const char* status, std::optional<std::uint32_t> total,
+                std::optional<std::int64_t> at, std::optional<std::uint32_t> ep) {
+    Enrichment e;
+    e.status = status;
+    e.total_episodes = total;
+    e.next_airing_at = at;
+    e.next_airing_episode = ep;
+    return e;
+  };
+  CHECK(episode_count_hint(row("FINISHED", 12u, std::nullopt, std::nullopt), now) == 12u);
+  CHECK(episode_count_hint(row("RELEASING", 12u, now + 3600, 6u), now) == 12u);
+  CHECK(episode_count_hint(row("RELEASING", std::nullopt, now + 3600, 9u), now) == 8u);
+  CHECK(episode_count_hint(row("RELEASING", std::nullopt, now - 1, 9u), now) == 9u);
+  CHECK_FALSE(episode_count_hint(row("RELEASING", std::nullopt, std::nullopt, std::nullopt), now)
+                  .has_value());
+  CHECK(episode_count_hint(row("RELEASING", 0u, now + 3600, 9u), now) == 8u);
+  CHECK_FALSE(episode_count_hint(row("RELEASING", std::nullopt, now + 3600, 1u), now).has_value());
+}
+
 TEST_CASE("episodes_behind: aired minus progress, floored, zero when unknown") {
   const std::int64_t now = 1700000000;
   Show s;
