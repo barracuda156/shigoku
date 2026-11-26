@@ -12,6 +12,7 @@
 #include <langinfo.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <clocale>
 #include <cstdlib>
 #include <ctime>
@@ -92,17 +93,15 @@ constexpr int kMaxPickAttempts = 1000;
 // forks. Returns nullopt if any provider client fails to init.
 //
 // Position is priority: the resolve walk's tiers and the CLI's search walk
-// both try sources in this order (after any configured preference). The
-// sources that answer today lead: megaplay (id-keyed, cannot search, so the
-// CLI walks past it), hianime (English-catalogued, MAL-keyed at resolve),
-// Re:ANIME (AniList-keyed, cannot search, fansub releases with soft subs and
-// the dub as an audio track), senshi (English-catalogued, keyed by MAL id,
-// its stream hop needs Node),
-// AnimeHub (English-catalogued, hard-subbed, at most 720p, on a CDN none of
-// the others share), then AniLibria (a Russian-dub catalogue). The two whose upstream is gone,
-// anibd (host shut down) and anidb.app ("under maintenance" 503), close the
-// list, so a walk spends requests on them only once every live source has
-// passed.
+// both try sources in this order (after any configured preference).
+// megaplay (id-keyed, cannot search, so the CLI walks past it), hianime
+// (English-catalogued, MAL-keyed at resolve), Re:ANIME (AniList-keyed,
+// cannot search, fansub releases with soft subs and the dub as an audio
+// track), senshi (English-catalogued, keyed by MAL id, its stream hop needs
+// Node), AnimeHub (English-catalogued, hard-subbed, at most 720p, on a CDN
+// none of the others share), then AniLibria (a Russian-dub catalogue), anibd
+// and anidb.app. senshi, anibd and anidb.app are down upstream and are left
+// out unless enabled_providers names them.
 std::optional<ProviderRegistry> build_registry(const Config& config) {
   auto megaplay_provider = megaplay::MegaPlay::create();
   auto anibd_provider = anibd::AniBd::create();
@@ -125,7 +124,9 @@ std::optional<ProviderRegistry> build_registry(const Config& config) {
   providers.push_back(std::make_unique<anilibria::AniLibria>(std::move(*anilibria_provider)));
   providers.push_back(std::make_unique<anibd::AniBd>(std::move(*anibd_provider)));
   providers.push_back(std::make_unique<anidbapp::AniDbApp>(std::move(*anidbapp_provider)));
-  return ProviderRegistry(drop_disabled(std::move(providers), config.disabled_providers));
+  return ProviderRegistry(drop_disabled(
+      std::move(providers),
+      providers_off(down_providers(), config.enabled_providers, config.disabled_providers)));
 }
 
 // ── login ─────────────────────────────────────────────────────────────────
@@ -760,6 +761,21 @@ int print_paths(const std::vector<std::string>& args) {
       off += name;
     }
     std::printf("  disabled %s\n", off.c_str());
+  }
+  {
+    std::string down;
+    for (const std::string_view name : down_providers()) {
+      if (std::find(config.enabled_providers.begin(), config.enabled_providers.end(), name) !=
+          config.enabled_providers.end()) {
+        continue;
+      }
+      if (!down.empty()) down += ", ";
+      down += name;
+    }
+    if (!down.empty()) {
+      std::printf("  down     %s (left out; name one in enabled_providers to try it)\n",
+                  down.c_str());
+    }
   }
   return 0;
 }

@@ -1377,6 +1377,19 @@ TEST_CASE("drop_disabled_keeps_order_and_refuses_to_empty_the_registry") {
   CHECK(reg.primary()->name() == "b");
 }
 
+TEST_CASE("providers_off_leaves_out_the_down_sources_unless_enabled") {
+  using Names = std::vector<std::string>;
+  const std::vector<std::string_view> down = {"x", "y", "z"};
+  CHECK(providers_off(down, {}, {}) == Names{"x", "y", "z"});
+  CHECK(providers_off(down, {"y"}, {}) == Names{"x", "z"});
+  CHECK(providers_off(down, {"y"}, {"y"}) == Names{"x", "z", "y"});
+  CHECK(providers_off(down, {}, {"live"}) == Names{"x", "y", "z", "live"});
+  CHECK(providers_off(down, {}, {"x", "live", "live"}) == Names{"x", "y", "z", "live"});
+  CHECK(providers_off(down, {"nope"}, {}) == Names{"x", "y", "z"});
+  CHECK(providers_off(down, {"x", "y", "z"}, {}).empty());
+  CHECK(providers_off(down_providers(), {}, {}) == Names{"senshi", "anibd", "anidbapp"});
+}
+
 TEST_CASE("registry_searchable_walks_localized_title_sources_last") {
   // The anilibria shape: it can search, but its titles are Russian — every
   // English-titled source is asked first, wherever it sits in the registry.

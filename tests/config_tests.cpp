@@ -57,6 +57,7 @@ TEST_CASE("round trip preserves everything") {
   cfg.cli_picker = "fzf";
   cfg.picker_path = "/opt/local/bin/fzf";
   cfg.disabled_providers = {"anibd", "anidbapp"};
+  cfg.enabled_providers = {"senshi"};
   cfg.default_quality = "1080";
   cfg.download_quality = "480";
   cfg.download_parallel = 2;
@@ -169,6 +170,17 @@ TEST_CASE("disabled_providers keeps string names only") {
   write_file(path, R"({"disabled_providers": "anibd", "translation": "dub"})");
   const Config cfg = Config::load(path);
   CHECK(cfg.disabled_providers.empty());
+  CHECK(cfg.translation == "dub");
+}
+
+TEST_CASE("enabled_providers defaults empty and keeps string names only") {
+  CHECK(Config{}.enabled_providers.empty());
+  const std::string path = tmp("enabled.json");
+  write_file(path, R"({"enabled_providers": ["senshi", 7, "", null, "anibd"]})");
+  CHECK(Config::load(path).enabled_providers == std::vector<std::string>{"senshi", "anibd"});
+  write_file(path, R"({"enabled_providers": "senshi", "translation": "dub"})");
+  const Config cfg = Config::load(path);
+  CHECK(cfg.enabled_providers.empty());
   CHECK(cfg.translation == "dub");
 }
 

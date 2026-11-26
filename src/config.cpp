@@ -84,6 +84,13 @@ Config from_json(const json& j) {
       }
     }
   }
+  if (const auto it = j.find("enabled_providers"); it != j.end() && it->is_array()) {
+    for (const auto& name : *it) {
+      if (name.is_string() && !name.get_ref<const std::string&>().empty()) {
+        c.enabled_providers.push_back(name.get<std::string>());
+      }
+    }
+  }
   return c;
 }
 
@@ -118,6 +125,7 @@ json to_json(const Config& c) {
       {"cli_picker", c.cli_picker},
       {"picker_path", c.picker_path},
       {"disabled_providers", c.disabled_providers},
+      {"enabled_providers", c.enabled_providers},
   };
 }
 

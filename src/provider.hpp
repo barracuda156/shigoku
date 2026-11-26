@@ -158,6 +158,20 @@ class StreamProvider {
     std::vector<std::unique_ptr<StreamProvider>> providers,
     const std::vector<std::string>& disabled);
 
+// Sources whose upstream is down as this release ships: left out of the
+// registry unless config's enabled_providers names them. The code stays, so a
+// source that comes back only needs its name taken off this list.
+[[nodiscard]] inline const std::vector<std::string_view>& down_providers() {
+  static const std::vector<std::string_view> down = {"senshi", "anibd", "anidbapp"};
+  return down;
+}
+
+// The names to leave out of the registry: `down` without those `enabled`
+// names, then `disabled` (which wins over `enabled`). No name twice.
+[[nodiscard]] std::vector<std::string> providers_off(const std::vector<std::string_view>& down,
+                                                     const std::vector<std::string>& enabled,
+                                                     const std::vector<std::string>& disabled);
+
 // --- Registry (providers.rs:170) ------------------------------------------
 //
 // Process-immutable provider set; construction order IS the default fallback

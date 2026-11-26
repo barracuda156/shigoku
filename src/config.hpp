@@ -87,6 +87,9 @@ struct Config {
   // walked, searched or offered. Read at startup; unknown names are ignored,
   // and a list that would disable every source is ignored as a whole.
   std::vector<std::string> disabled_providers;
+  // Sources this release leaves out because their upstream is down, switched
+  // back on by name. A name in both lists stays off.
+  std::vector<std::string> enabled_providers;
 
   friend bool operator==(const Config&, const Config&) = default;
 
