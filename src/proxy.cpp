@@ -437,7 +437,8 @@ std::size_t body_cb(char* ptr, std::size_t size, std::size_t nmemb, void* ud) {
 
 Result<Fetched, FetchError> fetch_upstream(
     std::string_view start_url, std::optional<std::string_view> referer,
-    std::optional<std::string_view> user_agent) {
+    std::optional<std::string_view> user_agent,
+    std::optional<std::string_view> origin) {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(kFetchDeadlineSecs);
   std::string url(start_url);
@@ -483,10 +484,18 @@ Result<Fetched, FetchError> fetch_upstream(
     if (referer) {
       const std::string line = "Referer: " + std::string(*referer);
       cleanup.headers = curl_slist_append(cleanup.headers, line.c_str());
+    }
+    {
       // The referer's origin rides along as a browser's fetch() would send
-      // it: some stream CDNs (senshi's) 403 a Referer without its Origin.
-      if (const auto origin = detail::origin_of(*referer); origin.has_value()) {
-        const std::string oline = "Origin: " + *origin;
+      // it: some stream CDNs 403 a Referer without its Origin.
+      std::optional<std::string> origin_value;
+      if (origin) {
+        origin_value = std::string(*origin);
+      } else if (referer) {
+        origin_value = detail::origin_of(*referer);
+      }
+      if (origin_value.has_value()) {
+        const std::string oline = "Origin: " + *origin_value;
         cleanup.headers = curl_slist_append(cleanup.headers, oline.c_str());
       }
     }
@@ -556,6 +565,7 @@ class Proxy {
   std::string path_prefix_;
   std::string upstream_url_;
   std::optional<std::string> referer_;
+  std::optional<std::string> origin_;
   std::optional<std::string> user_agent_;
   std::optional<StreamLink::PlaylistCipher> cipher_;
   bool decloak_ = false;
@@ -622,6 +632,7 @@ Result<std::shared_ptr<Proxy>, ProxyStartError> Proxy::start(
   proxy->path_prefix_ = detail::path_prefix(*token);
   proxy->upstream_url_ = link.url;
   proxy->referer_ = link.referer;
+  proxy->origin_ = link.origin;
   proxy->user_agent_ = link.user_agent;
   proxy->cipher_ = link.playlist_cipher;
   proxy->decloak_ = link.decloak_segments;
@@ -774,7 +785,9 @@ detail::KeepAlive Proxy::serve(std::string_view target, int fd) {
           upstream, referer_ ? std::optional<std::string_view>(*referer_)
                              : std::nullopt,
           user_agent_ ? std::optional<std::string_view>(*user_agent_)
-                      : std::nullopt);
+                      : std::nullopt,
+          origin_ ? std::optional<std::string_view>(*origin_)
+                  : std::nullopt);
       if (!fetched) {
         ka = close_with(out, kStatusBadGateway);
       } else {

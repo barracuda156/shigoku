@@ -172,6 +172,38 @@ TEST_CASE("argv_skip_script_lands_in_table_position") {
   CHECK(argv.back() == link.url);
 }
 
+TEST_CASE("argv_sends_origin_after_referer_when_the_link_has_one") {
+  StreamLink link = full_link();
+  link.origin = "https://ref.example";
+  auto r = build_argv(link, link.url, opts("t", 0.0), "/tmp/s.sock");
+  REQUIRE(r.has_value());
+  const auto ref = std::find(r->begin(), r->end(),
+                             "--http-header-fields-append=Referer: https://ref.example/");
+  const auto org = std::find(r->begin(), r->end(),
+                             "--http-header-fields-append=Origin: https://ref.example");
+  REQUIRE(ref != r->end());
+  REQUIRE(org != r->end());
+  CHECK(ref < org);
+}
+
+TEST_CASE("argv_has_no_origin_flag_without_an_origin") {
+  auto r = build_argv(full_link(), "https://cdn.example/x.m3u8", opts("t", 0.0),
+                      "/tmp/s.sock");
+  REQUIRE(r.has_value());
+  for (const auto& a : *r) CHECK(a.find("Origin:") == std::string::npos);
+}
+
+TEST_CASE("argv_rejects_an_unsafe_origin") {
+  for (const char* bad : {"https://e/\r\nX-Evil: 1", "https://e/a b"}) {
+    StreamLink link = full_link();
+    link.origin = bad;
+    auto r = build_argv(link, link.url, opts("t", 0.0), "/tmp/s.sock");
+    REQUIRE(!r.has_value());
+    CHECK(r.error().kind == PlayError::Kind::UnsafeArg);
+    CHECK(r.error().detail == "origin");
+  }
+}
+
 TEST_CASE("argv_rejects_injection_in_provider_fields") {
   const char* sock = "/tmp/s.sock";
 

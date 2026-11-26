@@ -202,10 +202,12 @@ enum class FetchError {
 
 // Fetch `start_url` with referer/UA, following redirects by hand so every hop
 // is SSRF-guarded. Body capped at 32 MiB (segments), identity encoding, whole
-// chain bounded by a wall-clock deadline.
+// chain bounded by a wall-clock deadline. `origin`, when set, is sent as the
+// Origin header; otherwise it is derived from the referer.
 [[nodiscard]] Result<Fetched, FetchError> fetch_upstream(
     std::string_view start_url, std::optional<std::string_view> referer,
-    std::optional<std::string_view> user_agent);
+    std::optional<std::string_view> user_agent,
+    std::optional<std::string_view> origin = std::nullopt);
 
 // A byte source for read_request_target: returns the next byte (0-255), or -1
 // at EOF. Mirrors the Rust `BufRead` seam so the keep-alive read loop and the

@@ -60,6 +60,7 @@ Result<Unit, DownloadError> download_to_file(const http::Client& client,
   req.user_agent = opts.user_agent;
   req.timeout_secs = opts.timeout_secs;
   if (opts.referer) req.extra_headers.push_back({"Referer", *opts.referer});
+  if (opts.origin) req.extra_headers.push_back({"Origin", *opts.origin});
   if (offset > 0) {
     req.extra_headers.push_back(
         {"Range", "bytes=" + std::to_string(offset) + "-"});
@@ -224,6 +225,9 @@ Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
   if (link.referer && !arg_clean(*link.referer)) {
     return err(DownloadError::unsafe_arg("referer"));
   }
+  if (link.origin && !arg_clean(*link.origin)) {
+    return err(DownloadError::unsafe_arg("origin"));
+  }
   if (link.user_agent && !ua_clean(*link.user_agent)) {
     return err(DownloadError::unsafe_arg("user_agent"));
   }
@@ -242,9 +246,12 @@ Result<std::vector<std::string>, DownloadError> build_ffmpeg_argv(
         argv.push_back("0");
       }
     }
-    if (link.referer) {
+    if (link.referer || link.origin) {
+      std::string headers;
+      if (link.referer) headers += "Referer: " + *link.referer + "\r\n";
+      if (link.origin) headers += "Origin: " + *link.origin + "\r\n";
       argv.push_back("-headers");
-      argv.push_back("Referer: " + *link.referer + "\r\n");
+      argv.push_back(std::move(headers));
     }
     if (link.user_agent) {
       argv.push_back("-user_agent");
@@ -487,6 +494,7 @@ Result<Unit, DownloadError> run(const http::Client& client, const StreamLink& li
     opts.url = plan.input;
     opts.dest = dest;
     opts.referer = link.referer;
+    opts.origin = link.origin;
     if (link.user_agent) opts.user_agent = *link.user_agent;
     return download_to_file(client, opts, cancel, progress);
   }
@@ -583,6 +591,7 @@ Result<Unit, DownloadError> save_subtitle(const http::Client& client, const Stre
   opts.url = *link.sub_url;
   opts.dest = subtitle_dest(dest, *link.sub_url);
   opts.referer = link.referer;
+  opts.origin = link.origin;
   if (link.user_agent) opts.user_agent = *link.user_agent;
   return download_to_file(client, opts, cancel, {});
 }
@@ -611,6 +620,7 @@ StreamOffer probe(const http::Client& client, const StreamLink& link) {
   req.url = play_url;
   if (link.user_agent) req.user_agent = *link.user_agent;
   if (link.referer) req.extra_headers.push_back({"Referer", *link.referer});
+  if (link.origin) req.extra_headers.push_back({"Origin", *link.origin});
   const auto body = client.fetch(req);
   if (!body.has_value()) {
     offer.shape = StreamOffer::Shape::Unread;

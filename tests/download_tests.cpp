@@ -421,6 +421,49 @@ TEST_CASE("ffmpeg argv: full table — cloaked + referer + user_agent") {
   CHECK(*argv == want);
 }
 
+TEST_CASE("ffmpeg argv: referer and origin share one -headers value per input") {
+  StreamLink l = plain_link("https://cdn.example/m.m3u8");
+  l.referer = "https://site.example/";
+  l.origin = "https://site.example";
+  const auto argv = build_ffmpeg_argv(l, "https://cdn.example/v720.m3u8", "/o.part",
+                                      false, "https://cdn.example/a/ja.m3u8");
+  REQUIRE(argv.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-headers", "Referer: https://site.example/\r\nOrigin: https://site.example\r\n",
+      "-f", "hls", "-i", "https://cdn.example/v720.m3u8",
+      "-headers", "Referer: https://site.example/\r\nOrigin: https://site.example\r\n",
+      "-f", "hls", "-i", "https://cdn.example/a/ja.m3u8",
+      "-map", "0:v:0", "-map", "1:a:0",
+      "-c", "copy", "-f", "mp4", "/o.part"};
+  CHECK(*argv == want);
+}
+
+TEST_CASE("ffmpeg argv: an origin alone is its own -headers value") {
+  StreamLink l = plain_link("https://cdn.example/m.m3u8");
+  l.origin = "https://site.example";
+  const auto argv = build_ffmpeg_argv(l, l.url, "/o.part");
+  REQUIRE(argv.has_value());
+  const std::vector<std::string> want = {
+      "-nostdin", "-y", "-loglevel", "error",
+      "-headers", "Origin: https://site.example\r\n",
+      "-f", "hls", "-i", "https://cdn.example/m.m3u8",
+      "-c", "copy", "-f", "mp4", "/o.part"};
+  CHECK(*argv == want);
+}
+
+TEST_CASE("ffmpeg argv: an unsafe origin is refused") {
+  const std::string url = "https://cdn.example/m.m3u8";
+  for (const char* bad : {"https://x\r\nCookie: evil", "https://x/a b"}) {
+    StreamLink l = plain_link(url);
+    l.origin = bad;
+    auto r = build_ffmpeg_argv(l, url, "/o.part");
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().kind == DownloadError::Kind::UnsafeArg);
+    CHECK(r.error().detail == "origin");
+  }
+}
+
 TEST_CASE("ffmpeg argv: extension_picky off rides only with cloaked segments") {
   StreamLink l = plain_link("https://cdn.example/m.m3u8");
   l.cloaked_segments = true;

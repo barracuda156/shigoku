@@ -109,6 +109,10 @@ Result<std::vector<std::string>, PlayError> build_argv(
     if (!arg_clean(*link.referer)) return err(PlayError::unsafe_arg("referer"));
     argv.push_back("--http-header-fields-append=Referer: " + *link.referer);
   }
+  if (link.origin) {
+    if (!arg_clean(*link.origin)) return err(PlayError::unsafe_arg("origin"));
+    argv.push_back("--http-header-fields-append=Origin: " + *link.origin);
+  }
   if (link.user_agent) {
     // Dedicated flag, never header-append: two UAs = Cloudflare 403.
     if (!ua_clean(*link.user_agent)) {

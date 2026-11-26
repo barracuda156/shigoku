@@ -325,6 +325,11 @@ struct StreamLink {
   std::string url;
   std::optional<std::uint32_t> resolution;
   std::optional<std::string> referer;
+  // An Origin header the stream host wants beside the Referer (it refuses
+  // a request without one). mpv and ffmpeg send it on every request of the
+  // play, the subtitle and audio files included; the other player backends
+  // have no way to, and open the stream without it.
+  std::optional<std::string> origin;
   // Browser-shaped UA for CDN bot scoring; nullopt = player default.
   std::optional<std::string> user_agent;
   // HLS segments cloaked as .jpg: player relaxes its demuxer gate via

@@ -102,6 +102,7 @@ struct Options {
   std::string dest;
   // Provider-derived CDN gate headers, same meaning as on StreamLink.
   std::optional<std::string> referer;
+  std::optional<std::string> origin;
   std::string user_agent = http::kBrowserUserAgent;
   // Tests only: a wall rail. Absent = fetch_to_sink's stall rail (a real
   // download must never trip a wall clock).
@@ -157,7 +158,9 @@ enum class LinkKind {
 //                                         --demuxer-lavf-o allowed_extensions)
 //   [-extension_picky 0]                 (link.cloaked_segments AND
 //                                         extension_picky_off)
-//   [-headers "Referer: <referer>\r\n"]  (link.referer)
+//   [-headers "Referer: <referer>\r\nOrigin: <origin>\r\n"]
+//                                        (link.referer, link.origin; either
+//                                         line alone when only one is set)
 //   [-user_agent <ua>]                   (link.user_agent)
 // `input_url` is the positional the caller resolved (variant pick / decloak
 // loopback / the link url itself); like build_argv's play_url it must not

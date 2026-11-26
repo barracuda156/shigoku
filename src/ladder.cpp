@@ -37,6 +37,7 @@ std::optional<Master> read(const http::Client& client, const StreamLink& link,
   req.url = std::string(play_url);
   if (link.user_agent) req.user_agent = *link.user_agent;
   if (link.referer) req.extra_headers.push_back({"Referer", *link.referer});
+  if (link.origin) req.extra_headers.push_back({"Origin", *link.origin});
   auto body = client.fetch(req);
   if (!body.has_value()) return std::nullopt;
   Master master;
