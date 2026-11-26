@@ -90,6 +90,11 @@ struct Request {
   // P25: None = stock OpenSSL (default); Chrome/Firefox = libcurl-impersonate.
   // Only providers whose edge fingerprints the TLS handshake set this.
   Fingerprint fingerprint = Fingerprint::None;
+  // Out, optional (fetch() only): where a 3xx answer points, made absolute
+  // against the request url; emptied when the answer is not one. The fetch
+  // still fails with Http{3xx} — a caller that trusts the site it asked
+  // judges the target and follows by hand.
+  std::string* redirect_target = nullptr;
 };
 
 // --- Streaming fetch (P35 downloads) ---------------------------------------

@@ -202,6 +202,33 @@ TEST_CASE("redirect_is_refused_not_followed") {
   CHECK(got.error().status == 302);
 }
 
+TEST_CASE("redirect_target_reports_where_a_3xx_points") {
+  std::string raw =
+      "HTTP/1.1 307 Temporary Redirect\r\nLocation: /b?x=1\r\n"
+      "Content-Length: 0\r\nConnection: close\r\n\r\n";
+  OneShotServer moved(std::vector<std::uint8_t>(raw.begin(), raw.end()));
+  auto client = Client::create();
+  REQUIRE(client.has_value());
+  std::string target = "stale";
+  Request req;
+  req.url = moved.url() + "a";
+  req.user_agent = "shigoku-test";
+  req.redirect_target = &target;
+  auto got = client->fetch(req);
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == ProviderError::Kind::Http);
+  CHECK(got.error().status == 307);
+  CHECK(target == moved.url() + "b?x=1");
+
+  // An answer that is not a redirect leaves it empty.
+  OneShotServer plain(response_with_body("200 OK", "hello"));
+  target = "stale";
+  req.url = plain.url();
+  auto ok = client->fetch(req);
+  REQUIRE(ok.has_value());
+  CHECK(target.empty());
+}
+
 TEST_CASE("connection_refused_is_network") {
   auto client = Client::create();
   REQUIRE(client.has_value());

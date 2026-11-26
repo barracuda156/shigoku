@@ -567,6 +567,7 @@ const ImpersonateApi* setup_request(const Request& req, HandleGuard& guard) {
 
 Result<std::vector<std::uint8_t>, ProviderError> Client::fetch(
     const Request& req) const {
+  if (req.redirect_target != nullptr) req.redirect_target->clear();
   HandleGuard guard;
   const ImpersonateApi* api = setup_request(req, guard);
   if (api == nullptr) return err(ProviderError::network());
@@ -592,6 +593,13 @@ Result<std::vector<std::uint8_t>, ProviderError> Client::fetch(
   long status = 0;
   api->getinfo(h, CURLINFO_RESPONSE_CODE, &status);
   const auto code = static_cast<std::uint16_t>(status);
+
+  if (req.redirect_target != nullptr && code >= 300 && code <= 399) {
+    char* to = nullptr;
+    if (api->getinfo(h, CURLINFO_REDIRECT_URL, &to) == CURLE_OK && to != nullptr) {
+      *req.redirect_target = to;
+    }
+  }
 
   const bool ok = (req.accept == Accept::OkOnly) ? (code == 200)
                                                  : (code >= 200 && code <= 299);
