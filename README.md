@@ -32,7 +32,7 @@ to play it, `q` to quit. Full key reference and every feature:
 - **mpv** on your `PATH` for playback (the default and most capable
   backend; `mplayer` and `qmplay2` also work — see the manual).
 - **libsdl**, **mupdf**, **libarchive** for manga reader.
-- optional runtime dependencies: **curl-impersonate** and **nodejs** (some providers need them).
+- optional runtime dependencies: **curl-impersonate**.
 - optional dependency for CLI: [**fzf++**](https://github.com/barracuda156/fzfpp) (or **fzf**).
 
 Cover art needs a terminal with support for kitty/iterm/sixel graphics protocol.
@@ -40,6 +40,17 @@ Cover art needs a terminal with support for kitty/iterm/sixel graphics protocol.
 For macOS the app can be installed via PowerPC Ports: https://macos-powerpc.org
 
 ![shigoku on macOS 10.6](.github/assets/shigoku_powerpc.png)
+
+## Supported providers
+
+- MegaPlay
+- HiAnime
+- Miruro
+- Re:ANIME
+- AnimeHub
+- AniLibria
+
+Currently disabled: senshi, anibd, anidbapp.
 
 ## License
 
