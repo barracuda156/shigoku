@@ -381,20 +381,51 @@ English audio track — shigoku hands the player only the track you asked
 for, and a download keeps that one too. Fonts the subtitles name are not
 fetched, so styled signs may fall back to a default font.
 
-### Turning sources off
+### Miruro
+
+Miruro finds a show by title and names its AniList and MyAnimeList entries,
+so a result lands on the right row of your list. It lists a show's episodes
+itself — for a show still airing, every episode that is out — and serves
+each from several stream hosts. shigoku asks those hosts in turn and plays
+the first that answers, preferring a clean picture with English subtitles
+beside it, then one with the subtitles burned in.
+
+Two things to know:
+
+- The site sits behind Cloudflare, which turns some networks away whatever
+  the program asking: hosting ranges and some VPN exits, rarely a home
+  line. shigoku then reports that Miruro blocked it and moves on to the
+  next source. With libcurl-impersonate installed, a refused request is
+  tried once more with a browser's handshake.
+- Its first-choice stream host answers only a player that sends one extra
+  header. `mpv` does, and so does a download; `mplayer` and `qmplay2`
+  cannot, so with them Miruro falls through to its other hosts.
+
+### Sources that are off, and turning one off
 
 A source that has been down for a while still costs a try on every walk.
 List it in `disabled_providers` in `config.json` to leave it out entirely —
 it is not searched, not asked for streams and not offered in Settings:
 
 ```
-"disabled_providers": ["anibd", "anidbapp"]
+"disabled_providers": ["animehub"]
 ```
 
-The short names are the ones `-p` takes (`megaplay`, `hianime`, `reanime`,
-`senshi`, `animehub`, `anilibria`, `anibd`, `anidbapp`). The list is read at
-start-up; `shigoku --paths` shows it. Unknown names are ignored, and a list
-that names every source is ignored as a whole.
+Three sources are left out without being listed, because their sites are
+down: `senshi` (the site does not answer), `anibd` (its host was shut down)
+and `anidbapp` (the site was replaced by a different one). A release puts
+one back once its site is. To try one before that, name it in
+`enabled_providers`:
+
+```
+"enabled_providers": ["senshi"]
+```
+
+A name in both lists stays off. The short names are the ones `-p` takes
+(`megaplay`, `hianime`, `miruro`, `reanime`, `animehub`, `anilibria`, and
+the three above). Both lists are read at start-up; `shigoku --paths` shows
+what is off. Unknown names are ignored, and a `disabled_providers` that
+names every source is ignored as a whole.
 
 ## Downloads
 
@@ -602,9 +633,9 @@ want (each has a long form too: `--quality`, `--show`, `--episode`,
   `<b>` off (`-r 4-`) for "through the end". An episode that fails to play
   on every source (below) ends the run there, exit 1, like a single episode
   would.
-- `-p <source>` — ask this source first (its short name: `senshi`,
-  `hianime`, `animehub`, `anilibria`, `anidbapp`; `shigoku --paths` lists
-  the ones a search can walk, in order), for this run instead of
+- `-p <source>` — ask this source first (its short name: `hianime`,
+  `miruro`, `animehub`, `anilibria`; `shigoku --paths` lists the ones
+  a search can walk, in order), for this run instead of
   `preferred_provider`.
   A name shigoku does not know is said and the run walks as if unset.
 
