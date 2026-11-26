@@ -1,4 +1,4 @@
-// hianime.cpp — hianime.at provider (P47).
+// hianime.cpp — hianime.fm provider (P47).
 
 #include "hianime.hpp"
 

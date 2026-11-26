@@ -55,10 +55,10 @@ TEST_CASE("decode_entities_handles_named_and_numeric_escapes_once") {
 }
 
 TEST_CASE("trailing_id_reads_the_slugs_numeric_tail") {
-  CHECK(trailing_id("https://hianime.at/frieren-beyond-journeys-end-481").value() == "481");
+  CHECK(trailing_id("https://hianime.fm/frieren-beyond-journeys-end-481").value() == "481");
   CHECK(trailing_id("/one-piece-1?ep=2").value() == "1");
-  CHECK_FALSE(trailing_id("https://hianime.at/no-trailing-digits").has_value());
-  CHECK_FALSE(trailing_id("https://hianime.at/-").has_value());
+  CHECK_FALSE(trailing_id("https://hianime.fm/no-trailing-digits").has_value());
+  CHECK_FALSE(trailing_id("https://hianime.fm/-").has_value());
   CHECK_FALSE(trailing_id("").has_value());
 }
 
@@ -78,7 +78,7 @@ TEST_CASE("parse_search_cards_stops_at_the_main_sidebar_marker") {
 }
 
 TEST_CASE("parse_search_cards_scans_the_whole_page_with_no_sidebar_marker") {
-  const char* html = R"(<h3 class="film-name"><a href="https://hianime.at/x-1">X</a></h3>)";
+  const char* html = R"(<h3 class="film-name"><a href="https://hianime.fm/x-1">X</a></h3>)";
   auto cards = parse_search_cards(html);
   REQUIRE(cards.size() == 1);
   CHECK(cards[0].id == "1");

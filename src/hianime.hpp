@@ -1,4 +1,4 @@
-// hianime.hpp — hianime.at StreamProvider (P47). Tier-C: no canonical-keyed
+// hianime.hpp — hianime.fm StreamProvider (P47). Tier-C: no canonical-keyed
 // endpoint (nullopt), so the walk binds it via title search. The ZokoAnime
 // server's data-hash carries the MAL id too (AniSkip fodder), but nothing in
 // this v0 surfaces it — StreamLink has no id field to hand it onward.
@@ -43,8 +43,8 @@
 
 namespace shigoku::hianime {
 
-inline constexpr const char* kApi = "https://hianime.at";
-inline constexpr const char* kReferer = "https://hianime.at/";
+inline constexpr const char* kApi = "https://hianime.fm";
+inline constexpr const char* kReferer = "https://hianime.fm/";
 // XOR key over the embed's `window.__P` base64 payload (ASCII literal, cheap
 // to widen if the site rotates it — no libcrypto involved).
 inline constexpr const char* kEmbedKey = "otaku-embed-v1";
