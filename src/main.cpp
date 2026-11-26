@@ -45,6 +45,7 @@
 #include "mal_mirror.hpp"
 #include "mal_refresh.hpp"
 #include "megaplay.hpp"
+#include "miruro.hpp"
 #include "paths.hpp"
 #include "picker.hpp"
 #include "play_cli.hpp"
@@ -88,36 +89,41 @@ constexpr std::uint64_t kPickCap = 256;
 // would otherwise reprompt without end. Bounds the loop to abort instead.
 constexpr int kMaxPickAttempts = 1000;
 
-// Build the live provider registry (same lineup as run_tui below, N=8). The
+// Build the live provider registry (same lineup as run_tui below, N=9). The
 // CLI play path and the TUI boot build from the same list so the lineup never
 // forks. Returns nullopt if any provider client fails to init.
 //
 // Position is priority: the resolve walk's tiers and the CLI's search walk
 // both try sources in this order (after any configured preference).
 // megaplay (id-keyed, cannot search, so the CLI walks past it), hianime
-// (English-catalogued, MAL-keyed at resolve), Re:ANIME (AniList-keyed,
-// cannot search, fansub releases with soft subs and the dub as an audio
-// track), senshi (English-catalogued, keyed by MAL id, its stream hop needs
-// Node), AnimeHub (English-catalogued, hard-subbed, at most 720p, on a CDN
-// none of the others share), then AniLibria (a Russian-dub catalogue), anibd
-// and anidb.app. senshi, anibd and anidb.app are down upstream and are left
-// out unless enabled_providers names them.
+// (English-catalogued, MAL-keyed at resolve), Miruro (found by search, ids
+// on every hit, its own episode listing, several stream hosts tried in
+// turn), Re:ANIME (AniList-keyed, cannot search, fansub releases with soft
+// subs and the dub as an audio track), senshi (English-catalogued, keyed by
+// MAL id, its stream hop needs Node), AnimeHub (English-catalogued,
+// hard-subbed, at most 720p, on a CDN none of the others share), then
+// AniLibria (a Russian-dub catalogue), anibd and anidb.app. senshi, anibd
+// and anidb.app are down upstream and are left out unless enabled_providers
+// names them.
 std::optional<ProviderRegistry> build_registry(const Config& config) {
   auto megaplay_provider = megaplay::MegaPlay::create();
   auto anibd_provider = anibd::AniBd::create();
   auto senshi = senshi::Senshi::create(config.senshi_node);
   auto hianime_provider = hianime::Hianime::create();
+  auto miruro_provider = miruro::Miruro::create();
   auto reanime_provider = reanime::ReAnime::create();
   auto animehub_provider = animehub::AnimeHub::create();
   auto anilibria_provider = anilibria::AniLibria::create();
   auto anidbapp_provider = anidbapp::AniDbApp::create();
   if (!megaplay_provider || !anibd_provider || !senshi || !hianime_provider ||
-      !reanime_provider || !animehub_provider || !anilibria_provider || !anidbapp_provider) {
+      !miruro_provider || !reanime_provider || !animehub_provider || !anilibria_provider ||
+      !anidbapp_provider) {
     return std::nullopt;
   }
   std::vector<std::unique_ptr<StreamProvider>> providers;
   providers.push_back(std::make_unique<megaplay::MegaPlay>(std::move(*megaplay_provider)));
   providers.push_back(std::make_unique<hianime::Hianime>(std::move(*hianime_provider)));
+  providers.push_back(std::make_unique<miruro::Miruro>(std::move(*miruro_provider)));
   providers.push_back(std::make_unique<reanime::ReAnime>(std::move(*reanime_provider)));
   providers.push_back(std::make_unique<senshi::Senshi>(std::move(*senshi)));
   providers.push_back(std::make_unique<animehub::AnimeHub>(std::move(*animehub_provider)));

@@ -615,6 +615,21 @@ if(SHIGOKU_HAVE_CURL)
 endif()
 
 # ---------------------------------------------------------------------------
+# shigoku_miruro: miruro.cx StreamProvider — tier-C search whose hits name
+# their AniList and MAL ids. The site is SvelteKit: its load data is read out
+# of the page's JavaScript value expressions (uneval). Streams sit on
+# third-party hosts and are probed for a live master; links carry the stream
+# host's Referer and Origin. Plain TLS first, the impersonate handshake on
+# a 403.
+# ---------------------------------------------------------------------------
+if(SHIGOKU_HAVE_CURL)
+  add_library(shigoku_miruro STATIC src/miruro.cpp src/uneval.cpp)
+  target_include_directories(shigoku_miruro PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(shigoku_miruro
+    PUBLIC shigoku_http shigoku_hls shigoku_domain shigoku_flags shigoku_thirdparty)
+endif()
+
+# ---------------------------------------------------------------------------
 # shigoku_anilibria: AniLibria (AniLiberty API v1) StreamProvider — no
 # canonical key (the API carries no MAL/AniList ids; tier-C search binds it),
 # pure JSON chain with DIRECT per-quality HLS urls in the release object. No
@@ -1055,7 +1070,7 @@ if(SHIGOKU_HAVE_CURL AND SHIGOKU_HAVE_SQLITE3)
   endif()
   target_link_libraries(shigoku PRIVATE
     shigoku_picker shigoku_megaplay shigoku_senshi shigoku_anibd shigoku_anidbapp
-    shigoku_anilibria shigoku_hianime shigoku_animehub shigoku_reanime
+    shigoku_anilibria shigoku_hianime shigoku_animehub shigoku_reanime shigoku_miruro
     shigoku_http shigoku_store shigoku_cli shigoku_anilist shigoku_catalog
     shigoku_mal_catalog shigoku_idmap shigoku_login
     shigoku_loopback shigoku_mal_login shigoku_mal_loopback
@@ -2054,6 +2069,43 @@ if(SHIGOKU_HAVE_CURL)
   target_link_libraries(reanime_live_smoke PRIVATE
     shigoku_reanime shigoku_proxy shigoku_hls shigoku_crypto shigoku_http shigoku_domain
     shigoku_flags shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+endif()
+
+# uneval_tests: the reader for SvelteKit's JavaScript value expressions —
+# literals, escapes, numbers, call forms, the hoisting function, the depth
+# and expansion limits, and the Miruro fixtures' payloads.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(uneval_tests tests/uneval_tests.cpp)
+  target_compile_definitions(uneval_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(uneval_tests PRIVATE
+    shigoku_miruro shigoku_flags shigoku_thirdparty)
+  add_test(NAME uneval_tests COMMAND uneval_tests)
+endif()
+
+# miruro_tests: the page readers against captured pages (search, watch), the
+# candidate order and guards, plus transport cases over a loopback fixture
+# server. Fixtures under tests/fixtures/miruro/.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(miruro_tests tests/miruro_tests.cpp)
+  target_compile_definitions(miruro_tests PRIVATE
+    SHIGOKU_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  target_link_libraries(miruro_tests PRIVATE
+    shigoku_miruro shigoku_hls shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
+  add_test(NAME miruro_tests COMMAND miruro_tests)
+endif()
+
+# miruro_live_smoke: real search -> episodes -> resolve for Frieren ep 1,
+# then the master, a variant and the first segment's first bytes with the
+# link's headers. Gated on SHIGOKU_LIVE=1 (not a ctest; picked up by
+# scripts/provider_canary.sh); exits 77 when Cloudflare challenges the
+# address.
+if(SHIGOKU_HAVE_CURL)
+  add_executable(miruro_live_smoke tests/miruro_live_smoke.cpp)
+  target_link_libraries(miruro_live_smoke PRIVATE
+    shigoku_miruro shigoku_hls shigoku_http shigoku_domain shigoku_flags
+    shigoku_thirdparty shigoku::curl Threads::Threads shigoku_atomic)
 endif()
 
 # anilibria_tests: pure parsers/guards offline (search/release JSON, ordinal
