@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <mutex>
 #include <set>
 #include <utility>
 
@@ -35,6 +36,8 @@ constexpr std::size_t kMaxStreams = 16;
 constexpr std::size_t kMaxSubtitles = 64;
 constexpr std::size_t kMaxHeaders = 32;
 constexpr std::size_t kMaxRenditions = 256;
+constexpr std::size_t kMaxSlugs = 32;
+constexpr std::string_view kPlaceholderSlug = "x";
 
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
@@ -488,6 +491,23 @@ std::vector<Candidate> candidates(const std::vector<Track>& tracks, Translation 
   return out;
 }
 
+std::optional<std::string> watch_slug(std::string_view url, std::string_view show_id) {
+  const auto origin = scrape::origin_of(url);
+  if (!origin.has_value()) return std::nullopt;
+  std::string_view rest = url.substr(origin->size());
+  rest = rest.substr(0, rest.find_first_of("?#"));
+  const std::string prefix = "/watch/" + std::string(show_id) + "/";
+  if (!rest.starts_with(prefix)) return std::nullopt;
+  const std::string_view slug = rest.substr(prefix.size());
+  if (slug.empty() || slug.size() > 200) return std::nullopt;
+  const bool ok = std::all_of(slug.begin(), slug.end(), [](char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || is_digit(c) || c == '.' ||
+           c == '_' || c == '~' || c == '%' || c == '-';
+  });
+  if (!ok) return std::nullopt;
+  return std::string(slug);
+}
+
 bool is_playlist(std::string_view body) {
   if (body.starts_with("\xEF\xBB\xBF")) body.remove_prefix(3);
   while (!body.empty() && (body.front() == ' ' || body.front() == '\t' || body.front() == '\r' ||
@@ -523,6 +543,29 @@ std::optional<std::string> dub_audio_language(std::string_view master) {
 
 struct Miruro::State {
   std::atomic<bool> fingerprinted{false};
+  // The slugs the site redirected to, newest last.
+  std::mutex mu;
+  std::vector<std::pair<std::string, std::string>> slugs;
+
+  std::optional<std::string> slug_of(std::string_view show_id) {
+    std::lock_guard<std::mutex> lock(mu);
+    for (const auto& [id, slug] : slugs) {
+      if (id == show_id) return slug;
+    }
+    return std::nullopt;
+  }
+
+  void remember(std::string_view show_id, std::string slug) {
+    std::lock_guard<std::mutex> lock(mu);
+    for (auto& [id, known] : slugs) {
+      if (id == show_id) {
+        known = std::move(slug);
+        return;
+      }
+    }
+    if (slugs.size() >= kMaxSlugs) slugs.erase(slugs.begin());
+    slugs.emplace_back(std::string(show_id), std::move(slug));
+  }
 };
 
 Miruro::Miruro(http::Client client, std::string base, std::string stream_origin,
@@ -548,13 +591,16 @@ Result<Miruro, ProviderError> Miruro::with_endpoints(std::string base, std::stri
                 http::Fingerprint::None);
 }
 
-Result<std::string, ProviderError> Miruro::page(const std::string& url) const {
+Result<std::string, ProviderError> Miruro::page(const std::string& url,
+                                                std::string* landed) const {
+  std::string moved;
   http::Request req;
   req.method = http::Method::Get;
   req.url = url;
   req.extra_headers.push_back({"Accept", "text/html,application/xhtml+xml,*/*;q=0.8"});
   req.extra_headers.push_back({"Referer", base_ + "/"});
   req.accept = http::Accept::Any2xx;
+  req.redirect_target = &moved;
   if (state_->fingerprinted.load(std::memory_order_relaxed)) req.fingerprint = escalate_;
 
   auto attempt = [&]() -> Result<std::string, ProviderError> {
@@ -564,24 +610,56 @@ Result<std::string, ProviderError> Miruro::page(const std::string& url) const {
     if (is_challenge(body)) return err(ProviderError::forbidden(403));
     return body;
   };
-  auto out = attempt();
-  if (!out.has_value() && out.error().kind == ProviderError::Kind::Forbidden &&
-      out.error().status == 403 && escalate_ != http::Fingerprint::None &&
-      req.fingerprint == http::Fingerprint::None) {
-    req.fingerprint = escalate_;
-    // A retry that fails leaves the refusal standing: it is what the caller
-    // has to hear about, whatever the handshake library then ran into.
-    if (auto again = attempt(); again.has_value()) {
-      state_->fingerprinted.store(true, std::memory_order_relaxed);
-      out = std::move(again);
+  auto fetch = [&]() -> Result<std::string, ProviderError> {
+    auto out = attempt();
+    if (!out.has_value() && out.error().kind == ProviderError::Kind::Forbidden &&
+        out.error().status == 403 && escalate_ != http::Fingerprint::None &&
+        req.fingerprint == http::Fingerprint::None) {
+      req.fingerprint = escalate_;
+      // A retry that fails leaves the refusal standing: it is what the
+      // caller has to hear about, whatever the handshake library then ran
+      // into.
+      auto again = attempt();
+      const bool through = again.has_value() ||
+                           (again.error().kind != ProviderError::Kind::Forbidden &&
+                            again.error().kind != ProviderError::Kind::Network);
+      if (through) {
+        state_->fingerprinted.store(true, std::memory_order_relaxed);
+        out = std::move(again);
+      } else {
+        moved.clear();
+      }
     }
+    return out;
+  };
+
+  const auto home = scrape::origin_of(base_);
+  auto out = fetch();
+  for (int hop = 0; hop < kMaxRedirects; ++hop) {
+    const bool redirected = !out.has_value() && out.error().kind == ProviderError::Kind::Http &&
+                            out.error().status >= 300 && out.error().status <= 399;
+    if (!redirected || moved.empty() || !clean_arg(moved)) break;
+    if (!home.has_value() || scrape::origin_of(moved) != home) break;
+    req.url = moved;
+    out = fetch();
   }
+  if (landed != nullptr && out.has_value() && req.url != url) *landed = req.url;
   return out;
 }
 
 Result<std::string, ProviderError> Miruro::watch_page(std::string_view show_id,
                                                       std::string_view episode) const {
-  return page(base_ + "/watch/" + std::string(show_id) + "/x?ep=" + std::string(episode));
+  const std::string slug = state_->slug_of(show_id).value_or(std::string(kPlaceholderSlug));
+  std::string landed;
+  auto html = page(base_ + "/watch/" + std::string(show_id) + "/" + slug +
+                       "?ep=" + std::string(episode),
+                   &landed);
+  if (html.has_value() && !landed.empty()) {
+    if (auto own = detail::watch_slug(landed, show_id); own.has_value()) {
+      state_->remember(show_id, std::move(*own));
+    }
+  }
+  return html;
 }
 
 Result<std::string, ProviderError> Miruro::probe(const detail::Stream& stream) const {

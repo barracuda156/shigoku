@@ -812,6 +812,11 @@ std::string playlist(std::string_view body) {
   return response(200, body, "application/vnd.apple.mpegurl");
 }
 
+std::string redirect(int status, std::string_view location) {
+  return "HTTP/1.1 " + std::to_string(status) + " Moved\r\nLocation: " + std::string(location) +
+         "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+}
+
 bool has_header(const std::string& head, const std::string& line) {
   return contains(head, "\r\n" + line + "\r\n");
 }
@@ -886,6 +891,81 @@ TEST_CASE("transport_episodes_sub") {
   REQUIRE(reqs.size() == 1);
   CHECK(reqs[0].starts_with(std::string("GET /watch/") + kShowId + "/x?ep=1 HTTP/1.1\r\n"));
   CHECK(has_header(reqs[0], "Referer: " + srv.url() + "/"));
+}
+
+TEST_CASE("watch_slug") {
+  const std::string id = kShowId;
+  CHECK(watch_slug("https://miruro.cx/watch/" + id + "/flcl", id) == "flcl");
+  CHECK(watch_slug("https://miruro.cx/watch/" + id + "/bocchi-the-rock?ep=3", id) ==
+        "bocchi-the-rock");
+  CHECK(watch_slug("http://127.0.0.1:8080/watch/" + id + "/a.b_c~%E3%81%82#top", id) ==
+        "a.b_c~%E3%81%82");
+  CHECK_FALSE(watch_slug("https://miruro.cx/watch/" + id + "/", id).has_value());
+  CHECK_FALSE(watch_slug("https://miruro.cx/watch/" + id, id).has_value());
+  CHECK_FALSE(watch_slug("https://miruro.cx/watch/" + id + "/a/b", id).has_value());
+  CHECK_FALSE(watch_slug("https://miruro.cx/watch/otherotherother/flcl", id).has_value());
+  CHECK_FALSE(watch_slug("https://miruro.cx/search?q=flcl", id).has_value());
+  CHECK_FALSE(watch_slug("/watch/" + id + "/flcl", id).has_value());
+  CHECK_FALSE(
+      watch_slug("https://miruro.cx/watch/" + id + "/" + std::string(201, 'a'), id).has_value());
+}
+
+TEST_CASE("transport_watch_page_follows_the_site_to_the_shows_own_slug") {
+  const std::string id = kShowId;
+  const std::string page = read_fixture("watch.html");
+  // A relative Location, then an absolute one on the same origin.
+  Server first({redirect(307, "/watch/" + id + "/flcl?ep=1"), response(200, page)});
+  auto p = Miruro::with_endpoints(first.url(), "");
+  REQUIRE(p.has_value());
+  auto eps = p->episodes(id, Translation::Sub, std::nullopt);
+  REQUIRE(eps.has_value());
+  CHECK(eps->size() == 6);
+  const auto reqs = first.requests();
+  REQUIRE(reqs.size() == 2);
+  CHECK(reqs[0].starts_with("GET /watch/" + id + "/x?ep=1 HTTP/1.1\r\n"));
+  CHECK(reqs[1].starts_with("GET /watch/" + id + "/flcl?ep=1 HTTP/1.1\r\n"));
+  CHECK(has_header(reqs[1], "Referer: " + first.url() + "/"));
+}
+
+TEST_CASE("transport_watch_page_remembers_the_slug_for_the_run") {
+  const std::string id = kShowId;
+  const std::string page = read_fixture("watch.html");
+  Server srv({redirect(308, "/watch/" + id + "/flcl?ep=1"), response(200, page),
+              response(200, page)});
+  auto p = Miruro::with_endpoints(srv.url(), "");
+  REQUIRE(p.has_value());
+  REQUIRE(p->episodes(id, Translation::Sub, std::nullopt).has_value());
+  REQUIRE(p->episodes(id, Translation::Sub, std::nullopt).has_value());
+  const auto reqs = srv.requests();
+  REQUIRE(reqs.size() == 3);
+  CHECK(reqs[2].starts_with("GET /watch/" + id + "/flcl?ep=1 HTTP/1.1\r\n"));
+}
+
+TEST_CASE("transport_redirect_off_the_site_is_not_followed") {
+  const std::string id = kShowId;
+  Server srv({redirect(302, "https://elsewhere.example.com/watch/" + id + "/flcl?ep=1")});
+  auto p = Miruro::with_endpoints(srv.url(), "");
+  REQUIRE(p.has_value());
+  auto eps = p->episodes(id, Translation::Sub, std::nullopt);
+  REQUIRE_FALSE(eps.has_value());
+  CHECK(eps.error().kind == ProviderError::Kind::Http);
+  CHECK(eps.error().status == 302);
+  CHECK(srv.requests().size() == 1);
+}
+
+TEST_CASE("transport_redirects_are_bounded") {
+  const std::string id = kShowId;
+  std::vector<std::string> script;
+  for (int k = 0; k <= miruro::kMaxRedirects; ++k) {
+    script.push_back(redirect(307, "/watch/" + id + "/hop" + std::to_string(k) + "?ep=1"));
+  }
+  Server srv(std::move(script));
+  auto p = Miruro::with_endpoints(srv.url(), "");
+  REQUIRE(p.has_value());
+  auto eps = p->episodes(id, Translation::Sub, std::nullopt);
+  REQUIRE_FALSE(eps.has_value());
+  CHECK(eps.error().status == 307);
+  CHECK(srv.requests().size() == static_cast<std::size_t>(miruro::kMaxRedirects) + 1);
 }
 
 TEST_CASE("transport_episodes_dub") {

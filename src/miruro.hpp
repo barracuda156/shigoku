@@ -13,14 +13,16 @@
 //      mal:["227"]}, title:{romaji,english,native}, episode_count,
 //      episode_counts:{sub,dub}, season_year}. `id` is the site's own opaque
 //      show handle, the provider id here.
-//   2. GET /watch/<id>/x?ep=<n> -> `episodes`: [{number, …}] (the whole
+//   2. GET /watch/<id>/<slug>?ep=<n> -> `episodes`: [{number, …}] (the whole
 //      listing, whatever <n> is) and, for episode <n>, `tracks`:
 //      [{track:"ssub"|"sub"|"dub", providers:[{provider, servers:[{server,
 //      headers:{Referer,Origin?}, streams:[{url, format:"hls"}]}],
 //      subtitles:[{language,label,file,default}]}]}].
 //      "ssub" is a clean video with subtitle files beside it, "sub" has them
 //      burned in. A server with no streams is an embed for the site's own
-//      player and is of no use here.
+//      player and is of no use here. Only the id is known from a search:
+//      the page is asked for under a placeholder slug and the site
+//      redirects to the show's own, which is then remembered for the run.
 //   3. The streams are on third-party hosts and some are dead at any given
 //      time, so resolve fetches a candidate's master playlist (with the
 //      server's Referer and Origin) and takes the first that answers one.
@@ -54,6 +56,8 @@ inline constexpr const char* kReferer = "https://miruro.cx/";
 // Master playlists resolve may fetch before it gives up on an episode.
 inline constexpr std::size_t kMaxProbes = 6;
 inline constexpr long kProbeTimeoutSecs = 6;
+// Redirects a site page may send before the fetch gives up.
+inline constexpr int kMaxRedirects = 3;
 
 // --- Pure helpers (exposed for golden tests) --------------------------------
 namespace detail {
@@ -152,6 +156,11 @@ struct Candidate {
 [[nodiscard]] std::vector<Candidate> candidates(const std::vector<Track>& tracks,
                                                 Translation translation);
 
+// The slug of a watch address, `<origin>/watch/<id>/<slug>[?…]`, for that
+// show id: 1 to 200 of [A-Za-z0-9._~%-]. nullopt for any other address.
+[[nodiscard]] std::optional<std::string> watch_slug(std::string_view url,
+                                                    std::string_view show_id);
+
 // Whether a fetched body is an HLS playlist: "#EXTM3U" after an optional
 // UTF-8 byte order mark and leading whitespace.
 [[nodiscard]] bool is_playlist(std::string_view body);
@@ -216,8 +225,11 @@ class Miruro final : public StreamProvider {
 
   // A site page. Plain first; a 403 retries once with `escalate_` (when it
   // is not None) and, if that passes, keeps it for later requests. A retry
-  // that fails answers the 403.
-  [[nodiscard]] Result<std::string, ProviderError> page(const std::string& url) const;
+  // that fails answers the 403. A redirect is followed while it stays on
+  // the site's own origin, kMaxRedirects at most; `landed`, when given,
+  // receives the address that answered if that is not `url`.
+  [[nodiscard]] Result<std::string, ProviderError> page(const std::string& url,
+                                                        std::string* landed = nullptr) const;
   [[nodiscard]] Result<std::string, ProviderError> watch_page(std::string_view show_id,
                                                               std::string_view episode) const;
   [[nodiscard]] Result<std::string, ProviderError> probe(const detail::Stream& stream) const;
